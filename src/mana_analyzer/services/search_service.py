@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+import re
+
+from mana_analyzer.analysis.models import SearchHit
+from mana_analyzer.utils.io import read_jsonl
+from mana_analyzer.vector_store.faiss_store import FaissStore
+
+logger = logging.getLogger(__name__)
+
+
+class SearchService:
+    def __init__(self, store: FaissStore) -> None:
+        self.store = store
+
+    def search(self, index_dir: str | Path, query: str, k: int) -> list[SearchHit]:
+        resolved_index = Path(index_dir).resolve()
+        logger.info("Running semantic search: index_dir=%s k=%d", resolved_index, k)
+        logger.debug("Search query: %s", query)
+        try:
+            hits = self.store.search(resolved_index, query=query, k=k)
+        except Exception as exc:
+            logger.warning("Vector search failed for %s: %s", resolved_index, exc)
+            hits = []
+        if not hits and not (resolved_index / "faiss").exists():
+            logger.info("Falling back to lexical chunk search: index_dir=%s", resolved_index)
+            hits = self._lexical_search(resolved_index, query=query, k=k)
+        logger.info("Semantic search completed: hits=%d", len(hits))
+        return hits
+
+    def search_multi(self, index_dirs: list[Path], query: str, k: int) -> tuple[list[SearchHit], list[str]]:
+        logger.info("Running multi-index semantic search: indexes=%d k=%d", len(index_dirs), k)
+        logger.debug("Search query: %s", query)
+        warnings: list[str] = []
+        merged: list[SearchHit] = []
+        for index_dir in sorted({Path(item).resolve() for item in index_dirs}, key=lambda item: str(item)):
+            try:
+                hits = self.search(index_dir=index_dir, query=query, k=k)
+                merged.extend(hits)
+            except Exception as exc:
+                warning = f"Skipped unusable index {index_dir}: {exc}"
+                logger.warning(warning)
+                warnings.append(warning)
+
+        deduped = sorted(
+            {
+                (item.file_path, item.start_line, item.end_line, item.symbol_name): item
+                for item in merged
+            }.values(),
+            key=lambda item: (-item.score, item.file_path, item.start_line, item.end_line, item.symbol_name),
+        )
+        return deduped[:k], warnings
+
+    @staticmethod
+    def _tokenize(value: str) -> set[str]:
+        return set(re.findall(r"[a-zA-Z0-9_]+", value.lower()))
+
+    def _lexical_search(self, index_dir: Path, query: str, k: int) -> list[SearchHit]:
+        chunk_rows = read_jsonl(index_dir / "chunks.jsonl")
+        if not chunk_rows:
+            return []
+
+        q_tokens = self._tokenize(query)
+        if not q_tokens:
+            return []
+
+        scored: list[SearchHit] = []
+        for row in chunk_rows:
+            text = str(row.get("text", ""))
+            if not text:
+                continue
+            tokens = self._tokenize(text)
+            if not tokens:
+                continue
+            overlap = q_tokens & tokens
+            if not overlap:
+                continue
+            score = len(overlap) / max(len(q_tokens), 1)
+            scored.append(
+                SearchHit(
+                    score=float(score),
+                    file_path=str(row.get("file_path", "")),
+                    start_line=int(row.get("start_line", 1)),
+                    end_line=int(row.get("end_line", 1)),
+                    symbol_name=str(row.get("symbol_name", "unknown")),
+                    snippet=text[:500],
+                )
+            )
+
+        return sorted(
+            scored,
+            key=lambda item: (-item.score, item.file_path, item.start_line, item.end_line, item.symbol_name),
+        )[:k]

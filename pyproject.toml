@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mana-analyzer"
+version = "0.1.0"
+description = "AI-powered Python code analyzer CLI"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+authors = [{ name = "mana-analyzer" }]
+dependencies = [
+  "typer>=0.12,<1.0",
+  "rich>=13.7,<14.0",
+  "pydantic>=2.8,<3.0",
+  "pydantic-settings>=2.4,<3.0",
+  "python-dotenv>=1.0,<2.0",
+  "langchain>=0.3,<0.4",
+  "langchain-openai>=0.2,<0.3",
+  "langchain-community>=0.3,<0.4",
+  "faiss-cpu>=1.8.0.post1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+  "pytest-mock>=3.14,<4.0",
+]
+
+[project.scripts]
+mana-analyzer = "mana_analyzer.commands.cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
