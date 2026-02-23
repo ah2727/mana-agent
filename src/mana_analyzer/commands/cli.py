@@ -30,6 +30,9 @@ from mana_analyzer.utils.logging import setup_logging
 from mana_analyzer.utils.project_discovery import discover_subprojects
 from mana_analyzer.vector_store.faiss_store import FaissStore
 
+from mana_analyzer.services.vulnerability_service import VulnerabilityService
+from mana_analyzer.services.report_service import ReportService
+
 app = typer.Typer(help="mana-analyzer CLI")
 console = Console()
 logger = logging.getLogger(__name__)
@@ -50,6 +53,60 @@ def _index_has_chunks(index_dir: Path) -> bool:
 
 def _index_has_search_data(index_dir: Path) -> bool:
     return _index_has_vectors(index_dir) or _index_has_chunks(index_dir)
+
+
+# ----------------------------
+# Report artifact helpers
+# ----------------------------
+
+def _resolve_report_artifact_dir(project_root: Path) -> Path:
+    # Default artifact directory if --output-dir not provided:
+    # <project_root>/.mana_logs
+    if OUTPUT_DIR is not None:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        return OUTPUT_DIR
+    target = project_root / ".mana_logs"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _resolve_report_artifact_paths(target_path: str | Path) -> tuple[Path, Path]:
+    target = Path(target_path).resolve()
+    project_root = target if target.is_dir() else target.parent
+    stamp = datetime.now().strftime("%Y%m%d-%H")
+    stem = f"{project_root.name}-{stamp}-report"
+    out_dir = _resolve_report_artifact_dir(project_root)
+    return out_dir / f"{stem}.json", out_dir / f"{stem}.md"
+
+
+def _resolve_out_path(arg: str | None, default_path: Path, *, suffix: str) -> Path:
+    """
+    Accept either:
+      - None => default_path
+      - directory path => <dir>/<default_name>
+      - file path => file path
+    """
+    if not arg:
+        return default_path
+    p = Path(arg).expanduser().resolve()
+    if p.exists() and p.is_dir():
+        return p / default_path.name
+    # if user passed "logs/" but directory doesn't exist yet, treat ending "/" as directory intent
+    if str(arg).endswith(("/", "\\")):
+        p.mkdir(parents=True, exist_ok=True)
+        return p / default_path.name
+    # if no suffix provided, ensure correct suffix
+    if p.suffix == "":
+        return p.with_suffix(suffix)
+    return p
+
+
+def _clamp_detail_line_target(value: int) -> int:
+    if value < 300:
+        return 300
+    if value > 400:
+        return 400
+    return value
 
 
 def build_store(settings: Settings) -> FaissStore:
@@ -132,38 +189,38 @@ def build_describe_service(settings: Settings, model_override: str | None, use_l
     return DescribeService(dependency_service=build_dependency_service(), llm_chain=llm_chain)
 
 
-def _print(payload: dict, as_json: bool) -> None:
-    if as_json:
-        console.print_json(json.dumps(payload))
-    else:
-        for key, value in payload.items():
-            console.print(f"{key}: {value}")
+def build_report_service(
+    *,
+    use_llm: bool,
+    model_override: str | None,
+    include_tests: bool,
+) -> ReportService:
+    # Only load Settings if we need LLM
+    settings = Settings() if use_llm else None
 
+    dependency_service = build_dependency_service()
+    analyze_service = build_analyze_service()
 
-def _render_repository_summary_markdown(summary_payload: dict) -> str:
-    lines: list[str] = []
-    lines.append("## Repository Summary")
-    lines.append("")
-    lines.append("### Architecture")
-    lines.append(str(summary_payload.get("architecture_summary", "")).strip() or "Architecture summary unavailable.")
-    lines.append("")
-    lines.append("### Technology")
-    lines.append(str(summary_payload.get("tech_summary", "")).strip() or "Technology summary unavailable.")
-    lines.append("")
-    lines.append("### File Summaries")
-    descriptions = summary_payload.get("descriptions", [])
-    if descriptions:
-        for item in descriptions:
-            file_path = item.get("file_path", "unknown")
-            language = item.get("language", "text")
-            summary = item.get("summary", "No summary generated.")
-            symbols = item.get("symbols", [])
-            lines.append(f"- `{file_path}` ({language})")
-            lines.append(f"  Summary: {summary}")
-            lines.append(f"  Symbols: {', '.join(symbols) if symbols else 'none'}")
+    llm_analyze_service = None
+    if use_llm:
+        assert settings is not None
+        llm_analyze_service = build_llm_analyze_service(settings, model_override=model_override)
+        describe_service = build_describe_service(settings, model_override=model_override, use_llm=True)
     else:
-        lines.append("- none")
-    return "\n".join(lines)
+        # Avoid Settings() so OpenAI creds are not required
+        describe_service = DescribeService(dependency_service=dependency_service, llm_chain=None)
+
+    structure_service = StructureService(include_tests=include_tests)
+    vuln_service = VulnerabilityService()
+
+    return ReportService(
+        dependency_service=dependency_service,
+        analyze_service=analyze_service,
+        llm_analyze_service=llm_analyze_service,
+        describe_service=describe_service,
+        structure_service=structure_service,
+        vulnerability_service=vuln_service,
+    )
 
 
 def _resolve_output_file(target_path: str | Path | None = None) -> Path | None:
@@ -672,3 +729,114 @@ def describe(
         _emit_json(report.to_dict(), output_file=output_file)
     if not as_json and output_format in {"markdown", "both"}:
         _emit_text(markdown, output_file=output_file)
+
+
+
+@app.command()
+def report(
+    path: str,
+    with_llm: bool = typer.Option(False, "--with-llm"),
+    model: str | None = typer.Option(None, "--model"),
+    llm_max_files: int = typer.Option(10, "--llm-max-files"),
+    summary_max_files: int = typer.Option(12, "--summary-max-files"),
+    full_structure: bool = typer.Option(False, "--full-structure"),
+    include_tests: bool = typer.Option(False, "--include-tests"),
+    online: bool = typer.Option(True, "--online/--offline"),
+    osv_timeout_seconds: int = typer.Option(10, "--osv-timeout-seconds"),
+    security_scope: str = typer.Option("all", "--security-scope"),
+    output_format: str = typer.Option("both", "--output-format"),
+    json_out: str | None = typer.Option(None, "--json-out"),
+    markdown_out: str | None = typer.Option(None, "--markdown-out"),
+    # NEW deep profile options:
+    report_profile: str = typer.Option("standard", "--report-profile"),
+    detail_line_target: int = typer.Option(350, "--detail-line-target"),
+    security_lens: str = typer.Option("defensive-red-team", "--security-lens"),
+    as_json: bool = typer.Option(False, "--json", help="Print full JSON report to console."),
+) -> None:
+    if output_format not in {"json", "markdown", "both"}:
+        raise typer.BadParameter("--output-format must be one of: json, markdown, both")
+    if security_scope not in {"all", "runtime", "dev"}:
+        raise typer.BadParameter("--security-scope must be one of: all, runtime, dev")
+    if osv_timeout_seconds <= 0:
+        raise typer.BadParameter("--osv-timeout-seconds must be > 0")
+
+    if report_profile not in {"standard", "deep"}:
+        raise typer.BadParameter("--report-profile must be standard|deep")
+    if security_lens not in {"defensive-red-team", "architecture", "compliance"}:
+        raise typer.BadParameter("--security-lens must be defensive-red-team|architecture|compliance")
+
+    if report_profile == "deep":
+        detail_line_target = _clamp_detail_line_target(detail_line_target)
+        # deep implies structure analysis (rendering needs it)
+        full_structure = True
+
+    report_json_default, report_md_default = _resolve_report_artifact_paths(path)
+
+    out_json = _resolve_out_path(json_out, report_json_default, suffix=".json")
+    out_md = _resolve_out_path(markdown_out, report_md_default, suffix=".md")
+
+    logger.info(
+        "Report command started",
+        extra={
+            "path": path,
+            "with_llm": with_llm,
+            "model_override": model,
+            "llm_max_files": llm_max_files,
+            "summary_max_files": summary_max_files,
+            "full_structure": full_structure,
+            "include_tests": include_tests,
+            "online": online,
+            "osv_timeout_seconds": osv_timeout_seconds,
+            "security_scope": security_scope,
+            "output_format": output_format,
+            "report_profile": report_profile,
+            "detail_line_target": detail_line_target,
+            "security_lens": security_lens,
+            "out_json": str(out_json),
+            "out_md": str(out_md),
+        },
+    )
+
+    service = build_report_service(use_llm=with_llm, model_override=model, include_tests=include_tests)
+
+    report_obj = service.generate(
+        target_path=path,
+        with_llm=with_llm,
+        model_override=model,
+        llm_max_files=llm_max_files,
+        summary_max_files=summary_max_files,
+        full_structure=full_structure,
+        online=online,
+        osv_timeout_seconds=osv_timeout_seconds,
+        security_scope=security_scope,
+        report_profile=report_profile,
+        detail_line_target=detail_line_target,
+        security_lens=security_lens,
+    )
+
+    payload = report_obj.to_dict()
+    markdown = service.render_markdown(report_obj)
+
+    # Write artifacts
+    if output_format in {"json", "both"}:
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if output_format in {"markdown", "both"}:
+        out_md.parent.mkdir(parents=True, exist_ok=True)
+        out_md.write_text(markdown, encoding="utf-8")
+
+    # Console behavior
+    warning_count = len(getattr(report_obj, "warnings", []) or [])
+    if as_json:
+        console.print_json(json.dumps(payload))
+    else:
+        lines = [
+            "Report generated.",
+            f"- JSON: {str(out_json) if output_format in {'json','both'} else '(skipped)'}",
+            f"- Markdown: {str(out_md) if output_format in {'markdown','both'} else '(skipped)'}",
+            f"- Profile: {report_profile}",
+            f"- Warnings: {warning_count}",
+        ]
+        _emit_text("\n".join(lines), output_file=_resolve_output_file(path))
+
+    logger.info("Report command completed", extra={"warnings": warning_count})

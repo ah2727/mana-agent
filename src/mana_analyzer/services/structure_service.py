@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
+from typing import Any
 from mana_analyzer.analysis.models import (
     ClassDescriptor,
     ExportDescriptor,
@@ -71,7 +71,11 @@ class StructureService:
         files = iter_source_files(project_root)
         if not self.include_tests:
             files = [item for item in files if "tests" not in item.parts and "__tests__" not in item.parts]
-
+        all_file_paths = []
+        for file_path in files:
+            module_path = str(file_path.relative_to(project_root)).replace("\\", "/")
+            all_file_paths.append(module_path)
+        all_file_paths = sorted(set(all_file_paths))
         modules: list[ModuleDescriptor] = []
         exports: list[ExportDescriptor] = []
         data_structures: list[ClassDescriptor] = []
@@ -148,6 +152,16 @@ class StructureService:
             directories=self._list_directories(project_root),
             files_by_language=files_by_language,
             language_counts=language_counts,
+            files=all_file_paths,
+            file_counts={"total_files": len(all_file_paths)},
+            discovery_stats={
+                "scope": "source+config",
+                "excluded_dir_names": sorted(EXCLUDED_DIRS),
+                "ignored_patterns_applied": [
+                    name for name in [".gitignore", ".aiignore"] if (project_root / name).exists()
+                ],
+                "include_tests": self.include_tests,
+            },
         )
 
     @staticmethod
@@ -204,3 +218,64 @@ class StructureService:
         for capability in report.llm_capabilities:
             lines.append(f"- `{capability}`")
         return "\n".join(lines)
+
+    def render_file_tree_markdown(self, files: list[str]) -> str:
+        tree: dict[str, Any] = {}
+        for p in files:
+            parts = [x for x in p.replace("\\", "/").split("/") if x]
+            cur = tree
+            for part in parts[:-1]:
+                cur = cur.setdefault(part + "/", {})
+            cur.setdefault(parts[-1], None)
+
+        lines: list[str] = ["```text"]
+
+        def walk(node: dict[str, Any], prefix: str = "") -> None:
+            keys = sorted(node.keys(), key=lambda k: (0 if k.endswith("/") else 1, k))
+            for i, k in enumerate(keys):
+                last = i == len(keys) - 1
+                branch = "└── " if last else "├── "
+                lines.append(prefix + branch + k.rstrip("/"))
+                child = node[k]
+                if isinstance(child, dict):
+                    ext = "    " if last else "│   "
+                    walk(child, prefix + ext)
+
+        walk(tree)
+        lines.append("```")
+        return "\n".join(lines)
+
+    def compute_hotspots(self, report: ProjectStructureReport, top_n: int = 15) -> list[dict[str, Any]]:
+        # Export counts per module
+        exports_by_module: dict[str, int] = {}
+        for e in report.exports:
+            exports_by_module[e.source_module] = exports_by_module.get(e.source_module, 0) + 1
+
+        # Command presence is global list; we can treat modules with many commands as higher signal only if we can map them.
+        # Since commands are strings, we do not attribute them to files (v1 deterministic simplification).
+
+        scored: list[tuple[str, int, str]] = []
+        for m in report.modules:
+            imports_n = len(m.imports)
+            funcs_n = len(m.functions)
+            classes_n = len(m.classes)
+            exports_n = exports_by_module.get(m.module_path, 0)
+
+            score = imports_n + funcs_n + (2 * classes_n) + (2 * exports_n)
+            reason_parts = []
+            if imports_n:
+                reason_parts.append(f"imports={imports_n}")
+            if exports_n:
+                reason_parts.append(f"exports={exports_n}")
+            if funcs_n:
+                reason_parts.append(f"functions={funcs_n}")
+            if classes_n:
+                reason_parts.append(f"classes={classes_n}")
+
+            reason = " / ".join(reason_parts) if reason_parts else "structure present"
+            scored.append((m.module_path, score, reason))
+
+        scored.sort(key=lambda t: (-t[1], t[0]))
+        top = scored[:top_n] if scored else [(p, 1, "file present") for p in (report.files[:top_n] if report.files else [])]
+
+        return [{"path": path, "score": int(score), "reason": reason} for path, score, reason in top]

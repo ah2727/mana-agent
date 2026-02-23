@@ -11,5 +11,6 @@ venv/
 build/
 dist/
 .mypy_cache/
+.mana_logs/
 .mana_index/
 logs/

@@ -9,6 +9,7 @@ from pathlib import Path
 from mana_analyzer.analysis.models import DependencyEdge, DependencyGraphReport
 from mana_analyzer.utils.io import iter_source_files, language_for_path
 from mana_analyzer.utils.project_discovery import discover_subprojects
+from mana_analyzer.models import DependencyPackageRef
 
 PYTHON_EXTENSIONS = {".py"}
 JS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
@@ -31,6 +32,43 @@ FRAMEWORK_SIGNALS = {
     "langchain": "LangChain",
 }
 
+_EXACT_SEMVER_RE = re.compile(r"^\s*v?(\d+\.\d+\.\d+(?:[.\-+][0-9A-Za-z.\-+]+)?)\s*$")
+_PY_EQ_RE = re.compile(r"^\s*==\s*v?(\d+\.\d+\.\d+(?:[.\-+][0-9A-Za-z.\-+]+)?)\s*$")
+
+
+def _detect_exact_version(raw: str) -> str | None:
+    if not raw:
+        return None
+    s = raw.strip()
+    m = _PY_EQ_RE.match(s)
+    if m:
+        return m.group(1)
+    # common exact pins in manifests: "1.2.3" or "v1.2.3"
+    m = _EXACT_SEMVER_RE.match(s)
+    if m:
+        return m.group(1)
+    return None
+
+_REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)")
+
+
+def _parse_python_req_line(raw: str) -> tuple[str, str]:
+    """
+    Input example: "requests>=2.0,<3" or "fastapi==0.110.0; python_version>='3.10'"
+    Returns (name, version_spec_raw) where version_spec_raw is everything after name up to ';' (trimmed).
+    If no spec part found, version_spec_raw="".
+    """
+    s = raw.strip()
+    if not s:
+        return "", ""
+    # strip environment markers for v1
+    left = s.split(";", 1)[0].strip()
+    m = _REQ_NAME_RE.match(left)
+    if not m:
+        return "", ""
+    name = m.group(1)
+    spec = left[len(name):].strip()
+    return _normalize_dep_name(name), spec
 
 def _normalize_dep_name(raw: str) -> str:
     item = raw.strip().lower()
@@ -196,7 +234,347 @@ class DependencyService:
         source = path.read_text(encoding="utf-8", errors="ignore")
         return re.findall(r"(?:from|require\()\s*['\"]([^'\"]+)['\"]", source)
 
+    @staticmethod
+    def _inventory_pyproject(path: Path) -> tuple[list[DependencyPackageRef], list[DependencyPackageRef]]:
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        runtime_items: list[DependencyPackageRef] = []
+        dev_items: list[DependencyPackageRef] = []
+
+        # PEP 621: project.dependencies = ["name>=x", ...]
+        project = payload.get("project", {})
+        for raw in project.get("dependencies", []) or []:
+            name, spec = _parse_python_req_line(str(raw))
+            if not name or name == "python":
+                continue
+            runtime_items.append(
+                DependencyPackageRef(
+                    name=name,
+                    ecosystem="PyPI",
+                    scope="runtime",
+                    manifest_path=str(path),
+                    package_manager="pip",
+                    version_spec_raw=spec,
+                    exact_version=_detect_exact_version(spec),
+                )
+            )
+
+        # optional-dependencies.dev = ["name==x", ...]
+        optional = project.get("optional-dependencies", {}) or {}
+        for raw in (optional.get("dev") or []):
+            name, spec = _parse_python_req_line(str(raw))
+            if not name or name == "python":
+                continue
+            dev_items.append(
+                DependencyPackageRef(
+                    name=name,
+                    ecosystem="PyPI",
+                    scope="dev",
+                    manifest_path=str(path),
+                    package_manager="pip",
+                    version_spec_raw=spec,
+                    exact_version=_detect_exact_version(spec),
+                )
+            )
+
+        # Poetry: tool.poetry.dependencies = {name: "^1.2.3", ...}
+        poetry = (payload.get("tool") or {}).get("poetry") or {}
+        for name, val in (poetry.get("dependencies") or {}).items():
+            n = _normalize_dep_name(str(name))
+            if not n or n == "python":
+                continue
+            # v1: only string versions become version_spec_raw; tables become package-only
+            spec = str(val).strip() if isinstance(val, str) else ""
+            runtime_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="PyPI",
+                    scope="runtime",
+                    manifest_path=str(path),
+                    package_manager="pip",
+                    version_spec_raw=spec,
+                    exact_version=_detect_exact_version(spec),
+                )
+            )
+
+        poetry_dev = ((poetry.get("group") or {}).get("dev") or {}).get("dependencies") or {}
+        for name, val in poetry_dev.items():
+            n = _normalize_dep_name(str(name))
+            if not n or n == "python":
+                continue
+            spec = str(val).strip() if isinstance(val, str) else ""
+            dev_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="PyPI",
+                    scope="dev",
+                    manifest_path=str(path),
+                    package_manager="pip",
+                    version_spec_raw=spec,
+                    exact_version=_detect_exact_version(spec),
+                )
+            )
+
+        return runtime_items, dev_items
+
+    @staticmethod
+    def _inventory_requirements(path: Path) -> list[DependencyPackageRef]:
+        items: list[DependencyPackageRef] = []
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or s.startswith("-"):
+                continue
+            name, spec = _parse_python_req_line(s)
+            if not name:
+                continue
+            items.append(
+                DependencyPackageRef(
+                    name=name,
+                    ecosystem="PyPI",
+                    scope="runtime",
+                    manifest_path=str(path),
+                    package_manager="pip",
+                    version_spec_raw=spec,
+                    exact_version=_detect_exact_version(spec),
+                )
+            )
+        return items
+
+    @staticmethod
+    def _inventory_pipfile(path: Path) -> tuple[list[DependencyPackageRef], list[DependencyPackageRef]]:
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        runtime_items: list[DependencyPackageRef] = []
+        dev_items: list[DependencyPackageRef] = []
+
+        for name, val in (payload.get("packages") or {}).items():
+            n = _normalize_dep_name(str(name))
+            spec = str(val).strip() if isinstance(val, str) else ""
+            runtime_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="PyPI",
+                    scope="runtime",
+                    manifest_path=str(path),
+                    package_manager="pip",
+                    version_spec_raw=spec,
+                    exact_version=_detect_exact_version(spec),
+                )
+            )
+
+        for name, val in (payload.get("dev-packages") or {}).items():
+            n = _normalize_dep_name(str(name))
+            spec = str(val).strip() if isinstance(val, str) else ""
+            dev_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="PyPI",
+                    scope="dev",
+                    manifest_path=str(path),
+                    package_manager="pip",
+                    version_spec_raw=spec,
+                    exact_version=_detect_exact_version(spec),
+                )
+            )
+
+        return runtime_items, dev_items
+
+    @staticmethod
+    def _inventory_package_json(path: Path) -> tuple[list[DependencyPackageRef], list[DependencyPackageRef]]:
+        payload = _read_json(path)
+        runtime_items: list[DependencyPackageRef] = []
+        dev_items: list[DependencyPackageRef] = []
+
+        for name, spec in (payload.get("dependencies") or {}).items():
+            n = _normalize_dep_name(str(name))
+            raw = str(spec).strip()
+            runtime_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="npm",
+                    scope="runtime",
+                    manifest_path=str(path),
+                    package_manager="npm",
+                    version_spec_raw=raw,
+                    exact_version=_detect_exact_version(raw),
+                )
+            )
+
+        for name, spec in (payload.get("devDependencies") or {}).items():
+            n = _normalize_dep_name(str(name))
+            raw = str(spec).strip()
+            dev_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="npm",
+                    scope="dev",
+                    manifest_path=str(path),
+                    package_manager="npm",
+                    version_spec_raw=raw,
+                    exact_version=_detect_exact_version(raw),
+                )
+            )
+
+        return runtime_items, dev_items
+
+    @staticmethod
+    def _inventory_cargo(path: Path) -> tuple[list[DependencyPackageRef], list[DependencyPackageRef]]:
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        runtime_items: list[DependencyPackageRef] = []
+        dev_items: list[DependencyPackageRef] = []
+
+        for name, val in (payload.get("dependencies") or {}).items():
+            n = _normalize_dep_name(str(name))
+            spec = str(val).strip() if isinstance(val, str) else ""
+            runtime_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="crates.io",
+                    scope="runtime",
+                    manifest_path=str(path),
+                    package_manager="cargo",
+                    version_spec_raw=spec,
+                    exact_version=_detect_exact_version(spec),
+                )
+            )
+
+        for name, val in (payload.get("dev-dependencies") or {}).items():
+            n = _normalize_dep_name(str(name))
+            spec = str(val).strip() if isinstance(val, str) else ""
+            dev_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="crates.io",
+                    scope="dev",
+                    manifest_path=str(path),
+                    package_manager="cargo",
+                    version_spec_raw=spec,
+                    exact_version=_detect_exact_version(spec),
+                )
+            )
+
+        return runtime_items, dev_items
+
+    @staticmethod
+    def _inventory_go_mod(path: Path) -> list[DependencyPackageRef]:
+        items: list[DependencyPackageRef] = []
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("module ", "go ", "(", ")", "//")):
+                continue
+            # lines in require blocks: "github.com/x/y v1.2.3"
+            parts = stripped.split()
+            if len(parts) >= 2 and "." in parts[0]:
+                name = _normalize_dep_name(parts[0])
+                ver = parts[1].strip()
+                items.append(
+                    DependencyPackageRef(
+                        name=name,
+                        ecosystem="Go",
+                        scope="runtime",
+                        manifest_path=str(path),
+                        package_manager="go",
+                        version_spec_raw=ver,
+                        exact_version=_detect_exact_version(ver),
+                    )
+                )
+        return items
+
+    @staticmethod
+    def _inventory_pubspec(path: Path) -> tuple[list[DependencyPackageRef], list[DependencyPackageRef]]:
+        runtime: list[DependencyPackageRef] = []
+        dev: list[DependencyPackageRef] = []
+        section = ""
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped in {"dependencies:", "dev_dependencies:"}:
+                section = stripped[:-1]
+                continue
+            if section and ":" in stripped and not stripped.startswith("-"):
+                name, spec = stripped.split(":", 1)
+                n = _normalize_dep_name(name)
+                raw = spec.strip().strip("'").strip('"')
+                if not n:
+                    continue
+                item = DependencyPackageRef(
+                    name=n,
+                    ecosystem="Pub",
+                    scope=("runtime" if section == "dependencies" else "dev"),
+                    manifest_path=str(path),
+                    package_manager="pub",
+                    version_spec_raw=raw,
+                    exact_version=_detect_exact_version(raw),
+                )
+                (runtime if section == "dependencies" else dev).append(item)
+        return runtime, dev
+
+    @staticmethod
+    def _inventory_composer(path: Path) -> tuple[list[DependencyPackageRef], list[DependencyPackageRef]]:
+        payload = _read_json(path)
+        runtime_items: list[DependencyPackageRef] = []
+        dev_items: list[DependencyPackageRef] = []
+        for name, spec in (payload.get("require") or {}).items():
+            n = _normalize_dep_name(str(name))
+            raw = str(spec).strip()
+            runtime_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="Packagist",
+                    scope="runtime",
+                    manifest_path=str(path),
+                    package_manager="composer",
+                    version_spec_raw=raw,
+                    exact_version=_detect_exact_version(raw),
+                )
+            )
+        for name, spec in (payload.get("require-dev") or {}).items():
+            n = _normalize_dep_name(str(name))
+            raw = str(spec).strip()
+            dev_items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="Packagist",
+                    scope="dev",
+                    manifest_path=str(path),
+                    package_manager="composer",
+                    version_spec_raw=raw,
+                    exact_version=_detect_exact_version(raw),
+                )
+            )
+        return runtime_items, dev_items
+
+    @staticmethod
+    def _inventory_gemfile(path: Path) -> list[DependencyPackageRef]:
+        # v1: name-only, version might exist but is diverse; leave package-only
+        items: list[DependencyPackageRef] = []
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("gem "):
+                continue
+            match = re.search(r"gem\s+['\"]([^'\"]+)['\"]", stripped)
+            if not match:
+                continue
+            n = _normalize_dep_name(match.group(1))
+            if not n:
+                continue
+            items.append(
+                DependencyPackageRef(
+                    name=n,
+                    ecosystem="RubyGems",
+                    scope="runtime",
+                    manifest_path=str(path),
+                    package_manager="gem",
+                    version_spec_raw="",
+                    exact_version=None,
+                )
+            )
+        return items
+    
     def _manifest_deps(self, manifest: Path) -> tuple[list[str], list[str]]:
+        """
+        Legacy dependency name-only parser used by analyze().
+        Keep this unchanged so DependencyService.analyze() keeps working.
+        """
         if manifest.name == "pyproject.toml":
             return self._parse_pyproject(manifest)
         if manifest.name.startswith("requirements"):
@@ -217,6 +595,28 @@ class DependencyService:
             return self._parse_go_mod(manifest)
         if manifest.name == "Cargo.toml":
             return self._parse_cargo(manifest)
+        return [], []
+    
+    def _manifest_inventory(self, manifest: Path) -> tuple[list[DependencyPackageRef], list[DependencyPackageRef]]:
+        if manifest.name == "pyproject.toml":
+            return self._inventory_pyproject(manifest)
+        if manifest.name.startswith("requirements"):
+            return self._inventory_requirements(manifest), []
+        if manifest.name == "Pipfile":
+            return self._inventory_pipfile(manifest)
+        if manifest.name == "package.json":
+            return self._inventory_package_json(manifest)
+        if manifest.name == "pubspec.yaml":
+            return self._inventory_pubspec(manifest)
+        if manifest.name == "Cargo.toml":
+            return self._inventory_cargo(manifest)
+        if manifest.name == "go.mod":
+            return self._inventory_go_mod(manifest), []
+        if manifest.name == "composer.json":
+            return self._inventory_composer(manifest)
+        if manifest.name == "Gemfile":
+            return self._inventory_gemfile(manifest), []
+        # setup.py: too messy in v1, we keep name-only via analyze() graph; inventory skips it (warn upstream if desired)
         return [], []
 
     @staticmethod
@@ -339,3 +739,36 @@ class DependencyService:
             manifests=sorted(str(item.relative_to(root)) for item in manifests),
             languages=self._detect_languages(files),
         )
+
+    def collect_inventory(self, target_path: str | Path) -> list[DependencyPackageRef]:
+        root = Path(target_path).resolve()
+        if root.is_file():
+            root = root.parent
+
+        subprojects = discover_subprojects(root)
+
+        items: list[DependencyPackageRef] = []
+        for subproject in subprojects:
+            for manifest in subproject.manifest_paths:
+                runtime, dev = self._manifest_inventory(manifest)
+
+                # make manifest_path relative to the root for report stability
+                for ref in runtime:
+                    ref.manifest_path = str(manifest.relative_to(root))
+                for ref in dev:
+                    ref.manifest_path = str(manifest.relative_to(root))
+
+                items.extend(runtime)
+                items.extend(dev)
+
+        # Deduplicate per (ecosystem, name, scope, manifest_path, version_spec_raw)
+        seen: set[tuple[str, str, str, str, str]] = set()
+        deduped: list[DependencyPackageRef] = []
+        for it in items:
+            key = (it.ecosystem, it.name, it.scope, it.manifest_path, it.version_spec_raw)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(it)
+
+        return sorted(deduped, key=lambda d: (d.ecosystem, d.name, d.scope, d.manifest_path))

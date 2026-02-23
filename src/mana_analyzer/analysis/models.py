@@ -181,12 +181,26 @@ class ProjectStructureReport:
     data_structures: list[ClassDescriptor]
     commands: list[str]
     llm_capabilities: list[str]
+
     subprojects: list[SubprojectReport] = field(default_factory=list)
     directories: list[str] = field(default_factory=list)
     files_by_language: dict[str, list[str]] = field(default_factory=dict)
     language_counts: dict[str, int] = field(default_factory=dict)
+    files: list[str] = field(default_factory=list)
+    file_counts: dict[str, int] = field(default_factory=dict)
+    discovery_stats: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        def _convert(x: Any) -> Any:
+            if isinstance(x, list):
+                return [_convert(i) for i in x]
+            if isinstance(x, dict):
+                return {k: _convert(v) for k, v in x.items()}
+            # Convert objects that expose to_dict()
+            if hasattr(x, "to_dict") and callable(getattr(x, "to_dict")):
+                return x.to_dict()
+            return x
+
         return {
             "project_root": self.project_root,
             "frameworks": self.frameworks,
@@ -197,17 +211,19 @@ class ProjectStructureReport:
             "tech_stack": self.tech_stack,
             "dependencies_runtime": self.dependencies_runtime,
             "dependencies_dev": self.dependencies_dev,
-            "modules": [item.to_dict() for item in self.modules],
-            "exports": [item.to_dict() for item in self.exports],
-            "data_structures": [item.to_dict() for item in self.data_structures],
+            "modules": _convert(self.modules),
+            "exports": _convert(self.exports),
+            "data_structures": _convert(self.data_structures),
             "commands": self.commands,
             "llm_capabilities": self.llm_capabilities,
-            "subprojects": [item.to_dict() for item in self.subprojects],
+            "subprojects": _convert(self.subprojects),
             "directories": self.directories,
             "files_by_language": self.files_by_language,
             "language_counts": self.language_counts,
+            "files": self.files,
+            "file_counts": self.file_counts,
+            "discovery_stats": self.discovery_stats,
         }
-
 
 @dataclass(slots=True)
 class DependencyEdge:
