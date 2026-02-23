@@ -12,3 +12,4 @@ build/
 dist/
 .mypy_cache/
 .mana_index/
+logs/
