@@ -6,7 +6,7 @@ from time import perf_counter
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 
 from mana_analyzer.analysis.models import Finding
 from mana_analyzer.llm.prompts import ANALYZE_HUMAN_TEMPLATE, ANALYZE_SYSTEM_PROMPT

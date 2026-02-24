@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS
 
 from mana_analyzer.analysis.models import CodeChunk, SearchHit
 from mana_analyzer.utils.io import ensure_dir

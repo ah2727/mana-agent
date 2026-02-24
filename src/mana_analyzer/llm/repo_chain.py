@@ -5,9 +5,10 @@ import logging
 from pathlib import Path
 from time import perf_counter
 from typing import Any
-
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.chat_models import ChatOpenAI
+
+from mana_analyzer.llm.prompts import DEEP_FLOW_SYSTEM_PROMPT, DEEP_FLOW_HUMAN_TEMPLATE
+from langchain_openai import ChatOpenAI
 
 from mana_analyzer.llm.run_logger import LlmRunLogger
 
@@ -161,6 +162,39 @@ class RepositoryMultiChain:
             }
         )
         return summary, symbols
+
+
+    def synthesize_deep_flow_analysis(
+        self,
+        *,
+        dependency_report,
+        structure_summary: dict,
+        findings_summary: dict,
+        security_summary: dict,
+        sampled_file_summaries: list[dict],
+        line_target: int = 350,
+        security_lens: str = "defensive-red-team",
+    ) -> str:
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", DEEP_FLOW_SYSTEM_PROMPT),
+                ("human", DEEP_FLOW_HUMAN_TEMPLATE),
+            ]
+        )
+
+        chain = prompt | self.llm  # فرض: RepositoryMultiChain مثل AnalyzeChain یک self.llm دارد
+        response = chain.invoke(
+            {
+                "security_lens": security_lens,
+                "line_target": line_target,
+                "dependency_report_json": json.dumps(dependency_report.to_dict() if hasattr(dependency_report, "to_dict") else dependency_report),
+                "structure_summary_json": json.dumps(structure_summary),
+                "findings_summary_json": json.dumps(findings_summary),
+                "security_summary_json": json.dumps(security_summary),
+                "sampled_file_summaries_json": json.dumps(sampled_file_summaries),
+            }
+        )
+        return str(response.content).strip()
 
     def synthesize_architecture(self, dependency_report: dict[str, Any], file_summaries: list[dict[str, Any]]) -> tuple[str, str]:
         compact_dependency_report = self._compact_dependency_report(dependency_report)

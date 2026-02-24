@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from mana_analyzer.models import (
     ProjectAuditReport,
@@ -34,6 +35,74 @@ def _safe_version_string() -> str:
         return "dev"
 
 
+def _find_project_root(start: Path) -> Path:
+    """
+    Find a reasonable project root by walking upwards until a marker file/dir is found.
+    Markers: pyproject.toml, setup.cfg, requirements.txt, .git
+    If none found, return the original directory.
+    """
+    markers_files = {"pyproject.toml", "setup.cfg", "requirements.txt"}
+    markers_dirs = {".git"}
+
+    cur = start.resolve()
+    if cur.is_file():
+        cur = cur.parent
+
+    # include current and parents
+    for candidate in [cur, *cur.parents]:
+        try:
+            # file markers
+            for mf in markers_files:
+                if (candidate / mf).exists():
+                    return candidate
+            # dir markers
+            for md in markers_dirs:
+                if (candidate / md).exists():
+                    return candidate
+        except Exception:
+            # ignore permission issues and keep walking
+            pass
+
+    return cur
+
+
+@dataclass(frozen=True)
+class _DepsBundle:
+    deps_graph: Any
+    inventory: list[Any]
+    inventory_runtime: list[Any]
+    inventory_dev: list[Any]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class _FindingsBundle:
+    static_findings: list[Any]
+    llm_findings: list[Any]
+    merged_findings: list[Any]
+    finding_summary: FindingSummary
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class _StructureBundle:
+    structure_report: Any | None
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class _SecurityBundle:
+    security_report: Any
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class _DeepBundle:
+    file_structure_payload: FileStructureSummary | None
+    flow_payload: FlowAnalysis | None
+    warnings: list[str]
+
+
 class ReportService:
     def __init__(
         self,
@@ -52,6 +121,9 @@ class ReportService:
         self.structure_service = structure_service
         self.vulnerability_service = vulnerability_service
 
+    # ---------------------------
+    # Public API
+    # ---------------------------
     def generate(
         self,
         *,
@@ -74,177 +146,75 @@ class ReportService:
         if security_lens not in {"defensive-red-team", "architecture", "compliance"}:
             raise ValueError("security_lens must be defensive-red-team|architecture|compliance")
 
-        # Deep implies structure and clamps the target size
         effective_full_structure = full_structure or (report_profile == "deep")
         if report_profile == "deep":
-            if detail_line_target < 300:
-                detail_line_target = 300
-            elif detail_line_target > 400:
-                detail_line_target = 400
+            detail_line_target = self._clamp(detail_line_target, lo=300, hi=400)
+
+        root = Path(target_path).resolve()
+        project_root = _find_project_root(root)
 
         warnings: list[str] = []
-        root = Path(target_path).resolve()
-        project_root = root if root.is_dir() else root.parent
 
-        # Dependencies / tech
-        deps_graph = self.dependency_service.analyze(str(project_root))
+        # Dependencies / inventory
+        deps_bundle = self._build_dependencies(project_root)
+        warnings.extend(deps_bundle.warnings)
 
-        # Version-aware direct deps inventory
-        try:
-            inventory = self.dependency_service.collect_inventory(str(project_root))
-        except Exception as exc:
-            inventory = []
-            warnings.append(f"collect_inventory failed: {exc}")
-
-        inventory_runtime = [d for d in inventory if d.scope == "runtime"]
-        inventory_dev = [d for d in inventory if d.scope == "dev"]
-
-        # Static findings (Python-only in v1)
-        static_findings = self.analyze_service.analyze(str(project_root))
-
-        # Optional LLM findings
-        llm_findings = []
-        if with_llm and self.llm_analyze_service is not None:
-            try:
-                llm_findings = self.llm_analyze_service.analyze(
-                    str(project_root),
-                    static_findings=static_findings,
-                    max_files=llm_max_files,
-                )
-            except Exception as exc:
-                warnings.append(f"LLM analyze failed: {exc}")
-
-        merged_findings = list(static_findings) + list(llm_findings)
+        # Static + optional LLM findings
+        findings_bundle = self._build_findings(
+            project_root,
+            with_llm=with_llm,
+            model_override=model_override,
+            llm_max_files=llm_max_files,
+        )
+        warnings.extend(findings_bundle.warnings)
 
         # Describe summary (architecture + file summaries)
-        describe_report = self.describe_service.describe(
-            str(project_root),
-            max_files=summary_max_files,
-            include_functions=False,
-            use_llm=with_llm,
+        describe_report = self._build_describe(
+            project_root,
+            summary_max_files=summary_max_files,
+            with_llm=with_llm,
+            model_override=model_override,
         )
 
-        # Structure payload (forced for deep)
-        structure_report = None
-        if effective_full_structure:
-            try:
-                structure_report = self.structure_service.analyze_project(str(project_root))
-            except Exception as exc:
-                warnings.append(f"StructureService failed: {exc}")
-                structure_report = None
+        # Structure payload
+        structure_bundle = self._build_structure(project_root, enabled=effective_full_structure)
+        warnings.extend(structure_bundle.warnings)
 
-        # OSV scan (graceful)
-        security_report = self.vulnerability_service.scan_dependencies(
-            inventory,
+        # OSV scan
+        security_bundle = self._build_security(
+            inventory=deps_bundle.inventory,
             online=online,
-            timeout_seconds=osv_timeout_seconds,
-            scope=security_scope,
+            osv_timeout_seconds=osv_timeout_seconds,
+            security_scope=security_scope,
         )
-        warnings.extend(security_report.warnings)
-
-        # Summary counts
-        finding_summary = FindingSummary.from_findings(static_findings, llm_findings, merged_findings)
+        warnings.extend(security_bundle.warnings)
 
         # Deep payloads (additive)
-        file_structure_payload: FileStructureSummary | None = None
-        flow_payload: FlowAnalysis | None = None
-
-        if report_profile == "deep":
-            if structure_report is None:
-                warnings.append("Deep profile requested but structure analysis is unavailable; falling back to sampled file summaries.")
-            else:
-                # Build file_structure from StructureService inventory
-                files = getattr(structure_report, "files", []) or []
-                try:
-                    tree_md = self.structure_service.render_file_tree_markdown(files)
-                except Exception as exc:
-                    tree_md = ""
-                    warnings.append(f"Failed to render file tree: {exc}")
-
-                language_counts = getattr(structure_report, "language_counts", {}) or {}
-                try:
-                    hotspots_raw = self.structure_service.compute_hotspots(structure_report, top_n=15)
-                except Exception as exc:
-                    hotspots_raw = []
-                    warnings.append(f"Failed to compute hotspots: {exc}")
-
-                file_structure_payload = FileStructureSummary(
-                    scope="source+config",
-                    total_files=len(files),
-                    language_counts=language_counts,
-                    tree_markdown=tree_md,
-                    hotspots=[FileHotspot(**h) for h in hotspots_raw],
-                    exclusions=getattr(structure_report, "discovery_stats", {}) or {},
-                )
-
-            # Flow analysis payload (LLM or deterministic fallback)
-            flow_warnings: list[str] = []
-            mode = "local-fallback"
-            content = ""
-
-            llm_chain = getattr(self.describe_service, "llm_chain", None)
-            if with_llm and llm_chain is not None and hasattr(llm_chain, "synthesize_deep_flow_analysis"):
-                try:
-                    mode = "llm"
-                    sampled = (describe_report.to_dict().get("descriptions") or [])[:8]
-
-                    structure_summary = {
-                        "total_files": (file_structure_payload.total_files if file_structure_payload else 0),
-                        "language_counts": (file_structure_payload.language_counts if file_structure_payload else {}),
-                        "hotspots": [h.to_dict() for h in (file_structure_payload.hotspots if file_structure_payload else [])],
-                    }
-                    findings_summary = {
-                        "counts": finding_summary.counts,
-                        "top_rules": sorted(finding_summary.by_rule.items(), key=lambda kv: (-kv[1], kv[0]))[:15],
-                        "by_severity": finding_summary.by_severity,
-                    }
-
-                    content = llm_chain.synthesize_deep_flow_analysis(
-                        dependency_report=deps_graph,
-                        structure_summary=structure_summary,
-                        findings_summary=findings_summary,
-                        security_summary=security_report.to_dict(),
-                        sampled_file_summaries=sampled,
-                        line_target=detail_line_target,
-                        security_lens=security_lens,
-                    )
-                except Exception as exc:
-                    flow_warnings.append(f"LLM flow synthesis failed; fallback used: {exc}")
-                    mode = "local-fallback"
-                    content = ""
-
-            if not content.strip():
-                flow_warnings.append("Deep flow analysis generated via local fallback; may be shorter than target.")
-                content = self._render_local_fallback_flow_analysis(
-                    deps_report=deps_graph,
-                    structure_report=structure_report,
-                    describe_report=describe_report,
-                    security_lens=security_lens,
-                )
-
-            flow_payload = FlowAnalysis(
-                mode=mode,
-                line_target=detail_line_target,
-                security_lens=security_lens,
-                content_markdown=content,
-                warnings=flow_warnings,
-            )
-
-            # Add flow warnings to top-level warnings list (keeps behavior transparent)
-            warnings.extend(flow_warnings)
+        deep_bundle = self._build_deep_payloads(
+            report_profile=report_profile,
+            with_llm=with_llm,
+            detail_line_target=detail_line_target,
+            security_lens=security_lens,
+            deps_graph=deps_bundle.deps_graph,
+            finding_summary=findings_bundle.finding_summary,
+            describe_report=describe_report,
+            structure_report=structure_bundle.structure_report,
+            security_report=security_bundle.security_report,
+        )
+        warnings.extend(deep_bundle.warnings)
 
         summary = ProjectReportSummary(
-            languages=deps_graph.languages,
-            frameworks=deps_graph.frameworks,
-            technologies=deps_graph.technologies,
+            languages=deps_bundle.deps_graph.languages,
+            frameworks=deps_bundle.deps_graph.frameworks,
+            technologies=deps_bundle.deps_graph.technologies,
             dependency_counts={
-                "runtime": len(deps_graph.runtime_dependencies),
-                "dev": len(deps_graph.dev_dependencies),
-                "inventory_total": len(inventory),
+                "runtime": len(deps_bundle.deps_graph.runtime_dependencies),
+                "dev": len(deps_bundle.deps_graph.dev_dependencies),
+                "inventory_total": len(deps_bundle.inventory),
             },
-            finding_counts=finding_summary.counts,
-            security_counts=security_report.compute_counts(),
-            status=self._derive_status(finding_summary, security_report, warnings),
+            finding_counts=findings_bundle.finding_summary.counts,
+            security_counts=security_bundle.security_report.compute_counts(),
+            status=self._derive_status(findings_bundle.finding_summary, security_bundle.security_report, warnings),
         )
 
         meta = ProjectReportMeta(
@@ -261,34 +231,260 @@ class ReportService:
             ],
         )
 
+        # Build the project_summary dict
+        project_summary: dict[str, Any] = {
+            "describe": describe_report.to_dict(),
+            "structure": structure_bundle.structure_report.to_dict() if structure_bundle.structure_report else None,
+            "file_structure": deep_bundle.file_structure_payload.to_dict() if deep_bundle.file_structure_payload else None,
+            "flow_analysis": deep_bundle.flow_payload.to_dict() if deep_bundle.flow_payload else None,
+        }
+
         return ProjectAuditReport(
             meta=meta,
             summary=summary,
-            project_summary={
-                "describe": describe_report.to_dict(),
-                "structure": structure_report.to_dict() if structure_report else None,
-                # DEEP: additive fields
-                "file_structure": file_structure_payload.to_dict() if file_structure_payload else None,
-                "flow_analysis": flow_payload.to_dict() if flow_payload else None,
-            },
+            project_summary=project_summary,
             dependencies={
-                "graph": deps_graph.to_dict(),
-                "inventory": [d.to_dict() for d in inventory],
+                "graph": deps_bundle.deps_graph.to_dict(),
+                "inventory": [d.to_dict() for d in deps_bundle.inventory],
                 "inventory_by_scope": {
-                    "runtime": [d.to_dict() for d in inventory_runtime],
-                    "dev": [d.to_dict() for d in inventory_dev],
+                    "runtime": [d.to_dict() for d in deps_bundle.inventory_runtime],
+                    "dev": [d.to_dict() for d in deps_bundle.inventory_dev],
                 },
             },
             findings={
-                "static_findings": [f.to_dict() for f in static_findings],
-                "llm_findings": [f.to_dict() for f in llm_findings],
-                "merged_findings": [f.to_dict() for f in merged_findings],
-                "by_rule": finding_summary.by_rule,
-                "by_severity": finding_summary.by_severity,
+                "static_findings": [f.to_dict() for f in findings_bundle.static_findings],
+                "llm_findings": [f.to_dict() for f in findings_bundle.llm_findings],
+                "merged_findings": [f.to_dict() for f in findings_bundle.merged_findings],
+                "by_rule": findings_bundle.finding_summary.by_rule,
+                "by_severity": findings_bundle.finding_summary.by_severity,
             },
-            security=security_report.to_dict(),
+            security=security_bundle.security_report.to_dict(),
             warnings=warnings,
         )
+
+    # ---------------------------
+    # Builders (refactor points)
+    # ---------------------------
+    def _build_dependencies(self, project_root: Path) -> _DepsBundle:
+        warnings: list[str] = []
+
+        deps_graph = self.dependency_service.analyze(str(project_root))
+
+        try:
+            inventory = self.dependency_service.collect_inventory(str(project_root))
+        except Exception as exc:
+            inventory = []
+            warnings.append(f"collect_inventory failed ({type(exc).__name__}): {exc}")
+
+        inventory_runtime = [d for d in inventory if getattr(d, "scope", None) == "runtime"]
+        inventory_dev = [d for d in inventory if getattr(d, "scope", None) == "dev"]
+
+        return _DepsBundle(
+            deps_graph=deps_graph,
+            inventory=inventory,
+            inventory_runtime=inventory_runtime,
+            inventory_dev=inventory_dev,
+            warnings=warnings,
+        )
+
+    def _build_findings(
+        self,
+        project_root: Path,
+        *,
+        with_llm: bool,
+        model_override: str | None,
+        llm_max_files: int,
+    ) -> _FindingsBundle:
+        warnings: list[str] = []
+
+        static_findings = self.analyze_service.analyze(str(project_root))
+
+        llm_findings: list[Any] = []
+        if with_llm and self.llm_analyze_service is not None:
+            try:
+                # If your LlmAnalyzeService supports a model override, pass it.
+                # If it doesn't, this kwarg will raise; we fall back gracefully.
+                try:
+                    llm_findings = self.llm_analyze_service.analyze(
+                        str(project_root),
+                        static_findings=static_findings,
+                        max_files=llm_max_files,
+                        model_override=model_override,
+                    )
+                except TypeError:
+                    llm_findings = self.llm_analyze_service.analyze(
+                        str(project_root),
+                        static_findings=static_findings,
+                        max_files=llm_max_files,
+                    )
+            except Exception as exc:
+                warnings.append(f"LLM analyze failed ({type(exc).__name__}): {exc}")
+                llm_findings = []
+
+        merged_findings = list(static_findings) + list(llm_findings)
+        finding_summary = FindingSummary.from_findings(static_findings, llm_findings, merged_findings)
+
+        return _FindingsBundle(
+            static_findings=list(static_findings),
+            llm_findings=list(llm_findings),
+            merged_findings=merged_findings,
+            finding_summary=finding_summary,
+            warnings=warnings,
+        )
+
+    def _build_describe(
+        self,
+        project_root: Path,
+        *,
+        summary_max_files: int,
+        with_llm: bool,
+        model_override: str | None,
+    ):
+        # If DescribeService supports model override, pass it; otherwise keep compatibility.
+        try:
+            return self.describe_service.describe(
+                str(project_root),
+                max_files=summary_max_files,
+                include_functions=False,
+                use_llm=with_llm,
+                model_override=model_override,
+            )
+        except TypeError:
+            return self.describe_service.describe(
+                str(project_root),
+                max_files=summary_max_files,
+                include_functions=False,
+                use_llm=with_llm,
+            )
+
+    def _build_structure(self, project_root: Path, *, enabled: bool) -> _StructureBundle:
+        warnings: list[str] = []
+        if not enabled:
+            return _StructureBundle(structure_report=None, warnings=warnings)
+
+        try:
+            structure_report = self.structure_service.analyze_project(str(project_root))
+            return _StructureBundle(structure_report=structure_report, warnings=warnings)
+        except Exception as exc:
+            warnings.append(f"StructureService failed ({type(exc).__name__}): {exc}")
+            return _StructureBundle(structure_report=None, warnings=warnings)
+
+    def _build_security(
+        self,
+        *,
+        inventory: list[Any],
+        online: bool,
+        osv_timeout_seconds: int,
+        security_scope: str,
+    ) -> _SecurityBundle:
+        warnings: list[str] = []
+
+        security_report = self.vulnerability_service.scan_dependencies(
+            inventory,
+            online=online,
+            timeout_seconds=osv_timeout_seconds,
+            scope=security_scope,
+        )
+        warnings.extend(getattr(security_report, "warnings", []) or [])
+        return _SecurityBundle(security_report=security_report, warnings=warnings)
+
+    def _build_deep_payloads(
+        self,
+        *,
+        report_profile: str,
+        with_llm: bool,
+        detail_line_target: int,
+        security_lens: str,
+        deps_graph: Any,
+        finding_summary: FindingSummary,
+        describe_report: Any,
+        structure_report: Any | None,
+        security_report: Any,
+    ) -> _DeepBundle:
+        warnings: list[str] = []
+
+        if report_profile != "deep":
+            return _DeepBundle(file_structure_payload=None, flow_payload=None, warnings=warnings)
+
+        # ✅ LLM is mandatory
+        if not with_llm:
+            raise ValueError("LLM-only mode: with_llm must be True for deep profile.")
+
+        llm_chain = getattr(self.describe_service, "llm_chain", None)
+        if llm_chain is None or not hasattr(llm_chain, "synthesize_deep_flow_analysis"):
+            raise RuntimeError("LLM-only mode: describe_service.llm_chain.synthesize_deep_flow_analysis is required.")
+
+        # ----- file structure payload (still best-effort; not LLM)
+        file_structure_payload: FileStructureSummary | None = None
+        if structure_report is not None:
+            files = getattr(structure_report, "files", []) or []
+            try:
+                tree_md = self.structure_service.render_file_tree_markdown(files)
+            except Exception:
+                tree_md = ""
+            language_counts = getattr(structure_report, "language_counts", {}) or {}
+            try:
+                hotspots_raw = self.structure_service.compute_hotspots(structure_report, top_n=15)
+            except Exception:
+                hotspots_raw = []
+
+            file_structure_payload = FileStructureSummary(
+                scope="source+config",
+                total_files=len(files),
+                language_counts=language_counts,
+                tree_markdown=tree_md,
+                hotspots=[FileHotspot(**h) for h in hotspots_raw],
+                exclusions=getattr(structure_report, "discovery_stats", {}) or {},
+            )
+
+        # ----- LLM flow synthesis (NO fallback)
+        sampled = (describe_report.to_dict().get("descriptions") or [])[:8]
+
+        structure_summary = {
+            "total_files": (file_structure_payload.total_files if file_structure_payload else 0),
+            "language_counts": (file_structure_payload.language_counts if file_structure_payload else {}),
+            "hotspots": [h.to_dict() for h in (file_structure_payload.hotspots if file_structure_payload else [])],
+            "tree_markdown": (file_structure_payload.tree_markdown if file_structure_payload else ""),
+        }
+        findings_summary = {
+            "counts": finding_summary.counts,
+            "top_rules": sorted(finding_summary.by_rule.items(), key=lambda kv: (-kv[1], kv[0]))[:15],
+            "by_severity": finding_summary.by_severity,
+        }
+
+        # If LLM errors, we fail hard (as requested)
+        content = llm_chain.synthesize_deep_flow_analysis(
+            dependency_report=deps_graph,
+            structure_summary=structure_summary,
+            findings_summary=findings_summary,
+            security_summary=security_report.to_dict(),
+            sampled_file_summaries=sampled,
+            line_target=detail_line_target,
+            security_lens=security_lens,
+        )
+
+        if not str(content).strip():
+            raise RuntimeError("LLM-only mode: synthesize_deep_flow_analysis returned empty content.")
+
+        flow_payload = FlowAnalysis(
+            mode="llm",
+            line_target=detail_line_target,
+            security_lens=security_lens,
+            content_markdown=content,
+            warnings=[],
+        )
+
+        return _DeepBundle(file_structure_payload=file_structure_payload, flow_payload=flow_payload, warnings=warnings)
+    # ---------------------------
+    # Helpers
+    # ---------------------------
+    @staticmethod
+    def _clamp(value: int, *, lo: int, hi: int) -> int:
+        if value < lo:
+            return lo
+        if value > hi:
+            return hi
+        return value
 
     def _derive_status(self, finding_summary: FindingSummary, security_report, warnings: list[str]) -> str:
         has_errors = finding_summary.counts.get("error", 0) > 0
@@ -302,12 +498,41 @@ class ReportService:
             return "warnings"
         return "ok"
 
-    def _render_local_fallback_flow_analysis(self, *, deps_report, structure_report, describe_report, security_lens: str) -> str:
+    def _render_local_fallback_flow_analysis(
+        self,
+        *,
+        deps_report: Any,
+        structure_report: Any | None,
+        describe_report: Any,
+        security_lens: str,
+        sampled_file_summaries: list[dict[str, Any]] | None = None,
+        file_tree_markdown: str = "",
+    ) -> str:
+        """
+        Local deterministic fallback. Includes sampled summaries (when available) and
+        respects the security_lens by adjusting headings and checklists.
+        """
+        sampled_file_summaries = sampled_file_summaries or []
+
+        lens_title = {
+            "defensive-red-team": "## System Flow & Attack Surface (Defensive Red-Team)",
+            "architecture": "## System Flow & Key Components (Architecture)",
+            "compliance": "## System Flow & Controls Overview (Compliance)",
+        }.get(security_lens, "## System Flow Overview")
+
         lines: list[str] = []
-        lines.append("## System Flow & Attack Surface (Defensive Red-Team)")
+        lines.append(lens_title)
         lines.append("")
         lines.append("> Local fallback synthesis (LLM disabled/unavailable). Defensive-only; no exploit instructions.")
         lines.append("")
+
+        # Include a file tree if available (deep mode attempted but structure missing)
+        if file_tree_markdown.strip():
+            lines.append("### File structure (if available)")
+            lines.append(file_tree_markdown.rstrip())
+            lines.append("")
+
+        # Observed system shape
         lines.append("### Observed system shape")
         lines.append(f"- Languages: {', '.join(getattr(deps_report, 'languages', []) or []) or 'unknown'}")
         lines.append(f"- Frameworks: {', '.join(getattr(deps_report, 'frameworks', []) or []) or 'none'}")
@@ -318,32 +543,66 @@ class ReportService:
             lines.append(f"- Source+config files: {len(getattr(structure_report, 'files', []) or [])}")
             lines.append(f"- Commands discovered: {len(getattr(structure_report, 'commands', []) or [])}")
         lines.append("")
-        lines.append("### Trust boundaries checklist")
-        lines.append("- Entry points: CLI commands, HTTP routes, job runners, webhook handlers")
-        lines.append("- Inputs: env/config, request payloads, filesystem reads, third-party callbacks")
-        lines.append("- Sinks: database writes, file writes, outbound network calls, template rendering")
-        lines.append("")
-        lines.append("### Defensive abuse paths (non-procedural)")
-        lines.append("- Input validation drift across multiple entrypoints")
-        lines.append("- Authorization gaps on privileged operations")
-        lines.append("- Secret exposure via logs/errors/config dumps")
-        lines.append("- Dependency risk: weak pinning, stale packages, supply-chain issues")
-        lines.append("")
-        lines.append("### Hardening priorities")
-        lines.append("1. Centralize authN/authZ and enforce deny-by-default for privileged actions.")
-        lines.append("2. Enforce schemas at edges; validate types and sizes; reject unexpected fields.")
-        lines.append("3. Add structured logging with redaction; add audit trails for sensitive actions.")
-        lines.append("4. Tighten dependency pinning and add CI auditing + SBOM generation.")
-        lines.append("5. Add monitoring for auth failures, spikes, unusual access patterns, and risky calls.")
-        lines.append("")
-        lines.append("### Verification checklist")
-        lines.append("- [ ] List all entrypoints and their input schemas")
-        lines.append("- [ ] Confirm authZ checks at every privileged boundary")
-        lines.append("- [ ] Confirm secrets are never logged")
-        lines.append("- [ ] Confirm rate limits / timeouts / size limits exist on external inputs")
-        lines.append("- [ ] Confirm dependency policy: updates, lockfile integrity, advisories")
+
+        # Sampled file summaries (fix: previously missing)
+        if sampled_file_summaries:
+            lines.append("### Sampled file summaries (fallback)")
+            for d in sampled_file_summaries[:12]:
+                fp = d.get("file_path", "unknown")
+                lang = d.get("language", "text")
+                summ = (d.get("summary", "") or "").strip()
+                if summ:
+                    lines.append(f"- `{fp}` ({lang}) — {summ}")
+                else:
+                    lines.append(f"- `{fp}` ({lang})")
+            lines.append("")
+
+        # Lens-specific guidance
+        if security_lens == "architecture":
+            lines.append("### Architecture checklist")
+            lines.append("- Identify entrypoints (CLI, HTTP handlers, workers) and their main responsibilities")
+            lines.append("- Trace core data flows (input → validation → business logic → persistence → output)")
+            lines.append("- Identify shared services (config, logging, database, messaging) and coupling points")
+            lines.append("- Identify failure modes (timeouts, retries, partial failures) and resiliency patterns")
+            lines.append("")
+        elif security_lens == "compliance":
+            lines.append("### Controls checklist (compliance-oriented)")
+            lines.append("- Access control: least privilege, separation of duties, audit logs for sensitive actions")
+            lines.append("- Data protection: encryption in transit/at rest, secret management, redaction policies")
+            lines.append("- SDLC: dependency pinning, vulnerability scanning, SBOM generation, change approvals")
+            lines.append("- Monitoring: alerting, incident response hooks, log retention, traceability")
+            lines.append("")
+        else:
+            lines.append("### Trust boundaries checklist")
+            lines.append("- Entry points: CLI commands, HTTP routes, job runners, webhook handlers")
+            lines.append("- Inputs: env/config, request payloads, filesystem reads, third-party callbacks")
+            lines.append("- Sinks: database writes, file writes, outbound network calls, template rendering")
+            lines.append("")
+            lines.append("### Defensive abuse paths (non-procedural)")
+            lines.append("- Input validation drift across multiple entrypoints")
+            lines.append("- Authorization gaps on privileged operations")
+            lines.append("- Secret exposure via logs/errors/config dumps")
+            lines.append("- Dependency risk: weak pinning, stale packages, supply-chain issues")
+            lines.append("")
+            lines.append("### Hardening priorities")
+            lines.append("1. Centralize authN/authZ and enforce deny-by-default for privileged actions.")
+            lines.append("2. Enforce schemas at edges; validate types and sizes; reject unexpected fields.")
+            lines.append("3. Add structured logging with redaction; add audit trails for sensitive actions.")
+            lines.append("4. Tighten dependency pinning and add CI auditing + SBOM generation.")
+            lines.append("5. Add monitoring for auth failures, spikes, unusual access patterns, and risky calls.")
+            lines.append("")
+            lines.append("### Verification checklist")
+            lines.append("- [ ] List all entrypoints and their input schemas")
+            lines.append("- [ ] Confirm authZ checks at every privileged boundary")
+            lines.append("- [ ] Confirm secrets are never logged")
+            lines.append("- [ ] Confirm rate limits / timeouts / size limits exist on external inputs")
+            lines.append("- [ ] Confirm dependency policy: updates, lockfile integrity, advisories")
+
         return "\n".join(lines)
 
+    # ---------------------------
+    # Markdown Rendering
+    # ---------------------------
     def render_markdown(self, report: ProjectAuditReport) -> str:
         lines: list[str] = []
         lines.append("# Project Audit Report")
@@ -395,10 +654,13 @@ class ReportService:
             lines.append("### File Inventory")
             lines.append(f"- Scope: {fs.get('scope','source+config')}")
             lines.append(f"- Total files: {fs.get('total_files', 0)}")
+
+            # FIX: sort language counts to show top languages by count
             lang_counts = fs.get("language_counts") or {}
             if lang_counts:
-                top = list(lang_counts.items())[:12]
+                top = sorted(lang_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:12]
                 lines.append("- Languages: " + ", ".join(f"{k}={v}" for k, v in top))
+
             exclusions = fs.get("exclusions") or {}
             if exclusions:
                 lines.append("- Exclusions / filters applied:")

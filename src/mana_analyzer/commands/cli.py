@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import typer
-from langchain.embeddings import OpenAIEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings
 from rich.console import Console
 
 from mana_analyzer.analysis.checks import PythonStaticAnalyzer
