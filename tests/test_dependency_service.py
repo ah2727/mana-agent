@@ -30,7 +30,7 @@ dev = ["pytest>=8.0"]
         """
 import typer
 import pkg.b
-from langchain_openai import ChatOpenAI
+from langchain.chat_models import ChatOpenAI
 """.strip(),
         encoding="utf-8",
     )

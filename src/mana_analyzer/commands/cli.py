@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import typer
-from langchain_openai import OpenAIEmbeddings
+from langchain.embeddings import OpenAIEmbeddings
 from rich.console import Console
 
 from mana_analyzer.analysis.checks import PythonStaticAnalyzer
@@ -250,6 +252,24 @@ def _emit_json(payload: object, output_file: Path | None) -> None:
     text = json.dumps(payload)
     console.print_json(text)
     _append_output(output_file, json.dumps(payload, indent=2))
+
+
+async def _spawn_command(cmd: list[str]) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        text=False,
+    )
+    stdout, stderr = await process.communicate()
+    decode = lambda value: value.decode("utf-8", errors="ignore").strip()
+    return process.returncode, decode(stdout), decode(stderr)
+
+
+def _truncate_output(text: str, limit: int = 4000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n[truncated]"
 
 
 @app.callback()
@@ -840,3 +860,98 @@ def report(
         _emit_text("\n".join(lines), output_file=_resolve_output_file(path))
 
     logger.info("Report command completed", extra={"warnings": warning_count})
+
+
+@app.command()
+async def scan(
+    requirements_file: str = typer.Option(
+        "requirements.txt",
+        "--requirements-file",
+        help="Requirements file used as the baseline for pip/safety scans.",
+    ),
+    json_out: str | None = typer.Option(
+        None,
+        "--json-out",
+        help="Write a full JSON report of the scan results.",
+    ),
+    fail_on_vulnerabilities: bool = typer.Option(
+        False,
+        "--fail-on-vulns",
+        help="Return a non-zero exit code if Safety reports vulnerabilities.",
+    ),
+) -> None:
+    output_file = _resolve_output_file()
+    req_path = Path(requirements_file).resolve()
+    if not req_path.exists():
+        raise typer.BadParameter(f"requirements file not found: {req_path}")
+
+    console.print(f"[bold]Starting dependency health scan using {req_path.name}[/bold]")
+    pip_cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "list",
+        "--outdated",
+        "--format=columns",
+        "--disable-pip-version-check",
+    ]
+    safety_cmd = [
+        "safety",
+        "check",
+        "--full-report",
+        "-r",
+        str(req_path),
+        "--json",
+    ]
+
+    pip_task = asyncio.create_task(_spawn_command(pip_cmd))
+    safety_task = asyncio.create_task(_spawn_command(safety_cmd))
+
+    pip_result, safety_result = await asyncio.gather(pip_task, safety_task, return_exceptions=True)
+
+    def _normalize(result: tuple[int, str, str] | Exception) -> tuple[int, str, str]:
+        if isinstance(result, Exception):
+            return -1, "", str(result)
+        return result
+
+    pip_code, pip_out, pip_err = _normalize(pip_result)
+    safety_code, safety_out, safety_err = _normalize(safety_result)
+
+    report_payload = {
+        "requirements_file": str(req_path),
+        "pip": {
+            "returncode": pip_code,
+            "stdout": pip_out,
+            "stderr": pip_err,
+        },
+        "safety": {
+            "returncode": safety_code,
+            "stdout": safety_out,
+            "stderr": safety_err,
+        },
+    }
+
+    if json_out:
+        Path(json_out).write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+
+    console.print("[bold]pip list --outdated[/bold]")
+    console.print(_truncate_output(pip_out) or "(no output)")
+    if pip_err:
+        console.print(f"[red]pip stderr:{_truncate_output(pip_err)}[/red]")
+
+    console.print("[bold]safety check[/bold]")
+    console.print(_truncate_output(safety_out) or "(no output)")
+    if safety_err:
+        console.print(f"[red]safety stderr:{_truncate_output(safety_err)}[/red]")
+
+    summary_lines = [
+        f"Dependency scan complete: requirements={req_path}",
+        f"- pip exit code: {pip_code}",
+        f"- safety exit code: {safety_code}",
+    ]
+    if safety_code != 0:
+        summary_lines.append("- safety reported potential issues (check JSON output)")
+    _emit_text("\n".join(summary_lines), output_file=output_file)
+
+    if fail_on_vulnerabilities and safety_code != 0:
+        raise typer.Exit(code=1)

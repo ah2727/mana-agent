@@ -7,18 +7,18 @@ name = "mana-analyzer"
 version = "0.1.0"
 description = "AI-powered Python code analyzer CLI"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.10,<3.14"
 authors = [{ name = "mana-analyzer" }]
 dependencies = [
-  "typer>=0.12,<1.0",
-  "rich>=13.7,<14.0",
+  "typer>=0.10,<1.0",
+  "rich>=14.0,<15.0",
   "pydantic>=2.8,<3.0",
   "pydantic-settings>=2.4,<3.0",
   "python-dotenv>=1.0,<2.0",
-  "langchain>=0.3,<0.4",
-  "langchain-openai>=0.2,<0.3",
-  "langchain-community>=0.3,<0.4",
+  "langchain>=1.0,<2.0",
+  "openai>=1.31,<2.0",
   "faiss-cpu>=1.8.0.post1",
+  "safety>=2.9,<3.0",
 ]
 
 [project.optional-dependencies]

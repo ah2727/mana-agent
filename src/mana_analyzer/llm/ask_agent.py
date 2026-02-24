@@ -9,7 +9,7 @@ from time import perf_counter
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
-from langchain_openai import ChatOpenAI
+from langchain.chat_models import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace

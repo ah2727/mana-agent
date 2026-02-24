@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import re
 
@@ -14,6 +16,7 @@ logger = logging.getLogger(__name__)
 class SearchService:
     def __init__(self, store: FaissStore) -> None:
         self.store = store
+        self._executor_workers = max(1, min(8, os.cpu_count() or 4))
 
     def search(self, index_dir: str | Path, query: str, k: int) -> list[SearchHit]:
         resolved_index = Path(index_dir).resolve()
@@ -31,18 +34,42 @@ class SearchService:
         return hits
 
     def search_multi(self, index_dirs: list[Path], query: str, k: int) -> tuple[list[SearchHit], list[str]]:
-        logger.info("Running multi-index semantic search: indexes=%d k=%d", len(index_dirs), k)
+        resolved_indexes = sorted({Path(item).resolve() for item in index_dirs}, key=lambda item: str(item))
+        logger.info(
+            "Running multi-index semantic search: indexes=%d k=%d",
+            len(resolved_indexes),
+            k,
+        )
         logger.debug("Search query: %s", query)
         warnings: list[str] = []
         merged: list[SearchHit] = []
-        for index_dir in sorted({Path(item).resolve() for item in index_dirs}, key=lambda item: str(item)):
-            try:
-                hits = self.search(index_dir=index_dir, query=query, k=k)
-                merged.extend(hits)
-            except Exception as exc:
-                warning = f"Skipped unusable index {index_dir}: {exc}"
-                logger.warning(warning)
-                warnings.append(warning)
+        worker_count = min(len(resolved_indexes), self._executor_workers)
+        logger.info(
+            "Executing concurrent multi-index search",
+            extra={
+                "requested_indexes": len(resolved_indexes),
+                "worker_count": worker_count,
+            },
+        )
+        if worker_count <= 1:
+            for index_dir in resolved_indexes:
+                self._collect_search_results(index_dir, query, k, merged, warnings)
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_to_index = {
+                    executor.submit(self.search, index_dir=index_dir, query=query, k=k): index_dir
+                    for index_dir in resolved_indexes
+                }
+                for future in as_completed(future_to_index):
+                    index_dir = future_to_index[future]
+                    try:
+                        hits = future.result()
+                    except Exception as exc:
+                        warning = f"Concurrent search skipped {index_dir}: {exc}"
+                        logger.warning(warning)
+                        warnings.append(warning)
+                        continue
+                    merged.extend(hits)
 
         deduped = sorted(
             {
@@ -93,3 +120,19 @@ class SearchService:
             scored,
             key=lambda item: (-item.score, item.file_path, item.start_line, item.end_line, item.symbol_name),
         )[:k]
+
+    def _collect_search_results(
+        self,
+        index_dir: Path,
+        query: str,
+        k: int,
+        merged: list[SearchHit],
+        warnings: list[str],
+    ) -> None:
+        try:
+            hits = self.search(index_dir=index_dir, query=query, k=k)
+            merged.extend(hits)
+        except Exception as exc:
+            warning = f"Skipped unusable index {index_dir}: {exc}"
+            logger.warning(warning)
+            warnings.append(warning)

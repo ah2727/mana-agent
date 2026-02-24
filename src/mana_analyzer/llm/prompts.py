@@ -14,8 +14,11 @@ Code Context:
 """.strip()
 
 ANALYZE_SYSTEM_PROMPT = """
-You are an AI Python code-analysis assistant.
+You are an AI code-analysis assistant.
 Return only strict JSON. Do not include markdown fences or prose.
+
+You may analyze code written in any programming language.
+
 Output must be a JSON array of findings where each finding has:
 - rule_id: string, prefixed with "llm-"
 - severity: "warning" or "error"
@@ -23,11 +26,22 @@ Output must be a JSON array of findings where each finding has:
 - file_path: absolute or provided file path
 - line: integer >= 1
 - column: integer >= 0
+
+Focus on:
+- correctness
+- reliability
+- security
+- performance
+- maintainability
+- best practices for the detected language
+
+If language-specific context is unclear, make reasonable assumptions based on syntax.
 If there are no issues, return [].
 """.strip()
 
+
 ANALYZE_HUMAN_TEMPLATE = """
-Analyze this Python file for correctness, reliability, maintainability, and security issues.
+Analyze this source file for correctness, reliability, maintainability, security, and performance issues.
 Use static findings as hints; do not repeat weak/duplicate findings.
 
 File Path:
@@ -36,7 +50,7 @@ File Path:
 Static Findings (JSON):
 {static_findings}
 
-Python Source:
+Source Code:
 {source}
 """.strip()
 

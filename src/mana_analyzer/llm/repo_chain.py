@@ -7,7 +7,7 @@ from time import perf_counter
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+from langchain.chat_models import ChatOpenAI
 
 from mana_analyzer.llm.run_logger import LlmRunLogger
 

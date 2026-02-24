@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+import os
 from pathlib import Path
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 
 from mana_analyzer.analysis.chunker import CodeChunker
 from mana_analyzer.analysis.models import CodeChunk
@@ -27,6 +29,7 @@ class IndexService:
         self.parser = parser
         self.chunker = chunker
         self.store = store
+        self._executor_workers = max(1, min(8, os.cpu_count() or 4))
 
     @staticmethod
     def _manifest_path(index_dir: Path) -> Path:
@@ -52,6 +55,16 @@ class IndexService:
             chunk = CodeChunk(**row)
             chunks[chunk.id] = chunk
         return chunks
+
+    def _build_chunks_for_file(self, file_path: str) -> tuple[str, list[CodeChunk]]:
+        logger.debug("Gathering chunks for %s via thread pool", file_path)
+        try:
+            symbols = self.parser.parse_file(file_path)
+            file_chunks = self.chunker.build_chunks(symbols)
+            return file_path, file_chunks
+        except Exception as exc:  # pragma: no cover - best effort logging
+            logger.exception("Failed to build chunks for %s: %s", file_path, exc)
+            return file_path, []
 
     def index(self, target_path: str | Path, index_dir: str | Path, rebuild: bool = False) -> dict:
         target = Path(target_path).resolve()
@@ -100,20 +113,28 @@ class IndexService:
             manifest["files"].pop(file_path, None)
 
         new_chunks: list[CodeChunk] = []
-        for file_path in sorted(changed_files):
-            logger.debug("Parsing and chunking file %s", file_path)
-            symbols = self.parser.parse_file(file_path)
-            file_chunks = self.chunker.build_chunks(symbols)
-            new_chunks.extend(file_chunks)
-            for chunk in file_chunks:
-                chunk_map[chunk.id] = chunk
-
-            manifest["files"][file_path] = {
-                "sha256": current_hashes[file_path],
-                "last_indexed_at": datetime.now(timezone.utc).isoformat(),
-                "chunk_ids": [chunk.id for chunk in file_chunks],
-            }
-            logger.debug("Prepared %d chunks for %s", len(file_chunks), file_path)
+        if changed_files:
+            sorted_changed = sorted(changed_files)
+            worker_count = min(len(sorted_changed), self._executor_workers)
+            logger.info(
+                "Processing %d changed files using %d worker(s)",
+                len(sorted_changed),
+                worker_count,
+            )
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                for file_path, file_chunks in executor.map(self._build_chunks_for_file, sorted_changed):
+                    if not file_chunks:
+                        logger.warning("No chunks built for %s", file_path)
+                        continue
+                    new_chunks.extend(file_chunks)
+                    for chunk in file_chunks:
+                        chunk_map[chunk.id] = chunk
+                    manifest["files"][file_path] = {
+                        "sha256": current_hashes[file_path],
+                        "last_indexed_at": datetime.now(timezone.utc).isoformat(),
+                        "chunk_ids": [chunk.id for chunk in file_chunks],
+                    }
+                    logger.debug("Prepared %d chunks for %s", len(file_chunks), file_path)
 
         write_json(self._manifest_path(index_root), manifest)
         write_jsonl(self._chunks_path(index_root), [chunk.to_dict() for chunk in chunk_map.values()])

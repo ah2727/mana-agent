@@ -3,23 +3,24 @@
 Installable Python CLI AI code analyzer for multi-language repositories.
 
 ## Features
-- Incremental indexing into local FAISS vector store across Python, JS/TS, Dart, JVM, native, and common scripting/markup files.
-- Static checks: unused imports, wildcard imports, missing docstrings, deep nesting.
-- Semantic search over indexed code.
-- RAG-powered `ask` command with file+line citations.
-- Dependency and technology detection across Python and JS/TS manifests/imports.
+- Incremental indexing into local FAISS vector stores across Python, JS/TS, Dart, JVM, native, and common scripting/markup files.
+- Static checks: unused imports, wildcard imports, missing docstrings, deep nesting (parallelized via process pools).
+- Semantic search over indexed code with multi-index threading for faster fan-out.
+- RAG-powered `ask` command with file+line citations and concurrency-aware upstream helpers.
+- Dependency and technology detection across Python and JS/TS manifests/imports plus an async Safety-backed scan.
 - Multi-step repository `describe` pipeline (file selection -> summarization -> architecture synthesis).
 - Dependency graph export to JSON, DOT, and GraphML.
 
 ## Requirements
-- Python 3.12
+- Python 3.10+
 - OpenAI API key
 
 ## Setup
 ```bash
-python3.12 -m venv .venv
+python3.10 -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev]
+pip install -r requirements.txt
+pip install -e .
 cp .env.example .env
 ```
 
@@ -44,6 +45,7 @@ mana-analyzer --verbose --log-dir /tmp/mana-logs analyze /path/to/codebase
 mana-analyzer deps /path/to/codebase --json
 mana-analyzer graph /path/to/codebase --dot /tmp/deps.dot --graphml /tmp/deps.graphml
 mana-analyzer describe /path/to/codebase --llm-model gpt-4.1-mini --max-files 20
+mana-analyzer scan --requirements-file requirements.txt
 ```
 
 Use global `--output-dir` to save command output logs to a file named:
@@ -52,6 +54,7 @@ Use global `--output-dir` to save command output logs to a file named:
 JSON output is available with `--json` on all commands.
 
 `analyze --with-llm` is opt-in and will increase latency and token cost. By default it analyzes at most 10 files, prioritized by files with the most static findings (fallback: sorted files when there are no static findings). LLM findings use the same `Finding` schema as static findings.
+The `scan` command runs `pip list --outdated` alongside `safety check --full-report`, writes an optional JSON report, and can fail fast if Safety reports vulnerabilities.
 
 ## Logging
 - Application logs are written to files (not emitted by Python logging to console).
@@ -75,3 +78,15 @@ JSON output is available with `--json` on all commands.
 - `mana-analyzer deps <path> [--llm] [--llm-model <name>] [--rules <path>] [--json-out <path>] [--dot <path>] [--graphml <path>] [--json]`
 - `mana-analyzer graph <path> [--dot <path>] [--graphml <path>] [--json]`
 - `mana-analyzer describe <path> [--llm/--no-llm] [--llm-model <name>] [--max-files <int>] [--functions] [--output-format json|markdown|both] [--json]`
+
+
+
+## security analyze 
+mana-analyzer --verbose --log-dir logs/ --output-dir logs/ report /Users/ah/Documents/karlancer/loanbot \                                                    1 ↵
+  --with-llm \
+  --output-format markdown \
+  --report-profile deep \
+  --detail-line-target 350 \
+  --security-lens defensive-red-team \
+  --json-out logs/ \
+  --markdown-out logs/
