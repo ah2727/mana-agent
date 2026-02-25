@@ -6,6 +6,8 @@ import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+import tempfile
+import hashlib
 
 import typer
 from langchain_community.embeddings import OpenAIEmbeddings
@@ -31,12 +33,16 @@ from mana_analyzer.utils.index_discovery import discover_index_dirs
 from mana_analyzer.utils.logging import setup_logging
 from mana_analyzer.utils.project_discovery import discover_subprojects
 from mana_analyzer.vector_store.faiss_store import FaissStore
-from mana_analyzer.config.settings import Settings
 from mana_analyzer.services.chat_service import ChatService  # adjust import path when integrated
-
 
 from mana_analyzer.services.vulnerability_service import VulnerabilityService
 from mana_analyzer.services.report_service import ReportService
+from typing import Sequence
+from langchain_core.callbacks.base import BaseCallbackHandler
+from rich.live import Live
+from rich.spinner import Spinner
+from rich.text import Text
+import time
 
 app = typer.Typer(help="mana-analyzer CLI")
 console = Console()
@@ -44,6 +50,39 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR: Path | None = None
 
 
+
+
+
+class RichToolCallbackHandler(BaseCallbackHandler):
+    """Live-updates a Rich spinner when tools start/end."""
+    def __init__(self, live: Live, *, show_inputs: bool = True) -> None:
+        self.live = live
+        self.show_inputs = show_inputs
+        self._tool: str | None = None
+        self._t0: float = 0.0
+
+    def on_tool_start(self, serialized, input_str: str, **kwargs) -> None:
+        name = (serialized or {}).get("name") or "tool"
+        self._tool = str(name)
+        self._t0 = time.time()
+        msg = f"Using tool: {self._tool}"
+        if self.show_inputs and input_str:
+            inp = input_str.strip().replace("\n", " ")
+            if len(inp) > 160:
+                inp = inp[:160] + "…"
+            msg += f"\n↳ {inp}"
+        self.live.update(Text(msg))
+
+    def on_tool_end(self, output: str, **kwargs) -> None:
+        tool = self._tool or "tool"
+        dt = max(0.0, time.time() - self._t0)
+        self._tool = None
+        self.live.update(Text(f"Finished: {tool} ({dt:0.1f}s)"))
+
+    def on_tool_error(self, error: BaseException, **kwargs) -> None:
+        tool = self._tool or "tool"
+        self._tool = None
+        self.live.update(Text(f"Tool error: {tool} - {error}"))
 # -----------------------------------------
 # "Full logging" helpers (added, non-breaking)
 # -----------------------------------------
@@ -53,7 +92,6 @@ def _now_iso() -> str:
 
 
 def _log_call(fn_name: str, **fields: object) -> None:
-    # Convenience wrapper so every helper can emit consistent structured logs
     try:
         logger.debug("CALL %s", fn_name, extra={**fields, "ts": _now_iso()})
     except Exception:
@@ -107,13 +145,25 @@ def _index_has_search_data(index_dir: Path) -> bool:
 
 
 # ----------------------------
+# Ephemeral index helpers
+# ----------------------------
+
+def _make_ephemeral_index_dir(prefix: str = "mana_index_") -> tuple[tempfile.TemporaryDirectory, Path]:
+    tmp = tempfile.TemporaryDirectory(prefix=prefix)
+    return tmp, Path(tmp.name).resolve()
+
+
+def _stable_subdir_name(path: Path) -> str:
+    h = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:12]
+    return f"{path.name}-{h}"
+
+
+# ----------------------------
 # Report artifact helpers
 # ----------------------------
 
 def _resolve_report_artifact_dir(project_root: Path) -> Path:
     _log_call("_resolve_report_artifact_dir", project_root=str(project_root), output_dir=str(OUTPUT_DIR) if OUTPUT_DIR else None)
-    # Default artifact directory if --output-dir not provided:
-    # <project_root>/.mana_logs
     if OUTPUT_DIR is not None:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         _log_return("_resolve_report_artifact_dir", resolved=str(OUTPUT_DIR))
@@ -137,12 +187,6 @@ def _resolve_report_artifact_paths(target_path: str | Path) -> tuple[Path, Path]
 
 
 def _resolve_out_path(arg: str | None, default_path: Path, *, suffix: str) -> Path:
-    """
-    Accept either:
-      - None => default_path
-      - directory path => <dir>/<default_name>
-      - file path => file path
-    """
     _log_call("_resolve_out_path", arg=arg, default=str(default_path), suffix=suffix)
     if not arg:
         _log_return("_resolve_out_path", resolved=str(default_path), mode="default")
@@ -152,13 +196,11 @@ def _resolve_out_path(arg: str | None, default_path: Path, *, suffix: str) -> Pa
         resolved = p / default_path.name
         _log_return("_resolve_out_path", resolved=str(resolved), mode="existing_dir")
         return resolved
-    # if user passed "logs/" but directory doesn't exist yet, treat ending "/" as directory intent
     if str(arg).endswith(("/", "\\")):
         p.mkdir(parents=True, exist_ok=True)
         resolved = p / default_path.name
         _log_return("_resolve_out_path", resolved=str(resolved), mode="dir_intent_created")
         return resolved
-    # if no suffix provided, ensure correct suffix
     if p.suffix == "":
         resolved = p.with_suffix(suffix)
         _log_return("_resolve_out_path", resolved=str(resolved), mode="added_suffix")
@@ -185,13 +227,6 @@ def build_store(settings: Settings) -> FaissStore:
         embed_model=getattr(settings, "openai_embed_model", None),
         has_base_url=bool(getattr(settings, "openai_base_url", None)),
     )
-    logger.debug(
-        "Building vector store embeddings client",
-        extra={
-            "embed_model": settings.openai_embed_model,
-            "has_base_url": bool(settings.openai_base_url),
-        },
-    )
     kwargs = {"api_key": settings.openai_api_key, "model": settings.openai_embed_model}
     if settings.openai_base_url:
         kwargs["base_url"] = settings.openai_base_url
@@ -203,7 +238,6 @@ def build_store(settings: Settings) -> FaissStore:
 
 def build_index_service(settings: Settings) -> IndexService:
     _log_call("build_index_service")
-    logger.debug("Initializing index service")
     svc = IndexService(parser=MultiLanguageParser(), chunker=CodeChunker(), store=build_store(settings))
     _log_return("build_index_service", service_type=type(svc).__name__)
     return svc
@@ -211,7 +245,6 @@ def build_index_service(settings: Settings) -> IndexService:
 
 def build_search_service(settings: Settings) -> SearchService:
     _log_call("build_search_service")
-    logger.debug("Initializing search service")
     svc = SearchService(store=build_store(settings))
     _log_return("build_search_service", service_type=type(svc).__name__)
     return svc
@@ -219,7 +252,6 @@ def build_search_service(settings: Settings) -> SearchService:
 
 def build_analyze_service() -> AnalyzeService:
     _log_call("build_analyze_service")
-    logger.debug("Initializing analyze service")
     svc = AnalyzeService(analyzer=PythonStaticAnalyzer())
     _log_return("build_analyze_service", service_type=type(svc).__name__)
     return svc
@@ -228,7 +260,6 @@ def build_analyze_service() -> AnalyzeService:
 def build_llm_analyze_service(settings: Settings, model_override: str | None) -> LlmAnalyzeService:
     model = model_override or settings.openai_chat_model
     _log_call("build_llm_analyze_service", model=model, model_override=model_override)
-    logger.debug("Initializing LLM analyze service", extra={"chat_model": model})
     chain = AnalyzeChain(
         api_key=settings.openai_api_key,
         model=model,
@@ -250,8 +281,6 @@ def build_ask_service(
 
     _log_call("build_ask_service", model=model, model_override=model_override, project_root=str(root))
 
-    logger.debug("Initializing ask service", extra={"chat_model": model, "project_root": str(root)})
-
     qna = QnAChain(
         api_key=settings.openai_api_key,
         model=model,
@@ -265,7 +294,7 @@ def build_ask_service(
         model=model,
         base_url=settings.openai_base_url,
         search_service=search_service,
-        project_root=root,  # ✅ CRITICAL
+        project_root=root,
     )
 
     svc = AskService(
@@ -280,7 +309,6 @@ def build_ask_service(
 
 def build_dependency_service() -> DependencyService:
     _log_call("build_dependency_service")
-    logger.debug("Initializing dependency service")
     svc = DependencyService()
     _log_return("build_dependency_service", service_type=type(svc).__name__)
     return svc
@@ -289,7 +317,6 @@ def build_dependency_service() -> DependencyService:
 def build_repo_chain(settings: Settings, model_override: str | None) -> RepositoryMultiChain:
     model = model_override or settings.openai_chat_model
     _log_call("build_repo_chain", model=model, model_override=model_override)
-    logger.debug("Initializing repository multi-chain", extra={"chat_model": model})
     chain = RepositoryMultiChain(
         api_key=settings.openai_api_key,
         model=model,
@@ -314,7 +341,6 @@ def build_report_service(
     include_tests: bool,
 ) -> ReportService:
     _log_call("build_report_service", use_llm=use_llm, model_override=model_override, include_tests=include_tests)
-    # Only load Settings if we need LLM
     settings = Settings() if use_llm else None
 
     dependency_service = build_dependency_service()
@@ -326,7 +352,6 @@ def build_report_service(
         llm_analyze_service = build_llm_analyze_service(settings, model_override=model_override)
         describe_service = build_describe_service(settings, model_override=model_override, use_llm=True)
     else:
-        # Avoid Settings() so OpenAI creds are not required
         describe_service = DescribeService(dependency_service=dependency_service, llm_chain=None)
 
     structure_service = StructureService(include_tests=include_tests)
@@ -429,14 +454,25 @@ def index(
     path: str,
     index_dir: str | None = typer.Option(None, "--index-dir"),
     rebuild: bool = typer.Option(False, "--rebuild"),
+    ephemeral_index: bool = typer.Option(
+        False,
+        "--ephemeral-index",
+        help="Use a temporary index dir and delete it after the command (ignored if --index-dir is set).",
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     output_file = _resolve_output_file(path)
-    logger.info("Index command started", extra={"path": path, "rebuild": rebuild, "index_dir": index_dir})
+    logger.info("Index command started", extra={"path": path, "rebuild": rebuild, "index_dir": index_dir, "ephemeral_index": ephemeral_index})
     settings = Settings()
-    resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(path)
-    logger.debug("Resolved index directory", extra={"index_dir": str(resolved_index_dir)})
     service = build_index_service(settings)
+
+    tmp: tempfile.TemporaryDirectory | None = None
+    if ephemeral_index and not index_dir:
+        tmp, resolved_index_dir = _make_ephemeral_index_dir()
+    else:
+        resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(path)
+
+    logger.debug("Resolved index directory", extra={"index_dir": str(resolved_index_dir)})
 
     try:
         result = service.index(target_path=path, index_dir=resolved_index_dir, rebuild=rebuild)
@@ -444,6 +480,9 @@ def index(
     except Exception as exc:
         _log_exception("index_command", exc, path=path, index_dir=str(resolved_index_dir))
         raise
+    finally:
+        if tmp is not None:
+            tmp.cleanup()
 
     if as_json:
         _emit_json(result, output_file=output_file)
@@ -457,17 +496,29 @@ def search(
     query: str,
     k: int | None = typer.Option(None, "--k"),
     index_dir: str | None = typer.Option(None, "--index-dir"),
+    ephemeral_index: bool = typer.Option(
+        False,
+        "--ephemeral-index",
+        help="Build a temporary index of the current directory, search it, then delete it (ignored if --index-dir is set).",
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     output_file = _resolve_output_file()
-    logger.info("Search command started", extra={"query": query, "k": k, "index_dir": index_dir})
+    logger.info("Search command started", extra={"query": query, "k": k, "index_dir": index_dir, "ephemeral_index": ephemeral_index})
     settings = Settings()
     resolved_k = k or settings.default_top_k
-    resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
-    logger.debug(
-        "Resolved search parameters",
-        extra={"k": resolved_k, "index_dir": str(resolved_index_dir)},
-    )
+
+    tmp: tempfile.TemporaryDirectory | None = None
+    if ephemeral_index and not index_dir:
+        tmp, resolved_index_dir = _make_ephemeral_index_dir()
+        # Ensure index exists for search
+        index_service = build_index_service(settings)
+        index_service.index(target_path=Path.cwd(), index_dir=resolved_index_dir, rebuild=False, vectors=True)
+    else:
+        resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
+
+    logger.debug("Resolved search parameters", extra={"k": resolved_k, "index_dir": str(resolved_index_dir)})
+
     service = build_search_service(settings)
 
     try:
@@ -476,6 +527,9 @@ def search(
     except Exception as exc:
         _log_exception("search_command", exc, query=query, index_dir=str(resolved_index_dir), k=resolved_k)
         raise
+    finally:
+        if tmp is not None:
+            tmp.cleanup()
 
     if as_json:
         _emit_json([item.to_dict() for item in results], output_file=output_file)
@@ -656,6 +710,11 @@ def ask(
     k: int | None = typer.Option(None, "--k"),
     model: str | None = typer.Option(None, "--model"),
     index_dir: str | None = typer.Option(None, "--index-dir"),
+    ephemeral_index: bool = typer.Option(
+        False,
+        "--ephemeral-index",
+        help="Use temporary index(es) and delete them after answering (ignored if --index-dir is set).",
+    ),
     dir_mode: bool = typer.Option(False, "--dir-mode", help="Enable directory-aware ask mode."),
     root_dir: str | None = typer.Option(None, "--root-dir", help="Root directory to scan when --dir-mode is enabled."),
     max_indexes: int = typer.Option(0, "--max-indexes", help="Maximum discovered indexes to use (0 means no limit)."),
@@ -670,187 +729,209 @@ def ask(
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     output_file = _resolve_output_file()
-    logger.info("Ask command started", extra={"question": question, "k": k, "model_override": model, "dir_mode": dir_mode})
+    logger.info(
+        "Ask command started",
+        extra={"question": question, "k": k, "model_override": model, "dir_mode": dir_mode, "index_dir": index_dir, "ephemeral_index": ephemeral_index},
+    )
     settings = Settings()
     resolved_k = k or settings.default_top_k
-    resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
+
+    # For agent tools, project_root matters (file reads)
+    # In dir-mode we set to root later; in classic, cwd is fine
     service = build_ask_service(settings, model_override=model)
 
-    if dir_mode:
-        root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
-        if root.is_file():
-            root = root.parent
-        logger.debug(
-            "Resolved ask dir-mode parameters",
-            extra={
-                "k": resolved_k,
-                "root_dir": str(root),
-                "max_indexes": max_indexes,
-                "auto_index_missing": auto_index_missing,
-                "agent_tools": agent_tools,
-            },
-        )
+    tmp_single: tempfile.TemporaryDirectory | None = None
+    tmp_dir_mode_root: tempfile.TemporaryDirectory | None = None
 
-        discovered_subprojects = discover_subprojects(root)
-        discovered_indexes = discover_index_dirs(root)
-        discovered_index_set = {item.resolve() for item in discovered_indexes}
+    try:
+        if dir_mode:
+            root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
+            if root.is_file():
+                root = root.parent
 
-        logger.debug(
-            "Discovery results",
-            extra={
-                "subprojects": len(discovered_subprojects),
-                "indexes_found": len(discovered_indexes),
-                "root_dir": str(root),
-            },
-        )
+            # rebuild AskService with correct root for tool file reads
+            service = build_ask_service(settings, model_override=model, project_root=root)
 
-        index_service = build_index_service(settings)
-        auto_indexed_count = 0
-        skipped_missing_count = 0
-        warnings: list[str] = []
-        selected_indexes: list[Path] = []
-        if discovered_subprojects:
-            for subproject in discovered_subprojects:
-                expected_index = (subproject.root_path / ".mana_index").resolve()
-                has_index_dir = expected_index in discovered_index_set
-                has_search_data = has_index_dir and _index_has_search_data(expected_index)
-
-                logger.debug(
-                    "Subproject index evaluation",
-                    extra={
-                        "subproject_root": str(subproject.root_path),
-                        "expected_index": str(expected_index),
-                        "has_index_dir": has_index_dir,
-                        "has_search_data": has_search_data,
-                    },
-                )
-
-                if has_search_data:
-                    selected_indexes.append(expected_index)
-                    continue
-                if auto_index_missing:
-                    try:
-                        logger.info("Auto-indexing missing/empty index", extra={"subproject_root": str(subproject.root_path)})
-                        index_service.index(target_path=subproject.root_path, index_dir=expected_index, rebuild=False, vectors=True)
-                        auto_indexed_count += 1
-                        selected_indexes.append(expected_index)
-                        logger.info("Auto-index success", extra={"index_dir": str(expected_index)})
-                    except Exception as exc:
-                        warning = f"Failed to auto-index {subproject.root_path}: {exc}"
-                        logger.warning(warning)
-                        logger.exception("Auto-index exception", extra={"subproject_root": str(subproject.root_path), "index_dir": str(expected_index)})
-                        warnings.append(warning)
-                        if _index_has_chunks(expected_index):
-                            selected_indexes.append(expected_index)
-                else:
-                    skipped_missing_count += 1
-                    warning = f"Skipped missing or empty index for subproject {subproject.root_path}"
-                    warnings.append(warning)
-                    logger.warning(warning)
-        else:
-            root_index = (root / ".mana_index").resolve()
             logger.debug(
-                "No subprojects; using root index logic",
-                extra={"root_index": str(root_index), "auto_index_missing": auto_index_missing},
+                "Resolved ask dir-mode parameters",
+                extra={
+                    "k": resolved_k,
+                    "root_dir": str(root),
+                    "max_indexes": max_indexes,
+                    "auto_index_missing": auto_index_missing,
+                    "agent_tools": agent_tools,
+                    "ephemeral_index": ephemeral_index,
+                },
             )
-            if root_index.exists() and _index_has_search_data(root_index):
-                selected_indexes = [root_index]
-            elif auto_index_missing:
-                try:
-                    logger.info("Auto-indexing root", extra={"root": str(root)})
-                    index_service.index(target_path=root, index_dir=root_index, rebuild=False)
-                    auto_indexed_count = 1
+
+            discovered_subprojects = discover_subprojects(root)
+            discovered_indexes = discover_index_dirs(root)
+            discovered_index_set = {item.resolve() for item in discovered_indexes}
+
+            index_service = build_index_service(settings)
+            auto_indexed_count = 0
+            skipped_missing_count = 0
+            warnings: list[str] = []
+            selected_indexes: list[Path] = []
+
+            tmp_base: Path | None = None
+            if ephemeral_index and not index_dir:
+                tmp_dir_mode_root, tmp_base = _make_ephemeral_index_dir(prefix="mana_indexes_")
+
+            if discovered_subprojects:
+                for subproject in discovered_subprojects:
+                    if tmp_base is not None:
+                        expected_index = (tmp_base / _stable_subdir_name(subproject.root_path)).resolve()
+                        has_index_dir = expected_index.exists()
+                    else:
+                        expected_index = (subproject.root_path / ".mana_index").resolve()
+                        has_index_dir = expected_index in discovered_index_set
+
+                    has_search_data = has_index_dir and _index_has_search_data(expected_index)
+
+                    if has_search_data:
+                        selected_indexes.append(expected_index)
+                        continue
+
+                    if auto_index_missing:
+                        try:
+                            logger.info("Auto-indexing missing/empty index", extra={"subproject_root": str(subproject.root_path), "index_dir": str(expected_index)})
+                            index_service.index(target_path=subproject.root_path, index_dir=expected_index, rebuild=False, vectors=True)
+                            auto_indexed_count += 1
+                            selected_indexes.append(expected_index)
+                        except Exception as exc:
+                            warning = f"Failed to auto-index {subproject.root_path}: {exc}"
+                            logger.warning(warning)
+                            warnings.append(warning)
+                            if _index_has_chunks(expected_index):
+                                selected_indexes.append(expected_index)
+                    else:
+                        skipped_missing_count += 1
+                        warning = f"Skipped missing or empty index for subproject {subproject.root_path}"
+                        warnings.append(warning)
+                        logger.warning(warning)
+            else:
+                if tmp_base is not None:
+                    root_index = (tmp_base / _stable_subdir_name(root)).resolve()
+                else:
+                    root_index = (root / ".mana_index").resolve()
+
+                if root_index.exists() and _index_has_search_data(root_index):
                     selected_indexes = [root_index]
-                except Exception as exc:
-                    warning = f"Failed to auto-index {root}: {exc}"
-                    logger.warning(warning)
-                    logger.exception("Root auto-index exception", extra={"root": str(root), "index_dir": str(root_index)})
-                    warnings.append(warning)
-                    if _index_has_chunks(root_index):
+                elif auto_index_missing:
+                    try:
+                        logger.info("Auto-indexing root", extra={"root": str(root), "index_dir": str(root_index)})
+                        index_service.index(target_path=root, index_dir=root_index, rebuild=False, vectors=True)
+                        auto_indexed_count = 1
                         selected_indexes = [root_index]
+                    except Exception as exc:
+                        warning = f"Failed to auto-index {root}: {exc}"
+                        logger.warning(warning)
+                        warnings.append(warning)
+                        if _index_has_chunks(root_index):
+                            selected_indexes = [root_index]
 
-        selected_indexes = sorted({item.resolve() for item in selected_indexes}, key=lambda item: str(item))
-        if max_indexes > 0:
-            selected_indexes = selected_indexes[:max_indexes]
+            selected_indexes = sorted({item.resolve() for item in selected_indexes}, key=lambda item: str(item))
+            if max_indexes > 0:
+                selected_indexes = selected_indexes[:max_indexes]
+
+            logger.info(
+                "Ask dir-mode index selection completed",
+                extra={
+                    "root_dir": str(root),
+                    "discovered_indexes": len(discovered_indexes),
+                    "selected_indexes": len(selected_indexes),
+                    "auto_indexed_count": auto_indexed_count,
+                    "skipped_missing_count": skipped_missing_count,
+                    "ephemeral_index": ephemeral_index,
+                },
+            )
+
+            if agent_tools:
+                response = service.ask_with_tools_dir_mode(
+                    index_dirs=selected_indexes,
+                    question=question,
+                    k=resolved_k,
+                    max_steps=agent_max_steps,
+                    timeout_seconds=agent_timeout_seconds,
+                    root_dir=root,
+                )
+            else:
+                response = service.ask_dir_mode(index_dirs=selected_indexes, question=question, k=resolved_k, root_dir=root)
+            if warnings:
+                response.warnings.extend(warnings)
+
+        else:
+            if ephemeral_index and not index_dir:
+                tmp_single, resolved_index_dir = _make_ephemeral_index_dir()
+                index_service = build_index_service(settings)
+                index_service.index(target_path=Path.cwd(), index_dir=resolved_index_dir, rebuild=False, vectors=True)
+            else:
+                resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
+
+            logger.debug(
+                "Resolved ask parameters",
+                extra={"k": resolved_k, "index_dir": str(resolved_index_dir), "agent_tools": agent_tools, "ephemeral_index": ephemeral_index},
+            )
+
+            if agent_tools:
+                response = service.ask_with_tools(
+                    index_dir=resolved_index_dir,
+                    question=question,
+                    k=resolved_k,
+                    max_steps=agent_max_steps,
+                    timeout_seconds=agent_timeout_seconds,
+                )
+            else:
+                response = service.ask(index_dir=resolved_index_dir, question=question, k=resolved_k)
+
         logger.info(
-            "Ask dir-mode index selection completed",
-            extra={
-                "root_dir": str(root),
-                "discovered_indexes": len(discovered_indexes),
-                "selected_indexes": len(selected_indexes),
-                "auto_indexed_count": auto_indexed_count,
-                "skipped_missing_count": skipped_missing_count,
-            },
+            "Ask command completed",
+            extra={"sources": len(response.sources), "mode": getattr(response, "mode", "classic")},
         )
-        if agent_tools:
-            response = service.ask_with_tools_dir_mode(
-                index_dirs=selected_indexes,
-                question=question,
-                k=resolved_k,
-                max_steps=agent_max_steps,
-                timeout_seconds=agent_timeout_seconds,
-                root_dir=root,
-            )
-        else:
-            response = service.ask_dir_mode(index_dirs=selected_indexes, question=question, k=resolved_k, root_dir=root)
-        if warnings:
-            response.warnings.extend(warnings)
-    else:
-        logger.debug(
-            "Resolved ask parameters",
-            extra={"k": resolved_k, "index_dir": str(resolved_index_dir), "agent_tools": agent_tools},
-        )
-        if agent_tools:
-            response = service.ask_with_tools(
-                index_dir=resolved_index_dir,
-                question=question,
-                k=resolved_k,
-                max_steps=agent_max_steps,
-                timeout_seconds=agent_timeout_seconds,
-            )
-        else:
-            response = service.ask(index_dir=resolved_index_dir, question=question, k=resolved_k)
-    logger.info(
-        "Ask command completed",
-        extra={"sources": len(response.sources), "mode": getattr(response, "mode", "classic")},
-    )
 
-    if as_json:
-        _emit_json(response.to_dict(), output_file=output_file)
-        return
+        if as_json:
+            _emit_json(response.to_dict(), output_file=output_file)
+            return
 
-    lines: list[str] = [response.answer]
-    if hasattr(response, "mode"):
+        lines: list[str] = [response.answer]
+        if hasattr(response, "mode"):
+            lines.append("")
+            lines.append(f"Mode: {response.mode}")
+        if hasattr(response, "trace") and response.trace:
+            lines.append("")
+            lines.append("Tool Trace:")
+            for item in response.trace:
+                lines.append(
+                    f"- {item.tool_name} [{item.status}] {item.duration_ms:.1f}ms args={item.args_summary}"
+                )
+        if getattr(response, "warnings", None):
+            lines.append("")
+            lines.append("Warnings:")
+            for warning in response.warnings:
+                lines.append(f"- {warning}")
         lines.append("")
-        lines.append(f"Mode: {response.mode}")
-    if hasattr(response, "trace") and response.trace:
-        lines.append("")
-        lines.append("Tool Trace:")
-        for item in response.trace:
-            lines.append(
-                f"- {item.tool_name} [{item.status}] {item.duration_ms:.1f}ms args={item.args_summary}"
-            )
-    if getattr(response, "warnings", None):
-        lines.append("")
-        lines.append("Warnings:")
-        for warning in response.warnings:
-            lines.append(f"- {warning}")
-    lines.append("")
-    lines.append("Sources:")
-    if not response.sources:
-        lines.append("- none")
+        lines.append("Sources:")
+        if not response.sources:
+            lines.append("- none")
+            _emit_text("\n".join(lines), output_file=output_file)
+            return
+
+        if getattr(response, "source_groups", None):
+            for group in response.source_groups:
+                lines.append(f"- subproject={group.subproject_root} index={group.index_dir}")
+                for source in group.sources:
+                    lines.append(f"  - {source.file_path}:{source.start_line}-{source.end_line}")
+        else:
+            for source in response.sources:
+                lines.append(f"- {source.file_path}:{source.start_line}-{source.end_line}")
         _emit_text("\n".join(lines), output_file=output_file)
-        return
 
-    if getattr(response, "source_groups", None):
-        for group in response.source_groups:
-            lines.append(f"- subproject={group.subproject_root} index={group.index_dir}")
-            for source in group.sources:
-                lines.append(f"  - {source.file_path}:{source.start_line}-{source.end_line}")
-    else:
-        for source in response.sources:
-            lines.append(f"- {source.file_path}:{source.start_line}-{source.end_line}")
-    _emit_text("\n".join(lines), output_file=output_file)
+    finally:
+        if tmp_single is not None:
+            tmp_single.cleanup()
+        if tmp_dir_mode_root is not None:
+            tmp_dir_mode_root.cleanup()
 
 
 @app.command()
@@ -1068,7 +1149,6 @@ def report(
     output_format: str = typer.Option("both", "--output-format"),
     json_out: str | None = typer.Option(None, "--json-out"),
     markdown_out: str | None = typer.Option(None, "--markdown-out"),
-    # NEW deep profile options:
     report_profile: str = typer.Option("standard", "--report-profile"),
     detail_line_target: int = typer.Option(350, "--detail-line-target"),
     security_lens: str = typer.Option("defensive-red-team", "--security-lens"),
@@ -1088,7 +1168,6 @@ def report(
 
     if report_profile == "deep":
         detail_line_target = _clamp_detail_line_target(detail_line_target)
-        # deep implies structure analysis (rendering needs it)
         full_structure = True
 
     report_json_default, report_md_default = _resolve_report_artifact_paths(path)
@@ -1143,7 +1222,6 @@ def report(
     payload = report_obj.to_dict()
     markdown = service.render_markdown(report_obj)
 
-    # Write artifacts
     try:
         if output_format in {"json", "both"}:
             out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -1157,7 +1235,6 @@ def report(
         _log_exception("report_write_artifacts", exc, out_json=str(out_json), out_md=str(out_md))
         raise
 
-    # Console behavior
     warning_count = len(getattr(report_obj, "warnings", []) or [])
     if as_json:
         console.print_json(json.dumps(payload))
@@ -1207,7 +1284,7 @@ async def scan(
         "pip",
         "list",
         "--outdated",
-        "--format=columns",
+       	"--format=columns",
         "--disable-pip-version-check",
     ]
     safety_cmd = [
@@ -1236,16 +1313,8 @@ async def scan(
 
     report_payload = {
         "requirements_file": str(req_path),
-        "pip": {
-            "returncode": pip_code,
-            "stdout": pip_out,
-            "stderr": pip_err,
-        },
-        "safety": {
-            "returncode": safety_code,
-            "stdout": safety_out,
-            "stderr": safety_err,
-        },
+        "pip": {"returncode": pip_code, "stdout": pip_out, "stderr": pip_err},
+        "safety": {"returncode": safety_code, "stdout": safety_out, "stderr": safety_err},
     }
 
     if json_out:
@@ -1278,13 +1347,17 @@ async def scan(
     logger.info("Scan command completed", extra={"pip_code": pip_code, "safety_code": safety_code})
     if fail_on_vulnerabilities and safety_code != 0:
         raise typer.Exit(code=1)
-
     
 @app.command()
 def chat(
     model: str | None = typer.Option(None, "--model"),
     index_dir: str | None = typer.Option(None, "--index-dir"),
     k: int | None = typer.Option(None, "--k"),
+    ephemeral_index: bool = typer.Option(
+        False,
+        "--ephemeral-index",
+        help="Use temporary index(es) and delete them when chat exits (ignored if --index-dir is set).",
+    ),
     dir_mode: bool = typer.Option(
         False,
         "--dir-mode",
@@ -1314,7 +1387,6 @@ def chat(
     agent_timeout_seconds: int = typer.Option(30, "--agent-timeout-seconds"),
     as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
 ) -> None:
-    """Start an interactive chat session in the console."""
     output_file = _resolve_output_file()
 
     logger.info(
@@ -1331,24 +1403,22 @@ def chat(
             "agent_max_steps": agent_max_steps,
             "agent_timeout_seconds": agent_timeout_seconds,
             "as_json": as_json,
+            "ephemeral_index": ephemeral_index,
         },
     )
 
     settings = Settings()
     resolved_k = k or settings.default_top_k
 
-    # ✅ Resolve project root EARLY so tools can read files under it
     if dir_mode:
         root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
     else:
         root = Path.cwd().resolve()
-
     if root.is_file():
         root = root.parent
 
     logger.debug("Resolved chat root", extra={"root": str(root)})
 
-    # ✅ Build AskService with correct project_root
     ask_service = build_ask_service(settings, model_override=model, project_root=root)
 
     chat_service = ChatService(
@@ -1357,7 +1427,7 @@ def chat(
         model_override=model,
         index_dir=index_dir,
         dir_mode=dir_mode,
-        root_dir=str(root),  # keep as str if your ChatService expects str
+        root_dir=str(root),
         k=resolved_k,
         agent_tools=agent_tools,
         agent_max_steps=agent_max_steps,
@@ -1366,231 +1436,277 @@ def chat(
         auto_index_missing=auto_index_missing,
     )
 
-    if dir_mode:
-        discovered_subprojects = discover_subprojects(root)
-        discovered_indexes = discover_index_dirs(root)
-        discovered_index_set = {item.resolve() for item in discovered_indexes}
+    tmp_root: tempfile.TemporaryDirectory | None = None
+    tmp_base: Path | None = None
 
-        logger.debug(
-            "Chat discovery",
-            extra={
-                "root": str(root),
-                "subprojects": len(discovered_subprojects),
-                "indexes_found": len(discovered_indexes),
-            },
-        )
+    try:
+        # -----------------------------
+        # Resolve indexes (dir-mode vs classic)
+        # -----------------------------
+        resolved_index_dir: Path | None = None
 
-        index_service = build_index_service(settings)
-        auto_indexed_count = 0
-        skipped_missing_count = 0
-        warnings: list[str] = []
-        selected_indexes: list[Path] = []
+        if dir_mode:
+            discovered_subprojects = discover_subprojects(root)
+            discovered_indexes = discover_index_dirs(root)
+            discovered_index_set = {item.resolve() for item in discovered_indexes}
 
-        def _auto_index(target_path: Path, idx_dir: Path) -> bool:
-            logger.info("Chat auto-index attempt", extra={"target_path": str(target_path), "idx_dir": str(idx_dir)})
-            try:
-                index_service.index(target_path=target_path, index_dir=idx_dir, rebuild=False, vectors=True)
-                logger.info("Chat auto-index vectors success", extra={"idx_dir": str(idx_dir)})
-                return True
-            except Exception as exc:
-                warning = f"Vector index failed for {target_path} (fallback to chunks-only): {exc}"
-                logger.warning(warning)
-                logger.exception("Chat auto-index vectors exception", extra={"target_path": str(target_path), "idx_dir": str(idx_dir)})
-                warnings.append(warning)
+            if ephemeral_index and not index_dir:
+                tmp_root, tmp_base = _make_ephemeral_index_dir(prefix="mana_chat_indexes_")
+
+            index_service = build_index_service(settings)
+            auto_indexed_count = 0
+            skipped_missing_count = 0
+            warnings: list[str] = []
+            selected_indexes: list[Path] = []
+
+            def _auto_index(target_path: Path, idx_dir: Path) -> bool:
+                logger.info("Chat auto-index attempt", extra={"target_path": str(target_path), "idx_dir": str(idx_dir)})
                 try:
-                    index_service.index(target_path=target_path, index_dir=idx_dir, rebuild=False, vectors=False)
-                    logger.info("Chat auto-index chunks-only success", extra={"idx_dir": str(idx_dir)})
+                    index_service.index(target_path=target_path, index_dir=idx_dir, rebuild=False, vectors=True)
+                    logger.info("Chat auto-index vectors success", extra={"idx_dir": str(idx_dir)})
                     return True
-                except Exception as exc2:
-                    warning2 = f"Chunks-only index failed for {target_path}: {exc2}"
-                    logger.warning(warning2)
-                    logger.exception("Chat auto-index chunks-only exception", extra={"target_path": str(target_path), "idx_dir": str(idx_dir)})
-                    warnings.append(warning2)
-                    return False
-
-        if discovered_subprojects:
-            for subproject in discovered_subprojects:
-                expected_index = (subproject.root_path / ".mana_index").resolve()
-                has_index_dir = expected_index in discovered_index_set
-                has_search_data = has_index_dir and _index_has_search_data(expected_index)
-
-                logger.debug(
-                    "Chat subproject index check",
-                    extra={
-                        "subproject_root": str(subproject.root_path),
-                        "expected_index": str(expected_index),
-                        "has_index_dir": has_index_dir,
-                        "has_search_data": has_search_data,
-                    },
-                )
-
-                if has_search_data:
-                    selected_indexes.append(expected_index)
-                    continue
-
-                if auto_index_missing:
-                    ok = _auto_index(subproject.root_path, expected_index)
-                    if ok:
-                        auto_indexed_count += 1
-                        selected_indexes.append(expected_index)
-                    else:
-                        if _index_has_chunks(expected_index):
-                            selected_indexes.append(expected_index)
-                else:
-                    skipped_missing_count += 1
-                    warning = f"Skipped missing or empty index for subproject {subproject.root_path}"
+                except Exception as exc:
+                    warning = f"Vector index failed for {target_path} (fallback to chunks-only): {exc}"
                     logger.warning(warning)
                     warnings.append(warning)
+                    try:
+                        index_service.index(target_path=target_path, index_dir=idx_dir, rebuild=False, vectors=False)
+                        logger.info("Chat auto-index chunks-only success", extra={"idx_dir": str(idx_dir)})
+                        return True
+                    except Exception as exc2:
+                        warning2 = f"Chunks-only index failed for {target_path}: {exc2}"
+                        logger.warning(warning2)
+                        warnings.append(warning2)
+                        return False
+
+            if discovered_subprojects:
+                for subproject in discovered_subprojects:
+                    if tmp_base is not None:
+                        expected_index = (tmp_base / _stable_subdir_name(subproject.root_path)).resolve()
+                        has_index_dir = expected_index.exists()
+                    else:
+                        expected_index = (subproject.root_path / ".mana_index").resolve()
+                        has_index_dir = expected_index in discovered_index_set
+
+                    has_search_data = has_index_dir and _index_has_search_data(expected_index)
+
+                    if has_search_data:
+                        selected_indexes.append(expected_index)
+                        continue
+
+                    if auto_index_missing:
+                        ok = _auto_index(subproject.root_path, expected_index)
+                        if ok:
+                            auto_indexed_count += 1
+                            selected_indexes.append(expected_index)
+                        else:
+                            if _index_has_chunks(expected_index):
+                                selected_indexes.append(expected_index)
+                    else:
+                        skipped_missing_count += 1
+                        warning = f"Skipped missing or empty index for subproject {subproject.root_path}"
+                        logger.warning(warning)
+                        warnings.append(warning)
+
+            else:
+                if tmp_base is not None:
+                    root_index = (tmp_base / _stable_subdir_name(root)).resolve()
+                else:
+                    root_index = (root / ".mana_index").resolve()
+
+                if root_index.exists() and _index_has_search_data(root_index):
+                    selected_indexes = [root_index]
+                elif auto_index_missing:
+                    ok = _auto_index(root, root_index)
+                    if ok:
+                        auto_indexed_count = 1
+                        selected_indexes = [root_index]
+                    else:
+                        if _index_has_chunks(root_index):
+                            selected_indexes = [root_index]
+
+            selected_indexes = sorted({item.resolve() for item in selected_indexes}, key=lambda p: str(p))
+            if max_indexes > 0:
+                selected_indexes = selected_indexes[:max_indexes]
+
+            if not selected_indexes:
+                msg = (
+                    f"No usable indexes found under {root}. "
+                    f"Try running: mana-analyzer index {root} "
+                    f"or re-run chat with --auto-index-missing."
+                )
+                _emit_text(msg, output_file=output_file)
+                logger.error("Chat aborted: no usable indexes", extra={"root": str(root)})
+                raise typer.Exit(code=2)
+
+            chat_service.set_index_dirs(selected_indexes)
+
+            _emit_text(
+                "mana-analyzer chat (dir-mode)\n"
+                f"- root: {root}\n"
+                f"- indexes: {len(selected_indexes)}\n"
+                f"- auto-indexed: {auto_indexed_count}\n"
+                f"- skipped: {skipped_missing_count}\n"
+                f"- ephemeral-index: {ephemeral_index}",
+                output_file=output_file,
+            )
+            if warnings:
+                _emit_text("Warnings:\n" + "\n".join(f"- {w}" for w in warnings), output_file=output_file)
 
         else:
-            root_index = (root / ".mana_index").resolve()
-            logger.debug("Chat root index check", extra={"root_index": str(root_index)})
-            if root_index.exists() and _index_has_search_data(root_index):
-                selected_indexes = [root_index]
-            elif auto_index_missing:
-                ok = _auto_index(root, root_index)
-                if ok:
-                    auto_indexed_count = 1
-                    selected_indexes = [root_index]
-                else:
-                    if _index_has_chunks(root_index):
-                        selected_indexes = [root_index]
+            if ephemeral_index and not index_dir:
+                tmp_root, resolved_index_dir = _make_ephemeral_index_dir(prefix="mana_chat_index_")
+                index_service = build_index_service(settings)
+                index_service.index(target_path=Path.cwd(), index_dir=resolved_index_dir, rebuild=False, vectors=True)
+            else:
+                resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
 
-        selected_indexes = sorted({item.resolve() for item in selected_indexes}, key=lambda p: str(p))
-        if max_indexes > 0:
-            selected_indexes = selected_indexes[:max_indexes]
-
-        if not selected_indexes:
-            msg = (
-                f"No usable indexes found under {root}. "
-                f"Try running: mana-analyzer index {root} "
-                f"or re-run chat with --auto-index-missing."
+            _emit_text(
+                "mana-analyzer chat\n"
+                f"- index: {resolved_index_dir}\n"
+                f"- k: {resolved_k}\n"
+                f"- ephemeral-index: {ephemeral_index}",
+                output_file=output_file,
             )
-            _emit_text(msg, output_file=output_file)
-            logger.error("Chat aborted: no usable indexes", extra={"root": str(root)})
-            raise typer.Exit(code=2)
 
-        chat_service.set_index_dirs(selected_indexes)
+        # -----------------------------
+        # Tool-first retry logic
+        # -----------------------------
+        def _looks_like_guess(answer: str) -> bool:
+            a = (answer or "").lower()
+            triggers = [
+                "i can't", "cannot", "can't", "no source", "no actual source",
+                "snippets you provided", "from the snippets", "i don’t have",
+                "i don't have", "not enough", "insufficient", "based on the repository name",
+                "infer", "guess", "might be", "appears to", "only clues",
+                "doesn’t contain application logic", "does not contain application logic",
+                "path is outside project root",
+            ]
+            return any(t in a for t in triggers)
 
-        _emit_text(
-            "mana-analyzer chat (dir-mode)\n"
-            f"- root: {root}\n"
-            f"- indexes: {len(selected_indexes)}\n"
-            f"- auto-indexed: {auto_indexed_count}\n"
-            f"- skipped: {skipped_missing_count}",
-            output_file=output_file,
-        )
-        if warnings:
-            _emit_text("Warnings:\n" + "\n".join(f"- {w}" for w in warnings), output_file=output_file)
+        def _tool_first_instruction(user_question: str) -> str:
+            return (
+                f"{user_question}\n\n"
+                "TOOL-FIRST INSTRUCTIONS (MANDATORY):\n"
+                "- Do NOT guess.\n"
+                "- You MUST use tools to search the repository and inspect real source files.\n"
+                "- Focus on backend/ and loanapp/.\n"
+                "- You MUST open at least TWO real source files before concluding.\n"
+                "- Avoid caches/build output: node_modules/, .next/, .angular/, dist/, build/, .cache/, .npm-cache/, generated/.\n"
+                "- Final answer MUST include evidence (file path + line ranges).\n"
+            )
 
-    else:
-        resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
-        _emit_text(
-            "mana-analyzer chat\n"
-            f"- index: {resolved_index_dir}\n"
-            f"- k: {resolved_k}",
-            output_file=output_file,
-        )
+        max_attempts = 3
+        min_sources = 2
 
-    # -----------------------------
-    # Tool-first retry logic
-    # -----------------------------
-    def _looks_like_guess(answer: str) -> bool:
-        a = (answer or "").lower()
-        triggers = [
-            "i can't", "cannot", "can't", "no source", "no actual source",
-            "snippets you provided", "from the snippets", "i don’t have",
-            "i don't have", "not enough", "insufficient", "based on the repository name",
-            "infer", "guess", "might be", "appears to", "only clues",
-            "doesn’t contain application logic", "does not contain application logic",
-            "path is outside project root",
-        ]
-        return any(t in a for t in triggers)
+        console.print("mana-analyzer chat – type 'exit' or 'quit' to end.")
+        if not agent_tools:
+            console.print("[yellow]Tip:[/yellow] run with --agent-tools for real tool-driven investigation.")
 
-    def _tool_first_instruction(user_question: str) -> str:
-        return (
-            f"{user_question}\n\n"
-            "TOOL-FIRST INSTRUCTIONS (MANDATORY):\n"
-            "- Do NOT guess.\n"
-            "- You MUST use tools to search the repository and inspect real source files.\n"
-            "- Focus on backend/ and loanapp/.\n"
-            "- You MUST open at least TWO real source files before concluding.\n"
-            "- Avoid caches/build output: node_modules/, .next/, .angular/, dist/, build/, .cache/, .npm-cache/, generated/.\n"
-            "- Final answer MUST include evidence (file path + line ranges).\n"
-        )
-
-    max_attempts = 3
-    min_sources = 2
-
-    console.print("mana-analyzer chat – type 'exit' or 'quit' to end.")
-    if not agent_tools:
-        console.print("[yellow]Tip:[/yellow] run with --agent-tools for real tool-driven investigation.")
-
-    while True:
-        try:
-            question = input("💬 » ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print("\nExiting chat.")
-            logger.info("Chat session ended by user interrupt/EOF")
-            break
-
-        if not question:
-            continue
-        if question.lower() in {"exit", "quit"}:
-            console.print("Goodbye!")
-            logger.info("Chat session ended by user command", extra={"command": question.lower()})
-            break
-
-        logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
-
-        response = None
-        attempt_question = question
-
-        for attempt in range(1, max_attempts + 1):
-            logger.debug("Chat attempt", extra={"attempt": attempt, "max_attempts": max_attempts})
+        while True:
             try:
-                response = chat_service.ask(attempt_question)
-            except Exception as exc:
-                _log_exception("chat_service.ask", exc, attempt=attempt)
-                raise
+                question = input("💬 » ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\nExiting chat.")
+                logger.info("Chat session ended by user interrupt/EOF")
+                break
+
+            if not question:
+                continue
+            if question.lower() in {"exit", "quit"}:
+                console.print("Goodbye!")
+                logger.info("Chat session ended by user command", extra={"command": question.lower()})
+                break
+
+            logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
+
+            response = None
+            attempt_question = question
+
+            for attempt in range(1, max_attempts + 1):
+                logger.debug("Chat attempt", extra={"attempt": attempt, "max_attempts": max_attempts})
+
+                # ✅ NEW: live spinner + tool animation (only in agent_tools mode)
+                try:
+                    if agent_tools:
+                        spinner = Spinner("dots", text="Thinking…")
+                        with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
+                            cb = RichToolCallbackHandler(live, show_inputs=True)
+
+                            # If your ChatService.ask supports callbacks, use it:
+                            try:
+                                response = chat_service.ask(attempt_question, callbacks=[cb])  # type: ignore[arg-type]
+                            except TypeError:
+                                # Fallback: call AskService directly (classic mode uses chat_service)
+                                if dir_mode:
+                                    # dir-mode tool path should be in AskService, but you may already have a method.
+                                    # If you have ask_with_tools_dir_mode that accepts callbacks, prefer that.
+                                    response = ask_service.ask_with_tools_dir_mode(  # type: ignore[call-arg]
+                                        index_dirs=getattr(chat_service, "index_dirs", []) or [],
+                                        question=attempt_question,
+                                        k=resolved_k,
+                                        max_steps=agent_max_steps,
+                                        timeout_seconds=agent_timeout_seconds,
+                                        root_dir=root,
+                                        callbacks=[cb],
+                                    )
+                                else:
+                                    assert resolved_index_dir is not None
+                                    response = ask_service.ask_with_tools(
+                                        index_dir=resolved_index_dir,
+                                        question=attempt_question,
+                                        k=resolved_k,
+                                        max_steps=agent_max_steps,
+                                        timeout_seconds=agent_timeout_seconds,
+                                        callbacks=[cb],
+                                    )
+                    else:
+                        response = chat_service.ask(attempt_question)
+                except Exception as exc:
+                    _log_exception("chat_service.ask", exc, attempt=attempt)
+                    raise
+
+                if response is None:
+                    logger.warning("Chat service returned None response", extra={"attempt": attempt})
+                    break
+
+                src_count = len(getattr(response, "sources", []) or [])
+                guessed = _looks_like_guess(getattr(response, "answer", ""))
+
+                logger.debug(
+                    "Chat attempt evaluation",
+                    extra={"attempt": attempt, "src_count": src_count, "guessed": guessed},
+                )
+
+                if (src_count >= min_sources) and not guessed:
+                    break
+
+                if attempt < max_attempts:
+                    attempt_question = _tool_first_instruction(question) + f"\n(Attempt {attempt+1}/{max_attempts})"
 
             if response is None:
-                logger.warning("Chat service returned None response", extra={"attempt": attempt})
-                break
+                continue
 
-            src_count = len(getattr(response, "sources", []) or [])
-            guessed = _looks_like_guess(getattr(response, "answer", ""))
+            if as_json:
+                console.print_json(json.dumps(response.to_dict()))
+            else:
+                console.print(response.answer)
+                if response.sources:
+                    console.print(
+                        "\nSources:\n"
+                        + "\n".join(f"- {src.file_path}:{src.start_line}-{src.end_line}" for src in response.sources)
+                    )
+                if getattr(response, "warnings", None):
+                    console.print("\nWarnings:\n" + "\n".join(f"- {w}" for w in response.warnings))
 
-            logger.debug(
-                "Chat attempt evaluation",
-                extra={"attempt": attempt, "src_count": src_count, "guessed": guessed},
+            logger.info(
+                "Chat response emitted",
+                extra={
+                    "sources": len(getattr(response, "sources", []) or []),
+                    "warnings": len(getattr(response, "warnings", []) or []),
+                },
             )
 
-            if (src_count >= min_sources) and not guessed:
-                break
-
-            if attempt < max_attempts:
-                attempt_question = _tool_first_instruction(question) + f"\n(Attempt {attempt+1}/{max_attempts})"
-
-        if response is None:
-            continue
-
-        if as_json:
-            console.print_json(json.dumps(response.to_dict()))
-        else:
-            console.print(response.answer)
-            if response.sources:
-                console.print(
-                    "\nSources:\n"
-                    + "\n".join(f"- {src.file_path}:{src.start_line}-{src.end_line}" for src in response.sources)
-                )
-            if getattr(response, "warnings", None):
-                console.print("\nWarnings:\n" + "\n".join(f"- {w}" for w in response.warnings))
-
-        logger.info(
-            "Chat response emitted",
-            extra={
-                "sources": len(getattr(response, "sources", []) or []),
-                "warnings": len(getattr(response, "warnings", []) or []),
-            },
-        )
+    finally:
+        if tmp_root is not None:
+            tmp_root.cleanup()

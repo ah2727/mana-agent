@@ -12,6 +12,8 @@ from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from typing import Any, Sequence
+from langchain_core.callbacks.base import BaseCallbackHandler
 from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_analyzer.llm.prompts import ASK_AGENT_SYSTEM_PROMPT
 from mana_analyzer.llm.run_logger import LlmRunLogger
@@ -234,7 +236,6 @@ class AskAgent:
             ),
         ]
         return tools, traces, sources, warnings
-
     def run(
         self,
         question: str,
@@ -243,25 +244,36 @@ class AskAgent:
         max_steps: int = 6,
         timeout_seconds: int = 30,
         index_dirs: list[str | Path] | None = None,
+        callbacks: Sequence[BaseCallbackHandler] | None = None,
     ) -> AskResponseWithTrace:
         started = perf_counter()
+
         self._resolved_index = Path(index_dir).resolve()
         if index_dirs:
             self._resolved_indexes = sorted({Path(item).resolve() for item in index_dirs}, key=lambda item: str(item))
         else:
             self._resolved_indexes = [self._resolved_index]
+
         tools, traces, sources, warnings = self._build_tools(k_default=k, timeout_seconds=timeout_seconds)
         tool_map = {tool.name: tool for tool in tools}
+
+        # Bind tools to LLM (still need to pass callbacks at invoke-time via config)
         bound = self.llm.bind_tools(tools)
+
         messages = [
             SystemMessage(content=ASK_AGENT_SYSTEM_PROMPT),
             HumanMessage(content=question),
         ]
 
+        # LangChain config (where callbacks are consumed)
+        cfg: dict[str, Any] = {"callbacks": list(callbacks) if callbacks else []}
+
         final_answer = ""
         for _ in range(max_steps):
-            ai_msg = bound.invoke(messages)
+            # ✅ IMPORTANT: pass callbacks here so you get live updates (e.g. spinner)
+            ai_msg = bound.invoke(messages, config=cfg)
             messages.append(ai_msg)
+
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if not tool_calls:
                 final_answer = str(ai_msg.content)
@@ -269,14 +281,17 @@ class AskAgent:
 
             for call in tool_calls:
                 name = str(call.get("name", ""))
-                args = call.get("args", {})
+                args = call.get("args", {}) or {}
+
                 if name not in tool_map:
                     content = json.dumps({"error": f"unknown tool: {name}"})
                 else:
                     try:
-                        content = tool_map[name].invoke(args)
+                        # ✅ IMPORTANT: pass callbacks to tool invoke so on_tool_start/on_tool_end fire
+                        content = tool_map[name].invoke(args, config=cfg)
                     except Exception as exc:
                         content = json.dumps({"error": str(exc)})
+
                 messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
 
         if not final_answer:
@@ -289,6 +304,7 @@ class AskAgent:
             }.values(),
             key=lambda item: (item.file_path, item.start_line, item.end_line, item.symbol_name),
         )
+
         result = AskResponseWithTrace(
             answer=final_answer,
             sources=deduped_sources,
@@ -296,6 +312,7 @@ class AskAgent:
             trace=traces,
             warnings=warnings,
         )
+
         run_logger = getattr(self, "run_logger", None)
         if run_logger is not None:
             run_logger.log(
@@ -317,8 +334,9 @@ class AskAgent:
                     "answer": result.answer,
                 }
             )
-        return result
 
+        return result
+    
     def run_multi(
         self,
         question: str,

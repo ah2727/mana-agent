@@ -73,11 +73,34 @@ class ChatService:
     def set_index_dirs(self, index_dirs: List[Path]) -> None:
         """Used by the CLI to supply the computed dir-mode index list."""
         self._index_dirs = [Path(p).resolve() for p in index_dirs]
+    def ask(
+        self,
+        question: str,
+        *,
+        callbacks: Sequence[Any] | None = None,
+        **kwargs: Any,
+    ):
+        """
+        Ask a question using either:
+          - dir-mode: multiple indexes via search_service / agent tools, or
+          - single-index mode: one index via store / agent tools.
 
-    def ask(self, question: str):
+        `callbacks` is optional and is forwarded when supported by downstream services.
+        If downstream does not support callbacks, we gracefully retry without them.
+        """
         question = (question or "").strip()
         if not question:
             return None
+
+        # Helper: call a function with callbacks if supported; otherwise retry without.
+        def _call_with_optional_callbacks(fn, /, **call_kwargs):
+            if callbacks is None:
+                return fn(**call_kwargs)
+            try:
+                return fn(**call_kwargs, callbacks=callbacks)
+            except TypeError:
+                # Downstream method does not accept callbacks
+                return fn(**call_kwargs)
 
         if self._dir_mode:
             if not self._index_dirs:
@@ -87,7 +110,9 @@ class ChatService:
                 )
 
             if self._agent_tools:
-                response = self._ask_service.ask_with_tools_dir_mode(
+                # Tool/agent dir-mode path
+                response = _call_with_optional_callbacks(
+                    self._ask_service.ask_with_tools_dir_mode,
                     index_dirs=self._index_dirs,
                     question=question,
                     k=self._k,
@@ -96,16 +121,28 @@ class ChatService:
                     root_dir=self._root_dir,
                 )
             else:
-                response = self._ask_service.ask_dir_mode(
+                # Classic dir-mode path (usually no callbacks, but we allow if you add it later)
+                response = _call_with_optional_callbacks(
+                    self._ask_service.ask_dir_mode,
                     index_dirs=self._index_dirs,
                     question=question,
                     k=self._k,
                     root_dir=self._root_dir,
                 )
+
         else:
+            if not self._index_dirs:
+                raise RuntimeError(
+                    "No index configured for chat. "
+                    "Compute selected index in CLI and call chat_service.set_index_dirs(...)."
+                )
+
             index_dir = self._index_dirs[0]
+
             if self._agent_tools:
-                response = self._ask_service.ask_with_tools(
+                # Tool/agent single-index path
+                response = _call_with_optional_callbacks(
+                    self._ask_service.ask_with_tools,
                     index_dir=index_dir,
                     question=question,
                     k=self._k,
@@ -113,14 +150,19 @@ class ChatService:
                     timeout_seconds=self._agent_timeout_seconds,
                 )
             else:
-                response = self._ask_service.ask(
+                # Classic single-index path
+                response = _call_with_optional_callbacks(
+                    self._ask_service.ask,
                     index_dir=index_dir,
                     question=question,
                     k=self._k,
                 )
 
+        # Record history safely
         try:
-            self._history.append((question, response.answer))
+            answer_text = getattr(response, "answer", None)
+            if answer_text is not None:
+                self._history.append((question, answer_text))
         except Exception:
             pass
 
