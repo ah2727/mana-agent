@@ -527,7 +527,7 @@ def ask(
                     continue
                 if auto_index_missing:
                     try:
-                        index_service.index(target_path=subproject.root_path, index_dir=expected_index, rebuild=False)
+                        index_service.index(target_path=subproject.root_path, index_dir=expected_index, rebuild=False, vectors=True)
                         auto_indexed_count += 1
                         selected_indexes.append(expected_index)
                     except Exception as exc:
@@ -986,8 +986,7 @@ async def scan(
 
     if fail_on_vulnerabilities and safety_code != 0:
         raise typer.Exit(code=1)
-    
-@app.command()
+    @app.command()
 def chat(
     model: str | None = typer.Option(None, "--model"),
     index_dir: str | None = typer.Option(None, "--index-dir"),
@@ -1024,7 +1023,6 @@ def chat(
     """Start an interactive chat session in the console."""
     output_file = _resolve_output_file()
 
-    # Build services correctly (search_service MUST be configured)
     settings = Settings()
     resolved_k = k or settings.default_top_k
     ask_service = build_ask_service(settings, model_override=model)
@@ -1044,7 +1042,6 @@ def chat(
         auto_index_missing=auto_index_missing,
     )
 
-    # If dir-mode: compute selected indexes (reuse ask() logic)
     if dir_mode:
         root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
         if root.is_file():
@@ -1060,6 +1057,27 @@ def chat(
         warnings: list[str] = []
         selected_indexes: list[Path] = []
 
+        def _auto_index(target_path: Path, idx_dir: Path) -> bool:
+            """
+            Try vector indexing first; if embeddings fail (404 etc),
+            fall back to chunks-only indexing.
+            """
+            try:
+                index_service.index(target_path=target_path, index_dir=idx_dir, rebuild=False, vectors=True)
+                return True
+            except Exception as exc:
+                warning = f"Vector index failed for {target_path} (fallback to chunks-only): {exc}"
+                logger.warning(warning)
+                warnings.append(warning)
+                try:
+                    index_service.index(target_path=target_path, index_dir=idx_dir, rebuild=False, vectors=False)
+                    return True
+                except Exception as exc2:
+                    warning2 = f"Chunks-only index failed for {target_path}: {exc2}"
+                    logger.warning(warning2)
+                    warnings.append(warning2)
+                    return False
+
         if discovered_subprojects:
             for subproject in discovered_subprojects:
                 expected_index = (subproject.root_path / ".mana_index").resolve()
@@ -1071,18 +1089,11 @@ def chat(
                     continue
 
                 if auto_index_missing:
-                    try:
-                        index_service.index(
-                            target_path=subproject.root_path,
-                            index_dir=expected_index,
-                            rebuild=False,
-                        )
+                    ok = _auto_index(subproject.root_path, expected_index)
+                    if ok:
                         auto_indexed_count += 1
                         selected_indexes.append(expected_index)
-                    except Exception as exc:
-                        warning = f"Failed to auto-index {subproject.root_path}: {exc}"
-                        logger.warning(warning)
-                        warnings.append(warning)
+                    else:
                         if _index_has_chunks(expected_index):
                             selected_indexes.append(expected_index)
                 else:
@@ -1090,23 +1101,18 @@ def chat(
                     warning = f"Skipped missing or empty index for subproject {subproject.root_path}"
                     logger.warning(warning)
                     warnings.append(warning)
+
         else:
+            # ✅ FIXED: correct variables used here (root/root_index)
             root_index = (root / ".mana_index").resolve()
             if root_index.exists() and _index_has_search_data(root_index):
                 selected_indexes = [root_index]
             elif auto_index_missing:
-                try:
-                    index_service.index(
-                        target_path=root,
-                        index_dir=root_index,
-                        rebuild=False,
-                    )
+                ok = _auto_index(root, root_index)
+                if ok:
                     auto_indexed_count = 1
                     selected_indexes = [root_index]
-                except Exception as exc:
-                    warning = f"Failed to auto-index {root}: {exc}"
-                    logger.warning(warning)
-                    warnings.append(warning)
+                else:
                     if _index_has_chunks(root_index):
                         selected_indexes = [root_index]
 
@@ -1117,15 +1123,14 @@ def chat(
         if not selected_indexes:
             msg = (
                 f"No usable indexes found under {root}. "
-                f"Try running: mana-analyzer index {root}  "
+                f"Try running: mana-analyzer index {root} "
                 f"or re-run chat with --auto-index-missing."
             )
+            _emit_text(msg, output_file=output_file)
             raise typer.Exit(code=2)
 
-        # Feed selected indexes into chat service
         chat_service.set_index_dirs(selected_indexes)
 
-        # Show startup info
         _emit_text(
             "mana-analyzer chat (dir-mode)\n"
             f"- root: {root}\n"
@@ -1138,7 +1143,6 @@ def chat(
             _emit_text("Warnings:\n" + "\n".join(f"- {w}" for w in warnings), output_file=output_file)
 
     else:
-        # Single-index mode: determine index dir
         resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
         _emit_text(
             "mana-analyzer chat\n"

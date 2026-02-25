@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-import re
 
 from mana_analyzer.analysis.models import SearchHit
 from mana_analyzer.utils.io import read_jsonl
@@ -22,14 +22,18 @@ class SearchService:
         resolved_index = Path(index_dir).resolve()
         logger.info("Running semantic search: index_dir=%s k=%d", resolved_index, k)
         logger.debug("Search query: %s", query)
+
         try:
             hits = self.store.search(resolved_index, query=query, k=k)
         except Exception as exc:
             logger.warning("Vector search failed for %s: %s", resolved_index, exc)
             hits = []
+
+        # If vectors are missing, fall back to lexical chunk search
         if not hits and not (resolved_index / "faiss").exists():
             logger.info("Falling back to lexical chunk search: index_dir=%s", resolved_index)
             hits = self._lexical_search(resolved_index, query=query, k=k)
+
         logger.info("Semantic search completed: hits=%d", len(hits))
         return hits
 
@@ -41,9 +45,11 @@ class SearchService:
             k,
         )
         logger.debug("Search query: %s", query)
+
         warnings: list[str] = []
         merged: list[SearchHit] = []
         worker_count = min(len(resolved_indexes), self._executor_workers)
+
         logger.info(
             "Executing concurrent multi-index search",
             extra={
@@ -51,6 +57,7 @@ class SearchService:
                 "worker_count": worker_count,
             },
         )
+
         if worker_count <= 1:
             for index_dir in resolved_indexes:
                 self._collect_search_results(index_dir, query, k, merged, warnings)
@@ -104,6 +111,7 @@ class SearchService:
             overlap = q_tokens & tokens
             if not overlap:
                 continue
+
             score = len(overlap) / max(len(q_tokens), 1)
             scored.append(
                 SearchHit(
@@ -136,3 +144,52 @@ class SearchService:
             warning = f"Skipped unusable index {index_dir}: {exc}"
             logger.warning(warning)
             warnings.append(warning)
+
+    # ---------------------------------------
+    # Tool-friendly wrappers (FIXED)
+    # ---------------------------------------
+    def tool_semantic_search(self, index_dir: str | Path, query: str, k: int = 5) -> dict:
+        """
+        Tool wrapper for agents: run search() and return JSON-friendly payload.
+        """
+        results = self.search(index_dir=index_dir, query=query, k=k)
+        return {
+            "index_dir": str(Path(index_dir).resolve()),
+            "query": query,
+            "k": k,
+            "results": [
+                {
+                    "file": r.file_path,
+                    "start": r.start_line,
+                    "end": r.end_line,
+                    "score": float(r.score),
+                    "symbol": r.symbol_name,
+                    "snippet": (r.snippet or "")[:500],
+                }
+                for r in results
+            ],
+        }
+
+    def tool_semantic_search_multi(self, index_dirs: list[str | Path], query: str, k: int = 5) -> dict:
+        """
+        Tool wrapper for agents: run search_multi() and return JSON-friendly payload.
+        """
+        dirs = [Path(p).resolve() for p in index_dirs]
+        results, warnings = self.search_multi(index_dirs=dirs, query=query, k=k)
+        return {
+            "index_dirs": [str(p) for p in dirs],
+            "query": query,
+            "k": k,
+            "warnings": warnings,
+            "results": [
+                {
+                    "file": r.file_path,
+                    "start": r.start_line,
+                    "end": r.end_line,
+                    "score": float(r.score),
+                    "symbol": r.symbol_name,
+                    "snippet": (r.snippet or "")[:500],
+                }
+                for r in results
+            ],
+        }
