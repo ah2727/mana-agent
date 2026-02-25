@@ -117,33 +117,33 @@ class AskService:
                 warnings=[],
             )
                 
-        @staticmethod
-        def _group_sources_by_index(sources: list[SearchHit], index_dirs: list[Path]) -> list[SourceGroup]:
-            grouped: dict[Path, list[SearchHit]] = {item.resolve(): [] for item in index_dirs}
-            for source in sources:
-                source_path = Path(source.file_path).resolve()
-                matched: Path | None = None
-                for index_dir in grouped.keys():
-                    subproject_root = index_dir.parent
-                    if source_path == subproject_root or subproject_root in source_path.parents:
-                        if matched is None or len(str(subproject_root)) > len(str(matched.parent)):
-                            matched = index_dir
-                if matched is not None:
-                    grouped[matched].append(source)
+    @staticmethod
+    def _group_sources_by_index(sources: list[SearchHit], index_dirs: list[Path]) -> list[SourceGroup]:
+        grouped: dict[Path, list[SearchHit]] = {item.resolve(): [] for item in index_dirs}
+        for source in sources:
+            source_path = Path(source.file_path).resolve()
+            matched: Path | None = None
+            for index_dir in grouped.keys():
+                subproject_root = index_dir.parent
+                if source_path == subproject_root or subproject_root in source_path.parents:
+                    if matched is None or len(str(subproject_root)) > len(str(matched.parent)):
+                        matched = index_dir
+            if matched is not None:
+                grouped[matched].append(source)
 
-            payload: list[SourceGroup] = []
-            for index_dir in sorted(grouped.keys(), key=lambda item: str(item)):
-                hits = grouped[index_dir]
-                if not hits:
-                    continue
-                payload.append(
-                    SourceGroup(
-                        index_dir=str(index_dir),
-                        subproject_root=str(index_dir.parent),
-                        sources=hits,
-                    )
+        payload: list[SourceGroup] = []
+        for index_dir in sorted(grouped.keys(), key=lambda item: str(item)):
+            hits = grouped[index_dir]
+            if not hits:
+                continue
+            payload.append(
+                SourceGroup(
+                    index_dir=str(index_dir),
+                    subproject_root=str(index_dir.parent),
+                    sources=hits,
                 )
-            return payload
+            )
+        return payload
 
     def ask_dir_mode(
         self,
