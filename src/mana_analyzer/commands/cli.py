@@ -31,6 +31,9 @@ from mana_analyzer.utils.index_discovery import discover_index_dirs
 from mana_analyzer.utils.logging import setup_logging
 from mana_analyzer.utils.project_discovery import discover_subprojects
 from mana_analyzer.vector_store.faiss_store import FaissStore
+from mana_analyzer.config.settings import Settings
+from mana_analyzer.services.chat_service import ChatService  # adjust import path when integrated
+
 
 from mana_analyzer.services.vulnerability_service import VulnerabilityService
 from mana_analyzer.services.report_service import ReportService
@@ -983,3 +986,193 @@ async def scan(
 
     if fail_on_vulnerabilities and safety_code != 0:
         raise typer.Exit(code=1)
+    
+@app.command()
+def chat(
+    model: str | None = typer.Option(None, "--model"),
+    index_dir: str | None = typer.Option(None, "--index-dir"),
+    k: int | None = typer.Option(None, "--k"),
+    dir_mode: bool = typer.Option(
+        False,
+        "--dir-mode",
+        help="Enable directory-aware chat mode (uses subproject indexes).",
+    ),
+    root_dir: str | None = typer.Option(
+        None,
+        "--root-dir",
+        help="Root directory to scan when --dir-mode is enabled.",
+    ),
+    max_indexes: int = typer.Option(
+        0,
+        "--max-indexes",
+        help="Maximum discovered indexes to use in dir-mode (0 means unlimited).",
+    ),
+    auto_index_missing: bool = typer.Option(
+        True,
+        "--auto-index-missing/--no-auto-index-missing",
+        help="Automatically create missing subproject indexes in dir-mode.",
+    ),
+    agent_tools: bool = typer.Option(
+        False,
+        "--agent-tools",
+        help="Enable tool-aware answering (calls specialized tools).",
+    ),
+    agent_max_steps: int = typer.Option(6, "--agent-max-steps"),
+    agent_timeout_seconds: int = typer.Option(30, "--agent-timeout-seconds"),
+    as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
+) -> None:
+    """Start an interactive chat session in the console."""
+    output_file = _resolve_output_file()
+
+    # Build services correctly (search_service MUST be configured)
+    settings = Settings()
+    resolved_k = k or settings.default_top_k
+    ask_service = build_ask_service(settings, model_override=model)
+
+    chat_service = ChatService(
+        ask_service=ask_service,
+        settings=settings,
+        model_override=model,
+        index_dir=index_dir,
+        dir_mode=dir_mode,
+        root_dir=root_dir,
+        k=resolved_k,
+        agent_tools=agent_tools,
+        agent_max_steps=agent_max_steps,
+        agent_timeout_seconds=agent_timeout_seconds,
+        max_indexes=max_indexes,
+        auto_index_missing=auto_index_missing,
+    )
+
+    # If dir-mode: compute selected indexes (reuse ask() logic)
+    if dir_mode:
+        root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
+        if root.is_file():
+            root = root.parent
+
+        discovered_subprojects = discover_subprojects(root)
+        discovered_indexes = discover_index_dirs(root)
+        discovered_index_set = {item.resolve() for item in discovered_indexes}
+
+        index_service = build_index_service(settings)
+        auto_indexed_count = 0
+        skipped_missing_count = 0
+        warnings: list[str] = []
+        selected_indexes: list[Path] = []
+
+        if discovered_subprojects:
+            for subproject in discovered_subprojects:
+                expected_index = (subproject.root_path / ".mana_index").resolve()
+                has_index_dir = expected_index in discovered_index_set
+                has_search_data = has_index_dir and _index_has_search_data(expected_index)
+
+                if has_search_data:
+                    selected_indexes.append(expected_index)
+                    continue
+
+                if auto_index_missing:
+                    try:
+                        index_service.index(
+                            target_path=subproject.root_path,
+                            index_dir=expected_index,
+                            rebuild=False,
+                        )
+                        auto_indexed_count += 1
+                        selected_indexes.append(expected_index)
+                    except Exception as exc:
+                        warning = f"Failed to auto-index {subproject.root_path}: {exc}"
+                        logger.warning(warning)
+                        warnings.append(warning)
+                        if _index_has_chunks(expected_index):
+                            selected_indexes.append(expected_index)
+                else:
+                    skipped_missing_count += 1
+                    warning = f"Skipped missing or empty index for subproject {subproject.root_path}"
+                    logger.warning(warning)
+                    warnings.append(warning)
+        else:
+            root_index = (root / ".mana_index").resolve()
+            if root_index.exists() and _index_has_search_data(root_index):
+                selected_indexes = [root_index]
+            elif auto_index_missing:
+                try:
+                    index_service.index(
+                        target_path=root,
+                        index_dir=root_index,
+                        rebuild=False,
+                    )
+                    auto_indexed_count = 1
+                    selected_indexes = [root_index]
+                except Exception as exc:
+                    warning = f"Failed to auto-index {root}: {exc}"
+                    logger.warning(warning)
+                    warnings.append(warning)
+                    if _index_has_chunks(root_index):
+                        selected_indexes = [root_index]
+
+        selected_indexes = sorted({item.resolve() for item in selected_indexes}, key=lambda p: str(p))
+        if max_indexes > 0:
+            selected_indexes = selected_indexes[:max_indexes]
+
+        if not selected_indexes:
+            msg = (
+                f"No usable indexes found under {root}. "
+                f"Try running: mana-analyzer index {root}  "
+                f"or re-run chat with --auto-index-missing."
+            )
+            raise typer.Exit(code=2)
+
+        # Feed selected indexes into chat service
+        chat_service.set_index_dirs(selected_indexes)
+
+        # Show startup info
+        _emit_text(
+            "mana-analyzer chat (dir-mode)\n"
+            f"- root: {root}\n"
+            f"- indexes: {len(selected_indexes)}\n"
+            f"- auto-indexed: {auto_indexed_count}\n"
+            f"- skipped: {skipped_missing_count}",
+            output_file=output_file,
+        )
+        if warnings:
+            _emit_text("Warnings:\n" + "\n".join(f"- {w}" for w in warnings), output_file=output_file)
+
+    else:
+        # Single-index mode: determine index dir
+        resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
+        _emit_text(
+            "mana-analyzer chat\n"
+            f"- index: {resolved_index_dir}\n"
+            f"- k: {resolved_k}",
+            output_file=output_file,
+        )
+
+    console.print("mana-analyzer chat – type 'exit' or 'quit' to end.")
+    while True:
+        try:
+            question = input("💬 » ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\nExiting chat.")
+            break
+
+        if not question:
+            continue
+        if question.lower() in {"exit", "quit"}:
+            console.print("Goodbye!")
+            break
+
+        response = chat_service.ask(question)
+        if response is None:
+            continue
+
+        if as_json:
+            console.print_json(json.dumps(response.to_dict()))
+        else:
+            console.print(response.answer)
+            if response.sources:
+                console.print(
+                    "\nSources:\n"
+                    + "\n".join(f"- {src.file_path}:{src.start_line}-{src.end_line}" for src in response.sources)
+                )
+            if getattr(response, "warnings", None):
+                console.print("\nWarnings:\n" + "\n".join(f"- {w}" for w in response.warnings))

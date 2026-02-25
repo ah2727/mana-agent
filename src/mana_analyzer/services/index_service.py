@@ -66,14 +66,21 @@ class IndexService:
             logger.exception("Failed to build chunks for %s: %s", file_path, exc)
             return file_path, []
 
-    def index(self, target_path: str | Path, index_dir: str | Path, rebuild: bool = False) -> dict:
+    def index(
+        self,
+        target_path: str | Path,
+        index_dir: str | Path,
+        rebuild: bool = False,
+        vectors: bool = True,  # ✅ NEW: allow chunks-only indexing (no embeddings/FAISS)
+    ) -> dict:
         target = Path(target_path).resolve()
         index_root = ensure_dir(index_dir)
         logger.info(
-            "Starting index run: target=%s index_dir=%s rebuild=%s",
+            "Starting index run: target=%s index_dir=%s rebuild=%s vectors=%s",
             target,
             index_root,
             rebuild,
+            vectors,
         )
 
         if rebuild:
@@ -136,6 +143,7 @@ class IndexService:
                     }
                     logger.debug("Prepared %d chunks for %s", len(file_chunks), file_path)
 
+        # ✅ Always persist manifest + chunks, even if vectors fail
         write_json(self._manifest_path(index_root), manifest)
         write_jsonl(self._chunks_path(index_root), [chunk.to_dict() for chunk in chunk_map.values()])
         logger.debug(
@@ -144,12 +152,29 @@ class IndexService:
             len(chunk_map),
         )
 
-        self.store.upsert_chunks(index_root, new_chunks, remove_chunk_ids)
-        logger.info(
-            "Vector store upsert complete: added=%d removed=%d",
-            len(new_chunks),
-            len(remove_chunk_ids),
-        )
+        wrote_vectors = False
+        vector_error = ""
+
+        # ✅ If vectors disabled, skip embeddings entirely
+        if not vectors:
+            logger.info("Skipping vector upsert (vectors=False). Chunks-only index created.")
+        else:
+            try:
+                self.store.upsert_chunks(index_root, new_chunks, remove_chunk_ids)
+                wrote_vectors = True
+                logger.info(
+                    "Vector store upsert complete: added=%d removed=%d",
+                    len(new_chunks),
+                    len(remove_chunk_ids),
+                )
+            except Exception as exc:
+                # ✅ Critical: do not crash indexing if embeddings/FAISS fails (e.g., 404)
+                vector_error = str(exc)
+                wrote_vectors = False
+                logger.warning(
+                    "Vector store upsert failed; keeping chunks-only index. error=%s",
+                    vector_error,
+                )
 
         return {
             "indexed_files": len(changed_files),
@@ -158,4 +183,7 @@ class IndexService:
             "new_chunks": len(new_chunks),
             "removed_chunks": len(remove_chunk_ids),
             "index_dir": str(index_root),
+            # ✅ NEW fields
+            "vectors": wrote_vectors,
+            "vector_error": vector_error,
         }

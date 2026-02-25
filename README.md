@@ -90,3 +90,59 @@ mana-analyzer --verbose --log-dir logs/ --output-dir logs/ report /Users/ah/Docu
   --security-lens defensive-red-team \
   --json-out logs/ \
   --markdown-out logs/
+
+
+# CLI Chat Mode – mana-analyzer
+
+This document describes the **Chat Mode** feature for the `mana-analyzer` CLI.  
+Chat mode provides an interactive, conversational interface in the terminal, allowing users to explore repositories and ask follow-up questions without repeatedly invoking separate commands.
+
+---
+
+## ✨ Overview
+
+The existing CLI exposes commands such as:
+
+- `index`
+- `search`
+- `analyze`
+- `ask`
+
+However, these commands operate independently and require manual invocation each time.
+
+**Chat Mode** introduces:
+
+- 🖥 An interactive REPL (Read–Eval–Print Loop)
+- 🧠 Context-aware multi-turn conversation
+- 📂 Support for single-index and directory (multi-index) mode
+- 🧰 Optional tool-aware answering
+- 📄 JSON output support
+- 🚪 Clean exit with `exit`, `quit`, or `Ctrl+C`
+
+---
+
+## 🏗 Architecture
+
+Chat mode is built around a new service:
+
+
+### ChatService Responsibilities
+
+The `ChatService`:
+
+- Wraps and internally builds an `AskService`
+- Maintains in-memory conversation history
+- Delegates questions to:
+  - `AskService.ask()` (single index mode)
+  - `AskService.ask_dir_mode()` (directory mode)
+- Stores `(question, answer)` history
+- Returns structured `AskResponse` objects
+
+---
+
+## 📦 Installation
+
+After implementing the feature, install or reinstall the CLI:
+
+```bash
+pip install .

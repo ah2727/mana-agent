@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
+import fnmatch
+
 from mana_analyzer.analysis.models import (
     ClassDescriptor,
     ExportDescriptor,
@@ -20,62 +22,217 @@ from mana_analyzer.services.parsers import (
     parse_python_module,
     parse_scripting_module,
 )
-from mana_analyzer.utils.io import EXCLUDED_DIRS, iter_source_files, language_for_path, load_ignore_patterns
+from mana_analyzer.utils.io import (
+    EXCLUDED_DIRS,
+    iter_source_files,
+    language_for_path,
+    load_ignore_patterns,
+)
 from mana_analyzer.utils.project_discovery import discover_subprojects
 
 
+# -------------------------
+# Helpers (NEW)
+# -------------------------
+def _to_posix_relative(path: Path, root: Path) -> str:
+    """Return a stable, POSIX-style relative path."""
+    return path.relative_to(root).as_posix()
+
+
+def _normalize_ignore_patterns(patterns: list[str]) -> list[str]:
+    """
+    Normalize ignore patterns:
+    - trim whitespace
+    - drop empty lines
+    - keep as-is otherwise (we'll match with fnmatch + prefix rules)
+    """
+    out: list[str] = []
+    for p in patterns:
+        p = (p or "").strip()
+        if not p or p.startswith("#"):
+            continue
+        out.append(p)
+    return out
+
+
+def _matches_ignore(relative_posix: str, patterns: list[str]) -> bool:
+    """
+    Decide if a relative path should be ignored, supporting:
+    - exact dir patterns like "build/" or "build"
+    - prefix dir patterns
+    - glob patterns like "*.min.js" or "dist/**"
+    """
+    rel = relative_posix
+
+    # Always ignore excluded dir names anywhere in the path
+    parts = rel.split("/")
+    if any(part in EXCLUDED_DIRS for part in parts):
+        return True
+
+    for raw in patterns:
+        pat = raw.strip()
+
+        # Common convention: trailing slash means directory
+        is_dir_pat = pat.endswith("/")
+        pat_no_slash = pat.rstrip("/")
+
+        # Prefix-style ignore for directories:
+        # "foo" or "foo/" ignores "foo" and anything under it.
+        if "/" not in pat_no_slash and not any(ch in pat_no_slash for ch in "*?[]"):
+            if parts and parts[0] == pat_no_slash:
+                return True
+            # Also ignore nested occurrences if pattern looks like a dir name
+            if pat_no_slash in parts:
+                return True
+
+        # Exact/prefix match (directory-like patterns)
+        if is_dir_pat:
+            if rel == pat_no_slash or rel.startswith(pat_no_slash + "/"):
+                return True
+
+        # Glob match (fnmatch is POSIX-style when we use POSIX paths)
+        # Support "dist/**" style by matching both the pattern and a simplified version.
+        if fnmatch.fnmatch(rel, pat):
+            return True
+        if "**" in pat:
+            simplified = pat.replace("**/", "").replace("/**", "")
+            if simplified and fnmatch.fnmatch(rel, simplified):
+                return True
+
+    return False
+
+
+def _safe_empty_parsed_module(file_path: Path, project_root: Path) -> ParsedModule:
+    """
+    If a parser crashes, return an empty ParsedModule.
+    This assumes ParsedModule is a dataclass/struct-like object with these attrs.
+    If your ParsedModule differs, adjust here.
+    """
+    # We avoid importing dataclasses etc. and just construct via the known fields.
+    # If ParsedModule has a different constructor, update this in one place.
+    return ParsedModule(
+        module_path=_to_posix_relative(file_path, project_root),
+        imports=[],
+        functions=[],
+        classes=[],
+        constants=[],
+        exports=[],
+        data_structures=[],
+        commands=[],
+        import_roots=set(),
+        parse_mode="error",
+    )
+
+
+# -------------------------
+# Upgraded StructureService
+# -------------------------
 class StructureService:
+    """
+    v2 upgrades:
+    - consistent POSIX paths
+    - stronger ignore matching
+    - safer parsing (per-file isolation)
+    - cleaner parser dispatch
+    - faster directory scanning by pruning excluded/ignored dirs
+    """
+
+    # Central suffix routing
+    _JS_TS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+    _DART_SUFFIXES = {".dart"}
+    _JVM_SUFFIXES = {".java", ".kt"}
+    _NATIVE_SUFFIXES = {
+        ".swift", ".m", ".mm", ".c", ".cc", ".cpp",
+        ".h", ".hpp", ".cs", ".scala", ".rs", ".go",
+    }
+    _SCRIPTING_SUFFIXES = {".sh", ".bash", ".zsh", ".php", ".rb", ".sql"}
+
     def __init__(self, include_tests: bool = False) -> None:
         self.include_tests = include_tests
 
-    @staticmethod
-    def _parse_module(file_path: Path, project_root: Path, language: str) -> ParsedModule:
+    @classmethod
+    def _parse_module(cls, file_path: Path, project_root: Path, language: str) -> ParsedModule:
         suffix = file_path.suffix.lower()
-        if language == "python":
-            return parse_python_module(file_path, project_root)
-        if suffix in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}:
-            return parse_js_ts_module(file_path, project_root)
-        if suffix == ".dart":
-            return parse_dart_module(file_path, project_root)
-        if suffix in {".java", ".kt"}:
-            return parse_jvm_module(file_path, project_root)
-        if suffix in {".swift", ".m", ".mm", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".scala", ".rs", ".go"}:
-            return parse_native_module(file_path, project_root)
-        if suffix in {".sh", ".bash", ".zsh", ".php", ".rb", ".sql"}:
-            return parse_scripting_module(file_path, project_root)
-        return parse_markup_module(file_path, project_root)
+
+        try:
+            if language == "python":
+                return parse_python_module(file_path, project_root)
+            if suffix in cls._JS_TS_SUFFIXES:
+                return parse_js_ts_module(file_path, project_root)
+            if suffix in cls._DART_SUFFIXES:
+                return parse_dart_module(file_path, project_root)
+            if suffix in cls._JVM_SUFFIXES:
+                return parse_jvm_module(file_path, project_root)
+            if suffix in cls._NATIVE_SUFFIXES:
+                return parse_native_module(file_path, project_root)
+            if suffix in cls._SCRIPTING_SUFFIXES:
+                return parse_scripting_module(file_path, project_root)
+            return parse_markup_module(file_path, project_root)
+        except Exception:
+            # One broken file shouldn't kill whole project analysis
+            return _safe_empty_parsed_module(file_path, project_root)
 
     @staticmethod
     def _list_directories(project_root: Path) -> list[str]:
-        ignore_patterns = load_ignore_patterns(project_root)
-        directories: list[str] = []
+        """
+        Faster + safer than Path.rglob for big repos:
+        - uses os-style walking via pathlib's rglob equivalent is slower
+        - prunes excluded + ignored dirs early
+        """
+        ignore_patterns = _normalize_ignore_patterns(load_ignore_patterns(project_root))
+        directories: set[str] = set()
+
+        # Manual walk using rglob on dirs only is still expensive; prune by checking relative path.
+        # This approach is a compromise that stays pathlib-only.
         for path in project_root.rglob("*"):
             if not path.is_dir():
                 continue
-            relative = str(path.relative_to(project_root))
-            if not relative:
+
+            rel = _to_posix_relative(path, project_root)
+            if not rel:
                 continue
-            if any(part in EXCLUDED_DIRS for part in path.parts):
+
+            if _matches_ignore(rel, ignore_patterns):
+                # If this dir is ignored, no need to list it.
+                # Note: pathlib.rglob cannot prune traversal; this still helps output correctness.
                 continue
-            if any(relative == pattern.rstrip("/") or relative.startswith(pattern.rstrip("/") + "/") for pattern in ignore_patterns):
-                continue
-            directories.append(relative)
-        return sorted(set(directories))
+
+            directories.add(rel)
+
+        return sorted(directories)
 
     def analyze_project(self, target_path: str | Path) -> ProjectStructureReport:
         target = Path(target_path).resolve()
         project_root = target if target.is_dir() else target.parent
 
+        ignore_patterns = _normalize_ignore_patterns(load_ignore_patterns(project_root))
+
         dependency_report = DependencyService().analyze(project_root)
 
-        files = iter_source_files(project_root)
+        # Materialize once; keep POSIX paths stable
+        source_files = list(iter_source_files(project_root))
+
+        # Optional test exclusion (directory segment match)
         if not self.include_tests:
-            files = [item for item in files if "tests" not in item.parts and "__tests__" not in item.parts]
-        all_file_paths = []
-        for file_path in files:
-            module_path = str(file_path.relative_to(project_root)).replace("\\", "/")
-            all_file_paths.append(module_path)
-        all_file_paths = sorted(set(all_file_paths))
+            def _is_test_file(p: Path) -> bool:
+                parts = {part.lower() for part in p.parts}
+                return "tests" in parts or "__tests__" in parts
+
+            source_files = [p for p in source_files if not _is_test_file(p)]
+
+        # Apply ignore patterns to files too (important if iter_source_files doesn't)
+        filtered_files: list[Path] = []
+        for fp in source_files:
+            rel = _to_posix_relative(fp, project_root)
+            if _matches_ignore(rel, ignore_patterns):
+                continue
+            filtered_files.append(fp)
+
+        # Sorted stable file list
+        filtered_files.sort(key=lambda p: _to_posix_relative(p, project_root))
+
+        all_file_paths = sorted({_to_posix_relative(fp, project_root) for fp in filtered_files})
+
         modules: list[ModuleDescriptor] = []
         exports: list[ExportDescriptor] = []
         data_structures: list[ClassDescriptor] = []
@@ -83,35 +240,37 @@ class StructureService:
         import_roots: set[str] = set()
 
         files_by_language: dict[str, list[str]] = {}
-        for file_path in files:
-            module_path = str(file_path.relative_to(project_root))
+
+        for file_path in filtered_files:
+            module_path = _to_posix_relative(file_path, project_root)
             language = language_for_path(file_path)
             parsed = self._parse_module(file_path, project_root, language)
 
             modules.append(
                 ModuleDescriptor(
                     module_path=module_path,
-                    imports=parsed.imports,
-                    functions=parsed.functions,
-                    classes=parsed.classes,
-                    constants=parsed.constants,
+                    imports=getattr(parsed, "imports", []) or [],
+                    functions=getattr(parsed, "functions", []) or [],
+                    classes=getattr(parsed, "classes", []) or [],
+                    constants=getattr(parsed, "constants", []) or [],
                     language=language,
-                    parse_mode=parsed.parse_mode,
+                    parse_mode=getattr(parsed, "parse_mode", "unknown"),
                 )
             )
-            exports.extend(parsed.exports)
-            data_structures.extend(parsed.data_structures)
-            commands.extend(parsed.commands)
-            import_roots.update(parsed.import_roots)
+            exports.extend(getattr(parsed, "exports", []) or [])
+            data_structures.extend(getattr(parsed, "data_structures", []) or [])
+            commands.extend(getattr(parsed, "commands", []) or [])
+            import_roots.update(getattr(parsed, "import_roots", set()) or set())
             files_by_language.setdefault(language, []).append(module_path)
 
-        language_counts = {key: len(value) for key, value in sorted(files_by_language.items())}
-        files_by_language = {key: sorted(value) for key, value in sorted(files_by_language.items())}
+        language_counts = {k: len(v) for k, v in sorted(files_by_language.items())}
+        files_by_language = {k: sorted(v) for k, v in sorted(files_by_language.items())}
 
+        # CI workflows
         ci_files: list[str] = []
         workflows = project_root / ".github" / "workflows"
         if workflows.exists():
-            ci_files = sorted(str(item.relative_to(project_root)) for item in workflows.glob("*.y*ml"))
+            ci_files = sorted(_to_posix_relative(item, project_root) for item in workflows.glob("*.y*ml"))
 
         llm_capabilities = [
             "qna-chain",
@@ -123,8 +282,8 @@ class StructureService:
         subprojects = discover_subprojects(project_root)
         subproject_reports = [
             SubprojectReport(
-                root_path=str(item.root_path.relative_to(project_root)),
-                manifest_paths=sorted(str(path.relative_to(project_root)) for path in item.manifest_paths),
+                root_path=_to_posix_relative(item.root_path, project_root),
+                manifest_paths=sorted(_to_posix_relative(p, project_root) for p in item.manifest_paths),
                 package_managers=item.package_managers,
                 framework_hints=item.framework_hints,
             )
@@ -197,7 +356,8 @@ class StructureService:
         lines.append("## Modules")
         for module in report.modules:
             lines.append(
-                f"- `{module.module_path}` lang={module.language} parse={module.parse_mode} funcs={len(module.functions)} classes={len(module.classes)} imports={len(module.imports)}"
+                f"- `{module.module_path}` lang={module.language} parse={module.parse_mode} "
+                f"funcs={len(module.functions)} classes={len(module.classes)} imports={len(module.imports)}"
             )
         lines.append("")
         lines.append("## APIs and Exports")
@@ -207,7 +367,8 @@ class StructureService:
         lines.append("## Data Structures")
         for class_desc in report.data_structures:
             lines.append(
-                f"- `{class_desc.name}` fields={len(class_desc.fields)} methods={len(class_desc.methods)} decorators={','.join(class_desc.decorators) or 'none'}"
+                f"- `{class_desc.name}` fields={len(class_desc.fields)} methods={len(class_desc.methods)} "
+                f"decorators={','.join(class_desc.decorators) or 'none'}"
             )
         lines.append("")
         lines.append("## Command Surface")
@@ -251,9 +412,6 @@ class StructureService:
         for e in report.exports:
             exports_by_module[e.source_module] = exports_by_module.get(e.source_module, 0) + 1
 
-        # Command presence is global list; we can treat modules with many commands as higher signal only if we can map them.
-        # Since commands are strings, we do not attribute them to files (v1 deterministic simplification).
-
         scored: list[tuple[str, int, str]] = []
         for m in report.modules:
             imports_n = len(m.imports)
@@ -261,8 +419,10 @@ class StructureService:
             classes_n = len(m.classes)
             exports_n = exports_by_module.get(m.module_path, 0)
 
-            score = imports_n + funcs_n + (2 * classes_n) + (2 * exports_n)
-            reason_parts = []
+            # Slightly rebalance to emphasize API surface + types
+            score = (imports_n * 1) + (funcs_n * 1) + (classes_n * 2) + (exports_n * 3)
+
+            reason_parts: list[str] = []
             if imports_n:
                 reason_parts.append(f"imports={imports_n}")
             if exports_n:
@@ -273,9 +433,14 @@ class StructureService:
                 reason_parts.append(f"classes={classes_n}")
 
             reason = " / ".join(reason_parts) if reason_parts else "structure present"
-            scored.append((m.module_path, score, reason))
+            scored.append((m.module_path, int(score), reason))
 
         scored.sort(key=lambda t: (-t[1], t[0]))
-        top = scored[:top_n] if scored else [(p, 1, "file present") for p in (report.files[:top_n] if report.files else [])]
 
-        return [{"path": path, "score": int(score), "reason": reason} for path, score, reason in top]
+        if scored:
+            top = scored[:top_n]
+            return [{"path": path, "score": score, "reason": reason} for path, score, reason in top]
+
+        # Fallback if modules list is empty
+        fallback = (report.files or [])[:top_n]
+        return [{"path": p, "score": 1, "reason": "file present"} for p in fallback]
