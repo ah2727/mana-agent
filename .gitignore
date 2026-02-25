@@ -13,5 +13,6 @@ dist/
 .mypy_cache/
 .mana_logs/
 .mana_index/
+.mana_cache/
 .mana_llm_logs/
 logs/
