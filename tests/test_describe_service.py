@@ -16,6 +16,7 @@ class _FailingArchitectureChain:
 
 def _write_repo(root: Path) -> None:
     (root / "app").mkdir(parents=True)
+    (root / "tests").mkdir(parents=True)
     (root / "pyproject.toml").write_text(
         """
 [project]
@@ -34,6 +35,7 @@ def handler() -> int:
 """.strip(),
         encoding="utf-8",
     )
+    (root / "tests" / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
 
 
 def test_describe_service_without_llm(tmp_path: Path) -> None:
@@ -68,3 +70,32 @@ def test_describe_service_falls_back_when_llm_architecture_fails(tmp_path: Path)
     assert report.descriptions
     assert report.architecture_summary.startswith("Repository contains")
     assert report.tech_summary.startswith("Technologies:")
+
+
+def test_describe_service_include_exclude_patterns(tmp_path: Path) -> None:
+    _write_repo(tmp_path)
+    service = DescribeService(dependency_service=DependencyService(), llm_chain=None)
+
+    report = service.describe(
+        tmp_path,
+        max_files=20,
+        include_patterns=["app/**"],
+        exclude_patterns=["tests/**"],
+        use_llm=False,
+    )
+
+    assert report.selected_files
+    assert all(item.startswith("app/") for item in report.selected_files)
+    assert "tests/test_main.py" not in report.selected_files
+
+
+def test_describe_service_caches_unchanged_files(tmp_path: Path) -> None:
+    _write_repo(tmp_path)
+    service = DescribeService(dependency_service=DependencyService(), llm_chain=None)
+
+    first = service.describe(tmp_path, max_files=5, use_llm=False, use_cache=True)
+    second = service.describe(tmp_path, max_files=5, use_llm=False, use_cache=True)
+
+    assert first.metrics["selected_files"] > 0
+    assert second.metrics["cache_hits"] > 0
+    assert (tmp_path / ".mana_cache" / "describe_cache.json").exists()

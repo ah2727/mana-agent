@@ -175,6 +175,7 @@ class RepositoryMultiChain:
         line_target: int = 350,
         security_lens: str = "defensive-red-team",
     ) -> str:
+
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", DEEP_FLOW_SYSTEM_PROMPT),
@@ -182,20 +183,65 @@ class RepositoryMultiChain:
             ]
         )
 
-        chain = prompt | self.llm  # فرض: RepositoryMultiChain مثل AnalyzeChain یک self.llm دارد
+        # -------- COMPACT EVERYTHING --------
+
+        # 1) dependency report
+        if hasattr(dependency_report, "to_dict"):
+            dep = dependency_report.to_dict()
+        else:
+            dep = dependency_report
+
+        dep = self._compact_dependency_report(dep)
+
+        # 2) structure summary (VERY IMPORTANT)
+        compact_structure = {
+            "total_files": structure_summary.get("total_files"),
+            "language_counts": structure_summary.get("language_counts"),
+            "hotspots": structure_summary.get("hotspots", [])[:15],
+            # 🔥 truncate tree aggressively
+            "tree_markdown": self._truncate(
+                structure_summary.get("tree_markdown", ""),
+                6000,  # ← مهم: اینو پایین نگه دار
+            ),
+        }
+
+        # 3) findings summary (limit rule list)
+        compact_findings = {
+            "counts": findings_summary.get("counts"),
+            "top_rules": findings_summary.get("top_rules", [])[:20],
+            "by_severity": findings_summary.get("by_severity"),
+        }
+
+        # 4) security summary (limit vulnerabilities)
+        compact_security = security_summary
+        if isinstance(security_summary, dict):
+            compact_security = dict(security_summary)
+            # اگر لیست vulnerability داره، truncate کن
+            for key in list(compact_security.keys()):
+                if isinstance(compact_security[key], list):
+                    compact_security[key] = compact_security[key][:50]
+
+        # 5) sampled file summaries
+        compact_files = self._compact_file_summaries(sampled_file_summaries)
+
+        # -------------------------------------
+
+        chain = prompt | self.llm
+
         response = chain.invoke(
             {
                 "security_lens": security_lens,
-                "line_target": line_target,
-                "dependency_report_json": json.dumps(dependency_report.to_dict() if hasattr(dependency_report, "to_dict") else dependency_report),
-                "structure_summary_json": json.dumps(structure_summary),
-                "findings_summary_json": json.dumps(findings_summary),
-                "security_summary_json": json.dumps(security_summary),
-                "sampled_file_summaries_json": json.dumps(sampled_file_summaries),
+                "line_target": min(max(line_target, 200), 400),
+                "dependency_report_json": json.dumps(dep, ensure_ascii=False),
+                "structure_summary_json": json.dumps(compact_structure, ensure_ascii=False),
+                "findings_summary_json": json.dumps(compact_findings, ensure_ascii=False),
+                "security_summary_json": json.dumps(compact_security, ensure_ascii=False),
+                "sampled_file_summaries_json": json.dumps(compact_files, ensure_ascii=False),
             }
         )
-        return str(response.content).strip()
 
+        return str(response.content).strip()
+    
     def synthesize_architecture(self, dependency_report: dict[str, Any], file_summaries: list[dict[str, Any]]) -> tuple[str, str]:
         compact_dependency_report = self._compact_dependency_report(dependency_report)
         compact_file_summaries = self._compact_file_summaries(file_summaries)

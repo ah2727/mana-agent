@@ -309,6 +309,8 @@ class CodeDescription:
     language: str
     symbols: list[str]
     summary: str
+    entrypoint: bool = False
+    symbol_docs: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -322,6 +324,9 @@ class DescribeReport:
     architecture_summary: str
     tech_summary: str
     chain_steps: list[str]
+    architecture_mermaid: str = ""
+    architecture_data: dict[str, Any] = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -331,4 +336,7 @@ class DescribeReport:
             "architecture_summary": self.architecture_summary,
             "tech_summary": self.tech_summary,
             "chain_steps": self.chain_steps,
+            "architecture_mermaid": self.architecture_mermaid,
+            "architecture_data": self.architecture_data,
+            "metrics": self.metrics,
         }

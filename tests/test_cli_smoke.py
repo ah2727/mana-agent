@@ -182,7 +182,14 @@ class FakeDependencyService:
 
 
 class FakeDescribeService:
-    def describe(self, path: str, max_files: int = 12, include_functions: bool = False, use_llm: bool = True) -> object:
+    def describe(
+        self,
+        path: str,
+        max_files: int = 12,
+        include_functions: bool = False,
+        use_llm: bool = True,
+        **_: object,
+    ) -> object:
         assert path
         assert max_files > 0
         _ = include_functions
@@ -205,6 +212,9 @@ class FakeDescribeService:
                     "architecture_summary": "arch",
                     "tech_summary": "tech",
                     "chain_steps": ["one", "two"],
+                    "architecture_mermaid": "flowchart LR",
+                    "architecture_data": {},
+                    "metrics": {},
                 }
             },
         )()

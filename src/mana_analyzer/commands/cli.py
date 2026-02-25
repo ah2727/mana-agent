@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import typer
@@ -735,13 +735,41 @@ def describe(
     model: str | None = typer.Option(None, "--llm-model"),
     max_files: int = typer.Option(12, "--max-files"),
     functions: bool = typer.Option(False, "--functions"),
+    include: str | None = typer.Option(None, "--include", help="Comma-separated include glob patterns."),
+    exclude: str | None = typer.Option(None, "--exclude", help="Comma-separated exclude glob patterns."),
+    recent_days: int | None = typer.Option(None, "--recent-days", help="Only analyze files modified in last N days."),
+    include_docstrings: bool = typer.Option(True, "--docstrings/--no-docstrings"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
     output_format: str = typer.Option("both", "--output-format"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     output_file = _resolve_output_file(path)
-    settings = Settings()
-    service = build_describe_service(settings, model_override=model, use_llm=use_llm)
-    report = service.describe(path, max_files=max_files, include_functions=functions, use_llm=use_llm)
+    settings = Settings() if use_llm else None
+    if use_llm:
+        assert settings is not None
+        service = build_describe_service(settings, model_override=model, use_llm=True)
+    else:
+        service = DescribeService(dependency_service=build_dependency_service(), llm_chain=None)
+
+    include_patterns = [item.strip() for item in (include or "").split(",") if item.strip()] or None
+    exclude_patterns = [item.strip() for item in (exclude or "").split(",") if item.strip()] or None
+    modified_since = None
+    if recent_days is not None:
+        if recent_days < 0:
+            raise typer.BadParameter("--recent-days must be >= 0")
+        modified_since = datetime.now() - timedelta(days=recent_days)
+
+    report = service.describe(
+        path,
+        max_files=max_files,
+        include_functions=functions,
+        use_llm=use_llm,
+        include_patterns=include_patterns,
+        exclude_patterns=exclude_patterns,
+        modified_since=modified_since,
+        include_docstrings=include_docstrings,
+        use_cache=not no_cache,
+    )
     markdown = service.render_markdown(report)
     if output_format not in {"json", "markdown", "both"}:
         raise typer.BadParameter("--output-format must be one of: json, markdown, both")
