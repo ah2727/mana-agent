@@ -155,24 +155,33 @@ def build_llm_analyze_service(settings: Settings, model_override: str | None) ->
     return LlmAnalyzeService(analyze_chain=chain)
 
 
-def build_ask_service(settings: Settings, model_override: str | None) -> AskService:
+def build_ask_service(settings: Settings, model_override: str | None, project_root: Path | None = None) -> AskService:
     model = model_override or settings.openai_chat_model
-    logger.debug("Initializing ask service", extra={"chat_model": model})
+    root = project_root.resolve() if project_root else Path.cwd().resolve()
+
+    logger.debug("Initializing ask service", extra={"chat_model": model, "project_root": str(root)})
+
     qna = QnAChain(
         api_key=settings.openai_api_key,
         model=model,
         base_url=settings.openai_base_url,
     )
     search_service = build_search_service(settings)
+
     agent = AskAgent(
         api_key=settings.openai_api_key,
         model=model,
         base_url=settings.openai_base_url,
         search_service=search_service,
-        project_root=Path.cwd(),
+        project_root=root,  # ✅ FIXED
     )
-    return AskService(store=build_store(settings), qna_chain=qna, ask_agent=agent, search_service=search_service)
 
+    return AskService(
+        store=build_store(settings),
+        qna_chain=qna,
+        ask_agent=agent,
+        search_service=search_service,
+    )
 
 def build_dependency_service() -> DependencyService:
     logger.debug("Initializing dependency service")
@@ -986,7 +995,10 @@ async def scan(
 
     if fail_on_vulnerabilities and safety_code != 0:
         raise typer.Exit(code=1)
-    @app.command()
+    
+    
+    
+@app.command()
 def chat(
     model: str | None = typer.Option(None, "--model"),
     index_dir: str | None = typer.Option(None, "--index-dir"),
@@ -1150,8 +1162,44 @@ def chat(
             f"- k: {resolved_k}",
             output_file=output_file,
         )
+    # -----------------------------
+    # Tool-first retry logic
+    # -----------------------------
+    def _looks_like_guess(answer: str) -> bool:
+        a = (answer or "").lower()
+        triggers = [
+            "i can't", "cannot", "can't", "no source", "no actual source",
+            "snippets you provided", "from the snippets", "i don’t have",
+            "i don't have", "not enough", "insufficient", "based on the repository name",
+            "infer", "guess", "might be", "appears to", "only clues",
+            "doesn’t contain application logic", "does not contain application logic",
+        ]
+        return any(t in a for t in triggers)
+
+    def _tool_first_instruction(user_question: str) -> str:
+        return (
+            f"{user_question}\n\n"
+            "TOOL-FIRST INSTRUCTIONS (MANDATORY):\n"
+            "- Do NOT guess.\n"
+            "- You MUST use tools to search the repository and inspect real source files.\n"
+            "- Focus on these subdirectories if they exist: backend/, loanapp/.\n"
+            "- Steps you MUST follow:\n"
+            "  1) Find entrypoints (main/server/app/bootstrap) and config files.\n"
+            "     Examples: backend/src/main.ts, backend/src/index.ts, server.js, app.py,\n"
+            "     loanapp/src/main.ts, angular.json, package.json, Dockerfile.\n"
+            "  2) Locate routing/controllers/handlers/services related to 'loan' flows.\n"
+            "  3) Open at least TWO real source files (not cache/build artifacts) before concluding.\n"
+            "- Avoid caches/build output unless asked: node_modules/, .next/, .angular/, dist/, build/, .cache/, .npm-cache/, generated/.\n"
+            "- Your final answer MUST include evidence lines: file paths + line ranges.\n"
+            "- If you still can’t determine the purpose, say exactly what you searched/opened and what is missing.\n"
+        )
+
+    max_attempts = 3
+    min_sources = 2  # you can raise this to 3–5 if you want stricter
 
     console.print("mana-analyzer chat – type 'exit' or 'quit' to end.")
+    if not agent_tools:
+        console.print("[yellow]Tip:[/yellow] run with --agent-tools for real tool-driven investigation.")
     while True:
         try:
             question = input("💬 » ").strip()
@@ -1165,7 +1213,28 @@ def chat(
             console.print("Goodbye!")
             break
 
-        response = chat_service.ask(question)
+        response = None
+        attempt_question = question
+
+        for attempt in range(1, max_attempts + 1):
+            response = chat_service.ask(attempt_question)
+            if response is None:
+                break
+
+            src_count = len(getattr(response, "sources", []) or [])
+            guessed = _looks_like_guess(getattr(response, "answer", ""))
+
+            # Good enough? stop retrying.
+            if (src_count >= min_sources) and not guessed:
+                break
+
+            # If we can retry, strengthen instructions.
+            if attempt < max_attempts:
+                attempt_question = _tool_first_instruction(question) + f"\n(Attempt {attempt+1}/{max_attempts}: you MUST use tools and cite evidence.)"
+            else:
+                # last attempt: return what we have
+                pass
+
         if response is None:
             continue
 

@@ -9,8 +9,10 @@ from pathlib import Path
 from mana_analyzer.analysis.models import SearchHit
 from mana_analyzer.utils.io import read_jsonl
 from mana_analyzer.vector_store.faiss_store import FaissStore
+from mana_analyzer.llm.prompts import TOOL_FIRST
 
 logger = logging.getLogger(__name__)
+
 
 
 class SearchService:
@@ -18,6 +20,9 @@ class SearchService:
         self.store = store
         self._executor_workers = max(1, min(8, os.cpu_count() or 4))
 
+    # ---------------------------------------
+    # Main search APIs
+    # ---------------------------------------
     def search(self, index_dir: str | Path, query: str, k: int) -> list[SearchHit]:
         resolved_index = Path(index_dir).resolve()
         logger.info("Running semantic search: index_dir=%s k=%d", resolved_index, k)
@@ -79,14 +84,14 @@ class SearchService:
                     merged.extend(hits)
 
         deduped = sorted(
-            {
-                (item.file_path, item.start_line, item.end_line, item.symbol_name): item
-                for item in merged
-            }.values(),
+            {(item.file_path, item.start_line, item.end_line, item.symbol_name): item for item in merged}.values(),
             key=lambda item: (-item.score, item.file_path, item.start_line, item.end_line, item.symbol_name),
         )
         return deduped[:k], warnings
 
+    # ---------------------------------------
+    # Lexical fallback
+    # ---------------------------------------
     @staticmethod
     def _tokenize(value: str) -> set[str]:
         return set(re.findall(r"[a-zA-Z0-9_]+", value.lower()))
@@ -146,7 +151,7 @@ class SearchService:
             warnings.append(warning)
 
     # ---------------------------------------
-    # Tool-friendly wrappers (FIXED)
+    # Tool-friendly wrappers
     # ---------------------------------------
     def tool_semantic_search(self, index_dir: str | Path, query: str, k: int = 5) -> dict:
         """
@@ -193,3 +198,14 @@ class SearchService:
                 for r in results
             ],
         }
+
+    # ---------------------------------------
+    # Tool-first prompt access
+    # ---------------------------------------
+    @staticmethod
+    def tool_first_system_prompt() -> str:
+        """
+        Returns the canonical tool-first system prompt string.
+        Use this in AskAgent / QnAChain system messages to force tool usage.
+        """
+        return TOOL_FIRST

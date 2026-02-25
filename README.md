@@ -146,3 +146,170 @@ After implementing the feature, install or reinstall the CLI:
 
 ```bash
 pip install .
+
+🚀 Usage
+Basic Chat (Single Index Mode)
+mana-analyzer chat --index-dir /path/to/.mana_index
+Directory Mode (Multi-Project Repositories)
+mana-analyzer chat \
+  --dir-mode \
+  --root-dir /path/to/repo \
+  --max-indexes 5
+
+Directory mode:
+
+Automatically discovers sub-projects
+
+Finds associated .mana_index directories
+
+Optionally auto-creates missing indexes
+
+⚙️ Command Options
+Option	Description
+--model	Override the default LLM
+--index-dir	Path to a specific index directory
+--k	Override top-k retrieval
+--dir-mode	Enable multi-project directory mode
+--root-dir	Root repository path for directory mode
+--max-indexes	Limit discovered indexes (0 = unlimited)
+--auto-index-missing / --no-auto-index-missing	Auto-create missing subproject indexes
+--agent-tools	Enable tool-aware answering
+--agent-max-steps	Maximum agent reasoning steps
+--agent-timeout-seconds	Agent execution timeout
+--json	Emit responses as JSON
+💬 Interactive Session Example
+mana-analyzer chat – type 'exit' or 'quit' to end.
+💬 » What does the indexing pipeline do?
+
+Output:
+
+The indexing pipeline scans the repository, extracts metadata,
+generates embeddings, and stores them in the vector index.
+
+Sources:
+- src/indexer.py:14-78
+- src/embeddings.py:10-45
+
+Exit with:
+
+exit
+
+Or press:
+
+Ctrl+C
+🧠 Conversation History
+
+Chat mode stores conversation history in memory for the session:
+
+self.history: list[tuple[str, str]]
+
+This allows:
+
+Future support for context-aware prompts
+
+Extending the system to persist history to disk
+
+Enhanced multi-turn reasoning
+
+🛠 Internal Flow
+
+User enters a question.
+
+Input is normalized.
+
+ChatService decides:
+
+ask() → single index
+
+ask_dir_mode() → directory mode
+
+AskResponse returned.
+
+Answer printed.
+
+Sources + warnings displayed.
+
+Turn added to history.
+
+🧰 Agent Tool Mode
+
+If --agent-tools is enabled:
+
+Tool-aware reasoning becomes available
+
+Specialized tools may be invoked
+
+Supports deeper code understanding workflows
+
+Example:
+
+mana-analyzer chat --index-dir .mana_index --agent-tools
+🔄 Async Support (Optional Enhancement)
+
+Current implementation assumes synchronous calls.
+
+If underlying services are async:
+
+Wrap calls using asyncio.run()
+
+Or make ChatService.ask() async
+
+📤 JSON Output Mode
+
+To emit structured output:
+
+mana-analyzer chat --index-dir .mana_index --json
+
+This prints serialized AskResponse objects.
+
+📁 File Structure
+mana_analyzer/
+│
+├── services/
+│   ├── ask_service.py
+│   ├── chat_service.py   ← New
+│
+├── cli.py                ← Updated with chat command
+🎯 Goals Achieved
+
+Chat Mode enables:
+
+Iterative repository exploration
+
+Faster developer workflows
+
+Improved usability
+
+Extensible architecture
+
+Reuse of existing services
+
+🔮 Future Enhancements
+
+Persist chat history to disk
+
+Context injection into prompts
+
+Streaming token output
+
+Session save/load
+
+Multi-user support
+
+Web-based UI layer
+
+Rich terminal UI (e.g. rich or textual)
+
+🏁 Summary
+
+Chat Mode transforms mana-analyzer from a command-based CLI into a conversational development assistant inside the terminal.
+
+It reuses the existing indexing and question-answering infrastructure while adding a clean interactive workflow.
+
+
+mana-analyzer chat \
+  --dir-mode \
+  --root-dir /Users/ah/Documents/karlancer/loanbot \
+  --agent-tools \
+  --agent-max-steps 20 \
+  --agent-timeout-seconds 120
