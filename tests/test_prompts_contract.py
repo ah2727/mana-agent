@@ -1,0 +1,33 @@
+from importlib import import_module
+
+from mana_analyzer.llm import prompts
+
+
+_REQUIRED_PROMPTS = [
+    "SYSTEM_PROMPT",
+    "HUMAN_TEMPLATE",
+    "ANALYZE_SYSTEM_PROMPT",
+    "ANALYZE_HUMAN_TEMPLATE",
+    "ASK_AGENT_SYSTEM_PROMPT",
+    "TOOL_FIRST",
+    "DEEP_FLOW_SYSTEM_PROMPT",
+    "DEEP_FLOW_HUMAN_TEMPLATE",
+]
+
+
+def test_prompt_constants_exist_and_non_empty() -> None:
+    for name in _REQUIRED_PROMPTS:
+        value = getattr(prompts, name, None)
+        assert isinstance(value, str)
+        assert value.strip()
+
+
+def test_prompt_import_smoke_for_dependent_modules() -> None:
+    for module_name in [
+        "mana_analyzer.llm.ask_agent",
+        "mana_analyzer.llm.qna_chain",
+        "mana_analyzer.llm.analyze_chain",
+        "mana_analyzer.llm.repo_chain",
+        "mana_analyzer.services.search_service",
+    ]:
+        import_module(module_name)

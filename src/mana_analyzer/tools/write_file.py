@@ -7,6 +7,7 @@ Key properties:
 - Refuses path traversal / absolute paths.
 - Refuses writing outside repo_root.
 - Optionally restricts writes to allowed path prefixes (e.g. "src/", "tests/").
+- Atomic write (temp file + replace).
 - Returns a JSON-serialisable result for tool-calling agents.
 """
 
@@ -14,8 +15,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import re
+import tempfile
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
@@ -36,18 +40,251 @@ class WriteFileResult:
         return asdict(self)
 
 
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+_DRIVE_LETTER_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 
 
 def _normalise_user_path(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
+    """
+    Convert user-supplied paths to a safe-ish posix-like relative path string:
+    - Replace backslashes with forward slashes
+    - Strip leading "./"
+    - Strip leading slashes
+    - Collapse redundant separators
+    """
+    p = path.replace("\\", "/").strip()
+
+    # remove leading "./" repeatedly
+    while p.startswith("./"):
+        p = p[2:]
+
+    # remove leading "/" repeatedly (treat as attempt at absolute)
+    while p.startswith("/"):
+        p = p[1:]
+
+    # collapse double slashes
+    while "//" in p:
+        p = p.replace("//", "/")
+
+    return p
+
+
+def _normalise_prefixes(prefixes: Optional[Sequence[str]]) -> Optional[tuple[str, ...]]:
+    """
+    Normalise allowed prefixes to posix style and ensure they behave like directory prefixes.
+    - None or empty => no restriction
+    - Each prefix becomes:
+        - posix slashes
+        - stripped leading "./" and leading "/"
+        - ensured to end with "/" (unless it's "" which means repo root)
+    """
+    if not prefixes:
+        return None
+
+    out: list[str] = []
+    for raw in prefixes:
+        p = _normalise_user_path(raw)
+        if p and not p.endswith("/"):
+            p = p + "/"
+        out.append(p)
+    return tuple(out)
 
 
 def _is_allowed_prefix(rel_posix: str, allowed_prefixes: Optional[Sequence[str]]) -> bool:
+    """
+    Check that rel_posix is within one of allowed prefixes.
+    Prefixes are treated as directory prefixes: 'src/' matches 'src/x.py' but not 'src_old/x.py'.
+    """
     if not allowed_prefixes:
         return True
-    return any(rel_posix.startswith(prefix) for prefix in allowed_prefixes)
+
+    # Ensure rel_posix is normalised with forward slashes and no leading slash.
+    rel_posix = _normalise_user_path(rel_posix)
+
+    norm = _normalise_prefixes(allowed_prefixes)
+    if not norm:
+        return True
+
+    for prefix in norm:
+        if prefix == "":
+            return True
+        if rel_posix == prefix[:-1] or rel_posix.startswith(prefix):
+            return True
+    return False
+
+
+def _reject_obvious_bad_paths(original: str) -> Optional[str]:
+    """
+    Fast checks before any filesystem resolution.
+    Returns an error string if blocked, else None.
+    """
+    if "\x00" in original:
+        return "Blocked: NUL byte in path"
+
+    # Block Windows drive letter absolute-ish paths like "C:\foo" or "C:/foo"
+    if _DRIVE_LETTER_RE.match(original.strip()):
+        return "Blocked: drive-letter paths are not allowed"
+
+    p = original.strip().replace("\\", "/")
+
+    # Absolute path (posix)
+    if p.startswith("/"):
+        return "Blocked: absolute paths are not allowed"
+
+    # Prevent explicit traversal segments even before resolve()
+    # (resolve() + relative_to() also protects, but this gives clearer errors)
+    parts = [seg for seg in p.split("/") if seg not in ("", ".")]
+    if any(seg == ".." for seg in parts):
+        return "Blocked: path traversal ('..') is not allowed"
+
+    return None
+
+
+def _resolve_target_path(
+    *,
+    repo_root: Path,
+    path: str,
+    allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES,
+) -> tuple[Path | None, str | None, str | None]:
+    """
+    Resolve and validate user path.
+    Returns: (target_absolute_path, rel_posix_path, error_message)
+    """
+    pre_err = _reject_obvious_bad_paths(path)
+    if pre_err:
+        return None, None, pre_err
+
+    user_path = Path(path)
+    if user_path.is_absolute():
+        return None, None, "Blocked: absolute paths are not allowed"
+
+    repo_root = repo_root.resolve()
+    normalised = _normalise_user_path(path)
+    rel_pp = PurePosixPath(normalised)
+    if str(rel_pp) in ("", "."):
+        return None, None, "Blocked: empty path"
+
+    target = (repo_root / Path(str(rel_pp))).resolve()
+    try:
+        rel = target.relative_to(repo_root)
+    except ValueError:
+        return None, None, "Blocked: path escapes repository root"
+
+    rel_posix = rel.as_posix()
+    if not _is_allowed_prefix(rel_posix, allowed_prefixes):
+        return None, None, f"Blocked: writes restricted to prefixes {list(_normalise_prefixes(allowed_prefixes) or [])}"
+
+    return target, rel_posix, None
+
+
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, target)
+    finally:
+        # If something went wrong before replace, cleanup temp file
+        try:
+            if os.path.exists(tmp_name):
+                os.remove(tmp_name)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _parts_dir_for_target(target: Path) -> Path:
+    return target.parent / f".{target.name}.parts"
+
+
+def safe_write_file_part(
+    *,
+    repo_root: Path,
+    path: str,
+    content: str,
+    part_index: int,
+    allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES,
+) -> dict[str, Any]:
+    try:
+        if part_index < 1:
+            return WriteFileResult(ok=False, path=path, error="Blocked: part_index must be >= 1").to_dict()
+
+        target, rel_posix, err = _resolve_target_path(repo_root=repo_root, path=path, allowed_prefixes=allowed_prefixes)
+        if err or target is None or rel_posix is None:
+            return WriteFileResult(ok=False, path=path, error=err or "Error: invalid path").to_dict()
+
+        parts_dir = _parts_dir_for_target(target)
+        parts_dir.mkdir(parents=True, exist_ok=True)
+        part_file = parts_dir / f"{part_index:06d}.part"
+
+        data = content.encode("utf-8")
+        _atomic_write_bytes(part_file, data)
+
+        logger.info("Wrote file part: %s (part=%06d, %d bytes)", rel_posix, part_index, len(data))
+        return WriteFileResult(
+            ok=True,
+            path=rel_posix,
+            bytes_written=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+        ).to_dict()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("write_file part failed for %s", path)
+        return WriteFileResult(ok=False, path=path, error=f"Error: {exc}").to_dict()
+
+
+def safe_finalize_file_parts(
+    *,
+    repo_root: Path,
+    path: str,
+    allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES,
+    cleanup_parts: bool = True,
+) -> dict[str, Any]:
+    try:
+        target, rel_posix, err = _resolve_target_path(repo_root=repo_root, path=path, allowed_prefixes=allowed_prefixes)
+        if err or target is None or rel_posix is None:
+            return WriteFileResult(ok=False, path=path, error=err or "Error: invalid path").to_dict()
+
+        parts_dir = _parts_dir_for_target(target)
+        if not parts_dir.exists() or not parts_dir.is_dir():
+            return WriteFileResult(ok=False, path=path, error="Blocked: no parts directory found to finalize").to_dict()
+
+        part_files = sorted(p for p in parts_dir.iterdir() if p.is_file() and p.name.endswith(".part"))
+        if not part_files:
+            return WriteFileResult(ok=False, path=path, error="Blocked: no part files found to finalize").to_dict()
+
+        data_chunks: list[bytes] = []
+        total = 0
+        for part in part_files:
+            b = part.read_bytes()
+            data_chunks.append(b)
+            total += len(b)
+        final_data = b"".join(data_chunks)
+
+        _atomic_write_bytes(target, final_data)
+
+        if cleanup_parts:
+            for part in part_files:
+                try:
+                    part.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                parts_dir.rmdir()
+            except OSError:
+                # Ignore if not empty (unexpected files left behind)
+                pass
+
+        logger.info("Finalized file from parts: %s (parts=%d, %d bytes)", rel_posix, len(part_files), total)
+        return WriteFileResult(
+            ok=True,
+            path=rel_posix,
+            bytes_written=total,
+            sha256=hashlib.sha256(final_data).hexdigest(),
+        ).to_dict()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("write_file finalize failed for %s", path)
+        return WriteFileResult(ok=False, path=path, error=f"Error: {exc}").to_dict()
 
 
 def safe_write_file(
@@ -58,38 +295,18 @@ def safe_write_file(
     allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES,
 ) -> dict[str, Any]:
     try:
-        if "\x00" in path:
-            return WriteFileResult(ok=False, path=path, error="Blocked: NUL byte in path").to_dict()
+        target, rel_posix, err = _resolve_target_path(repo_root=repo_root, path=path, allowed_prefixes=allowed_prefixes)
+        if err or target is None or rel_posix is None:
+            return WriteFileResult(ok=False, path=path, error=err or "Error: invalid path").to_dict()
 
-        user_path = Path(path)
-        if user_path.is_absolute():
-            return WriteFileResult(ok=False, path=path, error="Blocked: absolute paths are not allowed").to_dict()
-
-        repo_root = repo_root.resolve()
-        normalised = _normalise_user_path(path)
-        target = (repo_root / normalised).resolve()
-
-        try:
-            rel = target.relative_to(repo_root)
-        except ValueError:
-            return WriteFileResult(ok=False, path=path, error="Blocked: path escapes repository root").to_dict()
-
-        rel_posix = rel.as_posix()
-        if not _is_allowed_prefix(rel_posix, allowed_prefixes):
-            return WriteFileResult(
-                ok=False,
-                path=path,
-                error=f"Blocked: writes restricted to prefixes {list(allowed_prefixes)}",
-            ).to_dict()
-
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        data = content.encode("utf-8")
+        _atomic_write_bytes(target, data)
 
         result = WriteFileResult(
             ok=True,
             path=rel_posix,
-            bytes_written=len(content.encode("utf-8")),
-            sha256=_sha256_text(content),
+            bytes_written=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
         )
         logger.info("Wrote file: %s (%d bytes)", rel_posix, result.bytes_written)
         return result.to_dict()
@@ -110,9 +327,43 @@ def build_write_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequenc
         content: str | None = None,
         text: str | None = None,
         body: str | None = None,
+        part_index: int | None = None,
+        finalize: bool = False,
+        cleanup_parts: bool = True,
     ) -> dict[str, Any]:
         # Compatibility: some tool-calling models send `text`/`body` instead of `content`.
         effective_content = content if content is not None else (text if text is not None else body)
+
+        if finalize and part_index is not None:
+            return WriteFileResult(
+                ok=False,
+                path=path,
+                error="Error: `finalize` and `part_index` are mutually exclusive",
+            ).to_dict()
+
+        if finalize:
+            return safe_finalize_file_parts(
+                repo_root=repo_root,
+                path=path,
+                allowed_prefixes=allowed_prefixes,
+                cleanup_parts=cleanup_parts,
+            )
+
+        if part_index is not None:
+            if effective_content is None:
+                return WriteFileResult(
+                    ok=False,
+                    path=path,
+                    error="Error: missing file content (expected `content`, `text`, or `body`)",
+                ).to_dict()
+            return safe_write_file_part(
+                repo_root=repo_root,
+                path=path,
+                content=effective_content,
+                part_index=part_index,
+                allowed_prefixes=allowed_prefixes,
+            )
+
         if effective_content is None:
             return WriteFileResult(
                 ok=False,
@@ -126,6 +377,9 @@ def build_write_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequenc
         name="write_file",
         description=(
             "Safely write text content to a file under the repository root. "
-            "Refuses absolute paths, path traversal, and paths escaping the repository root."
+            "Refuses absolute paths, path traversal, and paths escaping the repository root. "
+            "Performs atomic write (temp + replace). "
+            "For large files: send chunks with `part_index` (writes to .<filename>.parts/NNNNNN.part), "
+            "then call again with `finalize=true` to atomically assemble the final file."
         ),
     )

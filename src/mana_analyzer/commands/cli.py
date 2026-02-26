@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sys
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
@@ -22,6 +23,7 @@ from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.llm.analyze_chain import AnalyzeChain
 from mana_analyzer.llm.qna_chain import QnAChain
 from mana_analyzer.llm.repo_chain import RepositoryMultiChain
+from mana_analyzer.llm.prompts import PLANNING_SYSTEM_GUIDANCE
 from mana_analyzer.llm.coding_agent import CodingAgent  # ✅ NEW
 from mana_analyzer.parsers.multi_parser import MultiLanguageParser
 from mana_analyzer.services.analyze_service import AnalyzeService
@@ -373,6 +375,47 @@ class LiveLogBuffer(logging.Handler):
 def _looks_like_edit_request(question: str) -> bool:
     lowered = (question or "").lower()
     return any(token in lowered for token in _EDIT_INTENT_TOKENS)
+
+
+def _planning_questions(max_questions: int) -> list[str]:
+    ordered = [
+        "What is the concrete goal and the success criteria?",
+        "What is in scope vs out of scope, and what hard constraints must we honor?",
+        "What output format, depth, and key tradeoffs should the plan optimize for?",
+        "What rollout, migration, or compatibility constraints should be included?",
+        "What tests or acceptance criteria are mandatory before completion?",
+        "What risks should be prioritized and explicitly mitigated?",
+    ]
+    limit = max(1, min(max_questions, len(ordered)))
+    return ordered[:limit]
+
+
+def _build_planning_question(user_request: str, asked_count: int, max_questions: int) -> str:
+    prompts = _planning_questions(max_questions)
+    question = prompts[min(asked_count, len(prompts) - 1)]
+    return (
+        f"[cyan]Planning request:[/cyan] {user_request}\n"
+        f"[bold]Planning question {asked_count + 1}/{len(prompts)}[/bold]\n"
+        f"{question}"
+    )
+
+
+def _build_planning_instruction(user_request: str, answers: list[str], max_questions: int) -> str:
+    prompts = _planning_questions(max_questions)
+    qa_lines: list[str] = []
+    for idx, answer in enumerate(answers):
+        question = prompts[min(idx, len(prompts) - 1)]
+        qa_lines.append(f"- Q{idx+1}: {question}")
+        qa_lines.append(f"  A{idx+1}: {answer}")
+    qa_block = "\n".join(qa_lines) if qa_lines else "- (no clarifications provided)"
+    return (
+        f"{PLANNING_SYSTEM_GUIDANCE}\n\n"
+        "User request:\n"
+        f"{user_request}\n\n"
+        "Clarifications:\n"
+        f"{qa_block}\n\n"
+        "Return a complete, implementation-ready plan in Markdown."
+    )
 
 
 def _index_has_vectors(index_dir: Path) -> bool:
@@ -803,6 +846,13 @@ def main(
             "output_dir": str(OUTPUT_DIR) if OUTPUT_DIR else None,
         },
     )
+    if tuple(sys.version_info[:2]) >= (3, 14):
+        warning_msg = (
+            "Python 3.14+ may emit LangChain/Pydantic v1 compatibility warnings. "
+            "Recommended runtime: Python 3.12 or 3.13."
+        )
+        warnings.warn(warning_msg, UserWarning, stacklevel=2)
+        console.print(f"[yellow]Warning:[/yellow] {warning_msg}")
 
 
 
@@ -1774,6 +1824,16 @@ def chat(
         "--coding-agent",
         help="Enable repo-modifying coding agent (write_file/apply_patch) inside chat.",
     ),
+    planning_mode: bool = typer.Option(
+        False,
+        "--planning-mode",
+        help="Enable multi-step planning Q&A before generating plan answers.",
+    ),
+    planning_max_questions: int = typer.Option(
+        3,
+        "--planning-max-questions",
+        help="Maximum planning clarification questions to ask (1-6).",
+    ),
     agent_max_steps: int = typer.Option(6, "--agent-max-steps"),
     agent_timeout_seconds: int = typer.Option(30, "--agent-timeout-seconds"),
     as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
@@ -1792,6 +1852,8 @@ def chat(
             "auto_index_missing": auto_index_missing,
             "agent_tools": agent_tools,
             "coding_agent": coding_agent,
+            "planning_mode": planning_mode,
+            "planning_max_questions": planning_max_questions,
             "agent_max_steps": agent_max_steps,
             "agent_timeout_seconds": agent_timeout_seconds,
             "as_json": as_json,
@@ -1799,6 +1861,7 @@ def chat(
         },
     )
     as_json = False
+    planning_question_limit = max(1, min(planning_max_questions, 6))
     settings = Settings()
     resolved_k = k or settings.default_top_k
 
@@ -2045,8 +2108,19 @@ def chat(
         console.print("mana-analyzer chat – type 'exit' or 'quit' to end.")
         if not agent_tools:
             console.print("[yellow]Tip:[/yellow] run with --agent-tools for real tool-driven investigation.")
+        if planning_mode:
+            console.print(
+                f"[bold cyan]Planning mode enabled:[/bold cyan] "
+                f"up to {planning_question_limit} clarification question(s) before each plan answer."
+            )
         if coding_agent:
             console.print("[bold red]Coding agent enabled:[/bold red] this session can modify any files under the repository root.")
+        if planning_mode and coding_agent_instance is not None:
+            console.print("[yellow]Planning mode is read-only; coding-agent edits are disabled in this session.[/yellow]")
+            coding_agent_instance = None
+
+        planning_request: str | None = None
+        planning_answers: list[str] = []
 
         while True:
             try:
@@ -2062,6 +2136,34 @@ def chat(
                 console.print("Goodbye!")
                 logger.info("Chat session ended by user command", extra={"command": question.lower()})
                 break
+
+            if planning_mode:
+                if planning_request is None:
+                    planning_request = question
+                    planning_answers = []
+                    console.print(_build_planning_question(planning_request, 0, planning_question_limit))
+                    continue
+
+                planning_answers.append(question)
+                if len(planning_answers) < planning_question_limit:
+                    console.print(_build_planning_question(planning_request, len(planning_answers), planning_question_limit))
+                    continue
+
+                question = _build_planning_instruction(
+                    planning_request,
+                    planning_answers,
+                    planning_question_limit,
+                )
+                logger.info(
+                    "Planning Q&A complete; generating plan response",
+                    extra={
+                        "planning_request": planning_request,
+                        "answers_count": len(planning_answers),
+                    },
+                )
+                planning_request = None
+                planning_answers = []
+                console.print("[cyan]Generating decision-complete plan...[/cyan]")
 
             logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
 
