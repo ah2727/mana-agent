@@ -30,6 +30,7 @@ from mana_analyzer.services.index_service import IndexService
 from mana_analyzer.services.llm_analyze_service import LlmAnalyzeService
 from mana_analyzer.services.search_service import SearchService
 from mana_analyzer.services.structure_service import StructureService
+from mana_analyzer.tools import build_search_internet_tool
 from mana_analyzer.utils.index_discovery import discover_index_dirs
 from mana_analyzer.utils.logging import setup_logging
 from mana_analyzer.utils.project_discovery import discover_subprojects
@@ -111,6 +112,37 @@ def _log_exception(fn_name: str, exc: Exception, **fields: object) -> None:
         logger.exception("EXCEPTION %s: %s", fn_name, exc, extra={**fields, "ts": _now_iso()})
     except Exception:
         logger.exception("EXCEPTION %s: %s", fn_name, exc)
+
+
+def _register_tool_if_missing(agent: AskAgent, tool: object) -> None:
+    name = str(getattr(tool, "name", "") or "").strip()
+    if not name:
+        return
+    existing = {str(getattr(item, "name", "")) for item in getattr(agent, "tools", []) or []}
+    if name in existing:
+        return
+    agent.tools.append(tool)
+
+
+_EDIT_INTENT_TOKENS = (
+    "integrate",
+    "patch",
+    "modify",
+    "edit file",
+    "edit this",
+    "change file",
+    "change this",
+    "write file",
+    "update file",
+    "apply patch",
+    "fix this",
+    "implement this",
+)
+
+
+def _looks_like_edit_request(question: str) -> bool:
+    lowered = (question or "").lower()
+    return any(token in lowered for token in _EDIT_INTENT_TOKENS)
 
 
 def _index_has_vectors(index_dir: Path) -> bool:
@@ -352,6 +384,7 @@ def build_ask_service(
         search_service=search_service,
         project_root=root,
     )
+    _register_tool_if_missing(agent, build_search_internet_tool())
 
     svc = AskService(
         store=build_store(settings),
@@ -1788,6 +1821,12 @@ def chat(
 
             logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
 
+            if _looks_like_edit_request(question) and coding_agent_instance is None:
+                console.print(
+                    "[yellow]This chat session is read-only for file edits.[/yellow] "
+                    "Re-run with [bold]--agent-tools --coding-agent[/bold] to allow write_file/apply_patch."
+                )
+                continue
 
             # ==========================================================
             # ✅ CODING AGENT PATH (classic + dir-mode supported)

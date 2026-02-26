@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from langchain_core.tools import StructuredTool
+
 from mana_analyzer.analysis.models import SearchHit
 from mana_analyzer.llm.ask_agent import AskAgent
 
@@ -125,3 +127,26 @@ def test_ask_agent_run_multi_uses_all_indexes(tmp_path: Path) -> None:
     result = agent.run_multi("Where?", [first, second], 3, max_steps=2, timeout_seconds=2)
     assert result.mode == "agent-tools"
     assert len(agent._resolved_indexes) == 2
+
+
+def test_ask_agent_invokes_externally_registered_tool(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    agent.tools = [
+        StructuredTool.from_function(
+            func=lambda query: f'{{"ok": true, "query": "{query}"}}',
+            name="search_internet",
+            description="Search external information.",
+        )
+    ]
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage(
+                "",
+                tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "latest"}}],
+            ),
+            _FakeAIMessage("Done", tool_calls=[]),
+        ]
+    )
+
+    result = agent.run("Need latest info", tmp_path / ".mana_index", 2, max_steps=3, timeout_seconds=2)
+    assert result.answer == "Done"

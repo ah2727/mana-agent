@@ -396,3 +396,55 @@ def test_ask_dir_mode_no_auto_index_missing(monkeypatch, tmp_path: Path) -> None
     )
     assert result.exit_code == 0
     assert "No usable indexes found under" in result.stdout
+
+
+def test_build_ask_service_registers_search_internet_tool_without_duplicates(monkeypatch, tmp_path: Path) -> None:
+    from mana_analyzer.commands import cli
+
+    class _Tool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class _FakeAskAgent:
+        def __init__(self, **_: object) -> None:
+            # Simulate pre-existing registration.
+            self.tools = [_Tool("search_internet")]
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.AskAgent", _FakeAskAgent)
+    monkeypatch.setattr("mana_analyzer.commands.cli.QnAChain", lambda **_: object())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_store", lambda _s: object())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_search_service", lambda _s: object())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_search_internet_tool", lambda: _Tool("search_internet"))
+
+    svc = cli.build_ask_service(DummySettings(), model_override=None, project_root=tmp_path)
+    assert svc.ask_agent is not None
+    assert sum(1 for tool in svc.ask_agent.tools if getattr(tool, "name", "") == "search_internet") == 1
+
+
+def test_chat_blocks_edit_requests_without_coding_agent(monkeypatch, tmp_path: Path) -> None:
+    class _NoCallAskService(FakeAskService):
+        def ask(self, index_dir: str, question: str, k: int) -> AskResponse:  # pragma: no cover - must not run
+            raise AssertionError("chat_service.ask should not be called for blocked edit requests")
+
+        def ask_with_tools(  # pragma: no cover - must not run
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponse:
+            raise AssertionError("ask_with_tools should not be called for blocked edit requests")
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _NoCallAskService())
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools"],
+        input="please patch this file\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "read-only for file edits" in result.stdout
+    assert "--agent-tools" in result.stdout
+    assert "--coding-agent" in result.stdout
