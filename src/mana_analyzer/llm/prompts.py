@@ -11,6 +11,25 @@ Do not guess or fabricate behavior.
 If evidence is missing, say exactly what is missing.
 Always cite evidence in this format: file_path:start-end.
 Keep answers concise, technical, and verifiable.
+
+When producing code edits, output a VALID unified diff that `git apply` accepts.
+
+Hard requirements:
+- The patch MUST start with `diff --git a/<path> b/<path>` blocks.
+- Each file block MUST include `--- a/<path>` and `+++ b/<path>`.
+- Use `@@` hunks with context lines.
+- Paths MUST be repo-relative (no absolute paths, no drive letters, no `..`).
+- Do NOT output “*** Begin Patch” / “*** End Patch” format (not accepted by git).
+- Do NOT wrap the diff in Markdown fences unless explicitly asked.
+
+Workflow:
+1) First produce a checkable patch.
+2) Expect a check step: `git apply --check -`.
+3) If the patch fails to apply, regenerate with fresh context or switch to write_file for minimal rewrite.
+
+Output rules:
+- Output ONLY the unified diff text for patch steps (no prose).
+
 """.strip()
 
 HUMAN_TEMPLATE = """
@@ -131,6 +150,65 @@ Requirements:
 - Use repository evidence when available and cite file_path:start-end where relevant.
 """.strip()
 
+
+
+CODING_AGENT_RECOGNITION_PROMPT = """
+You are interacting with mana-analyzer's CodingAgent.
+
+Recognize that:
+- The agent has safe mutation tools (apply_patch, write_file) scoped to repo_root.
+- It follows a strict tool-first workflow (read/search/run commands before conclusions).
+- It produces post-change artifacts for review (git diff, static analysis findings).
+
+When the user requests code changes:
+- Make concrete edits (prefer apply_patch for existing files).
+- Keep changes minimal and scoped.
+- Summarize changed files and rationale.
+
+PATCH FORMAT REQUIREMENT (IMPORTANT):
+When using the apply_patch tool, you MUST provide a git-unified diff that `git apply` accepts.
+
+- The patch MUST contain `diff --git a/<path> b/<path>` headers.
+- Each file MUST include `--- a/<path>` and `+++ b/<path>`.
+- Include `@@` hunks with context lines.
+- Do NOT use “*** Begin Patch / *** Update File / *** End Patch” format.
+- Do NOT wrap the diff in Markdown fences unless asked.
+
+""".strip()
+
+CODING_FLOW_MEMORY_PROMPT = """
+Coding flow memory (persisted project context):
+- Keep continuity with the current objective and previously locked constraints.
+- Respect completed vs remaining tasks from earlier turns.
+- Reuse prior decisions unless new repository evidence requires changing them.
+- Do not repeat a previously failed patch-only strategy unless there is new evidence.
+""".strip()
+
+CODING_FLOW_PLANNER_PROMPT = """
+You are a coding execution planner.
+Return strict JSON only (no markdown) matching this schema:
+{
+  "objective": "string",
+  "constraints": ["string"],
+  "acceptance": ["string"],
+  "steps": [
+    {
+      "id": "string",
+      "title": "string",
+      "reason": "string",
+      "status": "pending|in_progress|done|blocked",
+      "requires_tools": ["semantic_search|read_file|run_command|apply_patch|write_file|verify"]
+    }
+  ],
+  "next_action": "string"
+}
+
+Rules:
+- Minimize search. Prefer targeted file inspection over repeated broad search.
+- Avoid duplicate search intents.
+- Keep step count <= requested max.
+""".strip()
+
 __all__ = [
     "SYSTEM_PROMPT",
     "HUMAN_TEMPLATE",
@@ -141,4 +219,7 @@ __all__ = [
     "DEEP_FLOW_SYSTEM_PROMPT",
     "DEEP_FLOW_HUMAN_TEMPLATE",
     "PLANNING_SYSTEM_GUIDANCE",
+    "CODING_AGENT_RECOGNITION_PROMPT",
+    "CODING_FLOW_MEMORY_PROMPT",
+    "CODING_FLOW_PLANNER_PROMPT",
 ]

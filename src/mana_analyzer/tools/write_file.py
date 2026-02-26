@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 # None => allow any path under repo_root
 DEFAULT_ALLOWED_PREFIXES: Optional[tuple[str, ...]] = None
 
+# Guidance text injected into tool descriptions to reduce "wrong patch format" failures.
+GIT_PATCH_FORMAT_GUIDANCE = (
+    "NOTE: This tool writes FULL FILE CONTENT, not patches. "
+    "If you want to apply edits via git-style diffs, use apply_patch and provide a VALID unified diff "
+    "that starts with 'diff --git a/<path> b/<path>' and includes '--- a/..' and '+++ b/..'. "
+    "Do NOT use '*** Begin Patch' format (not accepted by git)."
+)
+
 
 @dataclass(frozen=True)
 class WriteFileResult:
@@ -299,6 +307,11 @@ def safe_write_file(
         if err or target is None or rel_posix is None:
             return WriteFileResult(ok=False, path=path, error=err or "Error: invalid path").to_dict()
 
+        # Friendly footgun detection: users sometimes pass a diff to write_file.
+        # Don't block (might be intentional), but provide a clear hint if it looks like a patch.
+        if content.lstrip().startswith("diff --git "):
+            logger.warning("write_file received content that looks like a unified diff for %s", rel_posix)
+
         data = content.encode("utf-8")
         _atomic_write_bytes(target, data)
 
@@ -354,7 +367,8 @@ def build_write_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequenc
                 return WriteFileResult(
                     ok=False,
                     path=path,
-                    error="Error: missing file content (expected `content`, `text`, or `body`)",
+                    error="Error: missing file content (expected `content`, `text`, or `body`). "
+                    + GIT_PATCH_FORMAT_GUIDANCE,
                 ).to_dict()
             return safe_write_file_part(
                 repo_root=repo_root,
@@ -368,8 +382,10 @@ def build_write_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequenc
             return WriteFileResult(
                 ok=False,
                 path=path,
-                error="Error: missing file content (expected `content`, `text`, or `body`)",
+                error="Error: missing file content (expected `content`, `text`, or `body`). "
+                + GIT_PATCH_FORMAT_GUIDANCE,
             ).to_dict()
+
         return safe_write_file(repo_root=repo_root, path=path, content=effective_content, allowed_prefixes=allowed_prefixes)
 
     return StructuredTool.from_function(
@@ -380,6 +396,7 @@ def build_write_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequenc
             "Refuses absolute paths, path traversal, and paths escaping the repository root. "
             "Performs atomic write (temp + replace). "
             "For large files: send chunks with `part_index` (writes to .<filename>.parts/NNNNNN.part), "
-            "then call again with `finalize=true` to atomically assemble the final file."
+            "then call again with `finalize=true` to atomically assemble the final file. "
+            + GIT_PATCH_FORMAT_GUIDANCE
         ),
     )

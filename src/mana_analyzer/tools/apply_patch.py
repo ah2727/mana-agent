@@ -32,6 +32,18 @@ DEFAULT_ALLOWED_PREFIXES: Optional[tuple[str, ...]] = None
 _DRIVE_LETTER_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 
 
+# Guidance to reduce common "not a git patch" failures.
+GIT_UNIFIED_DIFF_GUIDANCE = (
+    "Patch must be a VALID unified diff accepted by `git apply`, e.g.:\n"
+    "  diff --git a/path/to/file.py b/path/to/file.py\n"
+    "  --- a/path/to/file.py\n"
+    "  +++ b/path/to/file.py\n"
+    "  @@ -1,3 +1,4 @@\n"
+    "Do NOT use '*** Begin Patch'/'*** End Patch' format. "
+    "Do NOT use absolute paths or '..'."
+)
+
+
 @dataclass(frozen=True)
 class ApplyPatchResult:
     ok: bool
@@ -44,6 +56,24 @@ class ApplyPatchResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """
+    If an LLM wraps diffs in ```diff ... ``` or ``` ... ```, strip the fences.
+    This keeps the tool tolerant without changing the semantics of the patch.
+    """
+    s = text.strip()
+    if not s.startswith("```"):
+        return text
+    lines = s.splitlines()
+    if len(lines) < 2:
+        return text
+    if not lines[-1].strip().startswith("```"):
+        return text
+    # drop first and last fence line
+    inner = "\n".join(lines[1:-1])
+    return inner.strip() + "\n"
 
 
 def _normalise_user_path(path: str) -> str:
@@ -202,6 +232,27 @@ def safe_apply_patch(
     if not diff.strip():
         return ApplyPatchResult(ok=False, touched_files=[], error="Error: empty diff").to_dict()
 
+    # Common LLM behavior: wrap in ```diff fences.
+    diff = _strip_markdown_fences(diff)
+
+    # Reject non-git patch formats early with a clear error.
+    # (Example: "*** Begin Patch" format used by some patch tools, not git apply.)
+    head = diff.lstrip()[:200]
+    if head.startswith("*** Begin Patch") or "*** Begin Patch" in head:
+        return ApplyPatchResult(
+            ok=False,
+            touched_files=[],
+            error="Error: patch is not a git-unified diff. " + GIT_UNIFIED_DIFF_GUIDANCE,
+        ).to_dict()
+
+    # Another early signal: if it doesn't mention diff --git anywhere, it's very likely invalid.
+    if "diff --git " not in diff:
+        return ApplyPatchResult(
+            ok=False,
+            touched_files=[],
+            error="Error: patch missing 'diff --git' header. " + GIT_UNIFIED_DIFF_GUIDANCE,
+        ).to_dict()
+
     repo_root = repo_root.resolve()
 
     touched, deleted = _extract_touched_paths_and_deletes(diff)
@@ -286,7 +337,7 @@ def build_apply_patch_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
                 ok=False,
                 touched_files=[],
                 check_only=check_only,
-                error="Error: missing patch content (expected `diff` or `patch`)",
+                error="Error: missing patch content (expected `diff` or `patch`). " + GIT_UNIFIED_DIFF_GUIDANCE,
             ).to_dict()
         return safe_apply_patch(
             repo_root=repo_root,
@@ -299,9 +350,10 @@ def build_apply_patch_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
         func=_tool,
         name="apply_patch",
         description=(
-            "Safely apply a unified diff patch inside the repository. "
+            "Safely apply a unified diff patch inside the repository using `git apply`. "
             "Refuses absolute paths, traversal, and paths escaping the repository root. "
             "NO-DELETE: blocks patches that delete files. "
-            "Run check-only validation first and use non-patch fallback if patch attempts fail repeatedly."
+            "Run check-only validation first and use non-patch fallback if patch attempts fail repeatedly. "
+            + GIT_UNIFIED_DIFF_GUIDANCE
         ),
     )

@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import ast
+import re
 from time import perf_counter
 from typing import Any, Sequence, Optional
 from collections import defaultdict
@@ -132,6 +133,14 @@ class AskAgent:
             return ("tavily_api_key" in error) or ("not configured" in error)
         lowered = str(content or "").lower()
         return ("tavily_api_key" in lowered) or ("not configured" in lowered)
+
+    @staticmethod
+    def _normalize_search_key(args: dict[str, Any]) -> str:
+        query = str(args.get("query", "")).strip().lower()
+        query = re.sub(r"\s+", " ", query)
+        path = str(args.get("path", "")).strip().lower()
+        k = int(args.get("k", 0) or 0)
+        return f"q={query}|p={path}|k={k}"
 
     def _build_tools(
         self, k_default: int, timeout_seconds: int
@@ -313,6 +322,7 @@ class AskAgent:
         index_dirs: list[str | Path] | None = None,
         callbacks: Sequence[BaseCallbackHandler] | None = None,
         system_prompt: str | None = None,
+        tool_policy: dict[str, Any] | None = None,
         tool_use: bool = True,
     ) -> AskResponseWithTrace:
         # tool_use kept for compatibility; this AskAgent is tool-based by design.
@@ -325,6 +335,7 @@ class AskAgent:
             index_dirs=index_dirs,
             callbacks=callbacks,
             system_prompt=system_prompt,
+            tool_policy=tool_policy,
         )
 
     def run(
@@ -337,6 +348,7 @@ class AskAgent:
         index_dirs: list[str | Path] | None = None,
         callbacks: Sequence[BaseCallbackHandler] | None = None,
         system_prompt: str | None = None,  # ✅ NEW
+        tool_policy: dict[str, Any] | None = None,
     ) -> AskResponseWithTrace:
         started = perf_counter()
 
@@ -363,6 +375,17 @@ class AskAgent:
         search_internet_disabled = False
         mutation_tools_used = 0
         seen_tool_args: dict[tuple[str, str], int] = defaultdict(int)
+        tool_counts: dict[str, int] = defaultdict(int)
+        unique_read_files: set[str] = set()
+        policy = dict(tool_policy or {})
+        allowed_tools = {str(x) for x in (policy.get("allowed_tools") or []) if str(x).strip()}
+        search_budget = int(policy.get("search_budget", 0) or 0)
+        read_budget = int(policy.get("read_budget", 0) or 0)
+        require_read_files = int(policy.get("require_read_files", 0) or 0)
+        block_internet = bool(policy.get("block_internet", False))
+        search_repeat_limit = int(policy.get("search_repeat_limit", 1) or 1)
+        search_seen: dict[str, int] = defaultdict(int)
+        max_semantic_k = int(policy.get("max_semantic_k", 50) or 50)
 
         final_answer = ""
         for _ in range(max_steps):
@@ -386,6 +409,8 @@ class AskAgent:
 
                 if name not in tool_map:
                     content = json.dumps({"error": f"unknown tool: {name}"})
+                elif allowed_tools and name not in allowed_tools:
+                    content = json.dumps({"error": f"tool blocked by policy: {name}"})
                 elif seen_tool_args[tool_sig] > 2:
                     content = json.dumps(
                         {
@@ -414,7 +439,42 @@ class AskAgent:
                             )
                         }
                     )
+                elif block_internet and name == "search_internet":
+                    content = json.dumps({"error": "search_internet blocked by coding-agent repo-only policy"})
                 else:
+                    if name == "semantic_search":
+                        if search_budget > 0 and tool_counts["semantic_search"] >= search_budget:
+                            content = json.dumps({"error": "semantic_search budget exhausted"})
+                            messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                            continue
+                        k_val = int(args.get("k", 0) or 0)
+                        if k_val > max_semantic_k:
+                            content = json.dumps({"error": f"semantic_search k must be <= {max_semantic_k}"})
+                            messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                            continue
+                        normalized = self._normalize_search_key(args)
+                        search_seen[normalized] += 1
+                        if search_seen[normalized] > search_repeat_limit:
+                            content = json.dumps(
+                                {"error": "duplicate semantic_search intent blocked; move to read_file or edit phase"}
+                            )
+                            messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                            continue
+                    if name == "read_file" and read_budget > 0 and tool_counts["read_file"] >= read_budget:
+                        content = json.dumps({"error": "read_file budget exhausted"})
+                        messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                        continue
+                    if name in {"apply_patch", "write_file"} and require_read_files > 0:
+                        if len(unique_read_files) < require_read_files:
+                            content = json.dumps(
+                                {
+                                    "error": (
+                                        f"mutation blocked by policy: inspect at least {require_read_files} unique files first"
+                                    )
+                                }
+                            )
+                            messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                            continue
                     try:
                         try:
                             content = tool_map[name].invoke(args, config=cfg)
@@ -430,6 +490,13 @@ class AskAgent:
                             forced_patch_fallback = True
                 if name in {"apply_patch", "write_file"}:
                     mutation_tools_used += 1
+                tool_counts[name] += 1
+                if name == "read_file":
+                    payload = self._coerce_tool_payload(content)
+                    if payload is not None:
+                        file_path = str(payload.get("file_path", "")).strip()
+                        if file_path:
+                            unique_read_files.add(file_path)
                 if name == "search_internet":
                     search_internet_calls += 1
                     if self._is_search_unavailable(content):
@@ -445,14 +512,14 @@ class AskAgent:
 
                 messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
 
-            # Hard anti-loop guard: stop patch-only tool loops and force upper-layer fallback.
+            # Hard anti-loop guard: stop patch-only loops.
             if forced_patch_fallback:
                 final_answer = (
                     "apply_patch failed repeatedly or produced no effective changes in this run. "
-                    "Stopping patch-only loop; switch to write_file fallback."
+                    "Stopping patch-only loop; regenerate a valid unified diff."
                 )
                 warnings.append(
-                    "apply_patch failed repeatedly/no-op; terminated patch-only loop to allow write_file fallback."
+                    "apply_patch failed repeatedly/no-op; terminated patch-only loop."
                 )
                 break
 
@@ -471,6 +538,10 @@ class AskAgent:
             trace=traces,
             warnings=warnings,
         )
+        if require_read_files > 0 and len(unique_read_files) < require_read_files:
+            result.warnings.append(
+                f"read-file gate not satisfied: {len(unique_read_files)}/{require_read_files} unique files inspected"
+            )
 
         run_logger = getattr(self, "run_logger", None)
         if run_logger is not None:
@@ -517,6 +588,7 @@ class AskAgent:
         """
         if getattr(self, "search_service", None) is None:
             raise RuntimeError("AskAgent.search_service is required for run_multi()")
+        tool_policy = kwargs.pop("tool_policy", None)
 
         resolved_indexes = [Path(p).resolve() for p in index_dirs]
         if not resolved_indexes:
@@ -531,6 +603,7 @@ class AskAgent:
                 timeout_seconds=timeout_seconds,
                 index_dirs=resolved_indexes,
                 callbacks=callbacks,
+                tool_policy=tool_policy,
                 **kwargs,
             )
 
@@ -600,6 +673,7 @@ class AskAgent:
             max_steps=max_steps,
             timeout_seconds=timeout_seconds,
             callbacks=callbacks,
+            tool_policy=tool_policy,
             **kwargs,
         )
 

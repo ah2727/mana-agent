@@ -116,6 +116,12 @@ class DummySettings:
     openai_chat_model = "fake"
     openai_embed_model = "fake"
     default_top_k = 8
+    coding_flow_max_turns = 5
+    coding_flow_max_tasks = 20
+    coding_plan_max_steps = 8
+    coding_search_budget = 4
+    coding_read_budget = 6
+    coding_require_read_files = 2
 
 
 class FakeStructureService:
@@ -448,3 +454,201 @@ def test_chat_blocks_edit_requests_without_coding_agent(monkeypatch, tmp_path: P
     assert "read-only for file edits" in result.stdout
     assert "--agent-tools" in result.stdout
     assert "--coding-agent" in result.stdout
+
+
+def test_flow_show_checkpoint_and_reset_commands(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+            self.checkpointed: list[str] = []
+            self.reset_ids: list[str] = []
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def flow_summary(self, flow_id: str | None = None):
+            if not (flow_id or self.active):
+                return None
+            return {
+                "flow_id": flow_id or self.active,
+                "objective": "Implement parser retry flow",
+                "constraints": ["Only touch src/ and tests/"],
+                "open_tasks": ["add regression test"],
+                "last_changed_files": ["src/mana_analyzer/services/ask_service.py"],
+            }
+
+        def checkpoint_flow(self, flow_id: str | None = None) -> str | None:
+            target = flow_id or self.active
+            if not target:
+                return None
+            self.checkpointed.append(target)
+            return target
+
+        def reset_flow(self, flow_id: str | None = None) -> str | None:
+            target = flow_id or self.active
+            if not target:
+                return None
+            self.reset_ids.append(target)
+            self.active = None
+            return target
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return {"answer": "ok", "changed_files": [], "warnings": [], "diff": "", "flow_id": self.active}
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return {"answer": "ok", "changed_files": [], "warnings": [], "diff": "", "flow_id": self.active}
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent", "--flow-id", "flow-123"],
+        input="/flow show\n/flow checkpoint\n/flow reset\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Flow memory active" in result.stdout
+    assert "Implement parser retry flow" in result.stdout
+    assert "Checkpoint saved for flow flow-123" in result.stdout
+    assert "Flow reset: flow-123" in result.stdout
+
+
+def test_flow_checklist_cli_view_renders_codex_sections(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def flow_summary(self, flow_id: str | None = None):
+            _ = flow_id
+            return {
+                "flow_id": "flow-123",
+                "objective": "Implement planner",
+                "checklist": {
+                    "objective": "Implement planner",
+                    "steps": [
+                        {"status": "in_progress", "title": "Inspect file"},
+                        {"status": "pending", "title": "Apply patch"},
+                    ],
+                },
+            }
+
+        def checkpoint_flow(self, flow_id: str | None = None) -> str | None:
+            return flow_id or self.active
+
+        def reset_flow(self, flow_id: str | None = None) -> str | None:
+            _ = flow_id
+            return self.active
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return {
+                "answer": "done",
+                "changed_files": ["src/a.py"],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "Implement planner", "steps": [{"status": "done", "title": "Inspect file"}]},
+                "progress": {"phase": "edit", "why": "gate passed", "budgets": {"search_used": 1, "search_budget": 4, "read_used": 2, "read_budget": 6, "read_files_observed": 2, "required_read_files": 2}},
+                "checklist": {"done": 1, "pending": 0, "blocked": 0, "total": 1},
+                "actions_taken": [{"tool_name": "read_file", "status": "ok", "duration_ms": 1.0, "args_summary": "x"}],
+                "next_step": "Run verification",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="implement planner\n/flow checklist\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Plan" in result.stdout
+    assert "Progress" in result.stdout
+    assert "Checklist" in result.stdout
+    assert "Actions Taken" in result.stdout
+    assert "Next Step" in result.stdout
+    assert "Flow Checklist" in result.stdout
+
+
+def test_large_json_answer_is_rendered_as_sections_not_raw_blob(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            huge = '{"answer":"' + ("x" * 5000) + '"}'
+            return {
+                "answer": huge,
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "obj", "steps": []},
+                "progress": {"phase": "inspect", "why": "insufficient reads", "budgets": {"search_used": 2, "search_budget": 4, "read_used": 1, "read_budget": 6, "read_files_observed": 1, "required_read_files": 2}},
+                "checklist": {"done": 0, "pending": 2, "blocked": 0, "total": 2},
+                "actions_taken": [],
+                "next_step": "Read one more file",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate()
+
+        def flow_summary(self, flow_id: str | None = None):
+            _ = flow_id
+            return None
+
+        def checkpoint_flow(self, flow_id: str | None = None) -> str | None:
+            return flow_id
+
+        def reset_flow(self, flow_id: str | None = None) -> str | None:
+            return flow_id
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="implement\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Plan" in result.stdout
+    assert "Next Step" in result.stdout
