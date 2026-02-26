@@ -43,7 +43,10 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.text import Text
+from rich.panel import Panel
+from collections import deque
 import time
+
 
 app = typer.Typer(help="mana-analyzer CLI")
 console = Console()
@@ -52,10 +55,9 @@ OUTPUT_DIR: Path | None = None
 
 
 class RichToolCallbackHandler(BaseCallbackHandler):
-    """Live-updates a Rich spinner when tools start/end."""
+    """Logs tool start/end so LiveLogBuffer can show it."""
 
-    def __init__(self, live: Live, *, show_inputs: bool = True) -> None:
-        self.live = live
+    def __init__(self, *, show_inputs: bool = True) -> None:
         self.show_inputs = show_inputs
         self._tool: str | None = None
         self._t0: float = 0.0
@@ -64,30 +66,33 @@ class RichToolCallbackHandler(BaseCallbackHandler):
         name = (serialized or {}).get("name") or "tool"
         self._tool = str(name)
         self._t0 = time.time()
-        msg = f"Using tool: {self._tool}"
+        msg = f"TOOL start: {self._tool}"
         if self.show_inputs and input_str:
             inp = input_str.strip().replace("\n", " ")
             if len(inp) > 160:
                 inp = inp[:160] + "…"
-            msg += f"\n↳ {inp}"
-        self.live.update(Text(msg))
+            msg += f" | args: {inp}"
+        logger.debug(msg)
 
     def on_tool_end(self, output: str, **kwargs) -> None:
         tool = self._tool or "tool"
         dt = max(0.0, time.time() - self._t0)
         self._tool = None
-        self.live.update(Text(f"Finished: {tool} ({dt:0.1f}s)"))
+        logger.debug(f"TOOL end: {tool} ({dt:0.1f}s)")
 
     def on_tool_error(self, error: BaseException, **kwargs) -> None:
         tool = self._tool or "tool"
         self._tool = None
-        self.live.update(Text(f"Tool error: {tool} - {error}"))
+        logger.debug(f"TOOL error: {tool} - {error}")
 
 
 # -----------------------------------------
 # "Full logging" helpers (added, non-breaking)
 # -----------------------------------------
 
+
+def _make_log_formatter() -> logging.Formatter:
+    return logging.Formatter("%(levelname)s %(name)s: %(message)s")
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -139,6 +144,85 @@ _EDIT_INTENT_TOKENS = (
     "implement this",
 )
 
+
+def _run_with_live_buffer(
+    console: Console,
+    *,
+    spinner_text: str,
+    fn,  # callable
+    callbacks: list[BaseCallbackHandler] | None = None,
+) -> tuple[object, str]:
+    """
+    Runs fn() while streaming logs into a Live panel.
+    Returns (result, debug_tail_text).
+    """
+    spinner = Spinner("dots", text=spinner_text)
+    with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
+        log_buf = LiveLogBuffer(live, capacity=250, show_lines=14)
+        log_buf.setFormatter(_make_log_formatter())
+
+        # capture everything (root) so you see internal debug + tool messages
+        root_logger = logging.getLogger()
+        root_logger.addHandler(log_buf)
+
+        try:
+            result = fn(callbacks=callbacks or [])
+        finally:
+            root_logger.removeHandler(log_buf)
+
+    return result, log_buf.tail(35).strip()
+
+
+def _summary(text: str, limit: int = 260) -> str:
+    t = (text or "").strip().replace("\n", " ")
+    return t if len(t) <= limit else (t[:limit].rstrip() + "…")
+
+
+def _render_turn_summary(
+    *,
+    answer: str,
+    sources_count: int,
+    warnings_count: int,
+    tool_steps: int,
+    changed_files_count: int = 0,
+    has_diff: bool = False,
+) -> str:
+    lines = [
+        "[bold]Summary[/bold]",
+        f"- preview: {_summary(answer)}",
+        f"- sources: {sources_count}",
+        f"- warnings: {warnings_count}",
+        f"- tool steps: {tool_steps}",
+    ]
+    if changed_files_count:
+        lines.append(f"- changed_files: {changed_files_count}")
+    if has_diff:
+        lines.append("- diff: yes")
+    return "\n".join(lines)
+
+
+class LiveLogBuffer(logging.Handler):
+    """Capture recent log records and stream a tail into Rich Live."""
+
+    def __init__(self, live: Live, capacity: int = 250, show_lines: int = 14) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.live = live
+        self.records: deque[str] = deque(maxlen=capacity)
+        self.show_lines = show_lines
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+        except Exception:
+            msg = record.getMessage()
+        self.records.append(msg)
+
+        tail = list(self.records)[-self.show_lines :]
+        body = "\n".join(tail) if tail else ""
+        self.live.update(Panel(body, title="Live events", border_style="dim"))
+
+    def tail(self, n: int = 35) -> str:
+        return "\n".join(list(self.records)[-n:])
 
 def _looks_like_edit_request(question: str) -> bool:
     lowered = (question or "").lower()
@@ -1554,7 +1638,7 @@ def chat(
             "ephemeral_index": ephemeral_index,
         },
     )
-
+    as_json = False
     settings = Settings()
     resolved_k = k or settings.default_top_k
 
@@ -1832,71 +1916,71 @@ def chat(
             # ✅ CODING AGENT PATH (classic + dir-mode supported)
             # ==========================================================
             if coding_agent_instance is not None:
-                spinner = Spinner("dots", text="Coding…")
-                with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
-                    cb = RichToolCallbackHandler(live, show_inputs=True)
+                cb = RichToolCallbackHandler(show_inputs=True)
 
-                    try:
-                        if dir_mode:
-                            index_dirs = dir_mode_index_dirs
-                            if not index_dirs:
-                                console.print("[red]No indexes available in dir-mode (internal CLI selection is empty).[/red]")
-                                continue
+                try:
+                    if dir_mode:
+                        index_dirs = dir_mode_index_dirs
+                        if not index_dirs:
+                            console.print("[red]No indexes available in dir-mode.[/red]")
+                            continue
 
-                            result = coding_agent_instance.generate_dir_mode(
+                        def _call(callbacks: list[BaseCallbackHandler]):
+                            return coding_agent_instance.generate_dir_mode(
                                 question,
                                 index_dirs=index_dirs,
                                 k=resolved_k,
                                 max_steps=min(max(agent_max_steps, 8), 200),
                                 timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
-                                callbacks=[cb],
+                                callbacks=callbacks,
                             )
-                        else:
-                            assert resolved_index_dir is not None
-                            result = coding_agent_instance.generate(
+                    else:
+                        assert resolved_index_dir is not None
+
+                        def _call(callbacks: list[BaseCallbackHandler]):
+                            return coding_agent_instance.generate(
                                 question,
                                 index_dir=resolved_index_dir,
                                 k=resolved_k,
                                 max_steps=min(max(agent_max_steps, 8), 200),
                                 timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
-                                callbacks=[cb],
+                                callbacks=callbacks,
                             )
-                    except Exception as exc:
-                        _log_exception("coding_agent.generate", exc)
-                        raise
 
-                if as_json:
-                    console.print_json(json.dumps(result))
-                else:
-                    console.print(result.get("answer", ""))
+                    result, debug_tail = _run_with_live_buffer(
+                        console,
+                        spinner_text="Coding…",
+                        fn=_call,
+                        callbacks=[cb],
+                    )
 
-                    changed = result.get("changed_files", []) or []
-                    if changed:
-                        console.print("\n[bold]Changed files:[/bold]")
-                        for p in changed:
-                            console.print(f"- {p}")
-                    else:
-                        console.print(
-                            "\n[yellow]No files were changed.[/yellow]\n"
-                            "Common causes:\n"
-                            "- tool loop did not run (agent didn't call write_file/apply_patch)\n"
-                            "- write was blocked by allowed prefixes\n"
-                            "- patch failed to apply cleanly\n"
-                        )
+                except Exception as exc:
+                    _log_exception("coding_agent.generate", exc)
+                    console.print("[red]Coding agent failed.[/red]")
+                    continue
 
-                    diff = result.get("diff", "") or ""
-                    if diff:
-                        console.print("\n[bold]Diff:[/bold]\n" + diff)
+                # result schema expected from CodingAgent
+                answer = str((result or {}).get("answer", "") or "")
+                changed = (result or {}).get("changed_files", []) or []
+                diff = str((result or {}).get("diff", "") or "")
+                warns = (result or {}).get("warnings", []) or []
 
-                    sa = result.get("static_analysis", {}) or {}
-                    if sa.get("finding_count", 0):
-                        console.print("\n[bold yellow]Static analysis findings:[/bold yellow]")
-                        for f in sa.get("findings", []) or []:
-                            console.print(f"- {f}")
+                console.print(
+                    "\n"
+                    + _render_turn_summary(
+                        answer=answer,
+                        sources_count=0,
+                        warnings_count=len(warns),
+                        tool_steps=len((result or {}).get("trace", []) or []),
+                        changed_files_count=len(changed),
+                        has_diff=bool(diff.strip()),
+                    )
+                )
+                if debug_tail:
+                    console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
 
-                    warns = result.get("warnings", []) or []
-                    if warns:
-                        console.print("\nWarnings:\n" + "\n".join(f"- {w}" for w in warns))
+                # Optional: if you want quick diff visibility without full diff spam:
+                # console.print("\n[dim]Tip: run with your own :diff command if you add history later.[/dim]")
 
                 continue
             # ==========================================================
@@ -1910,39 +1994,51 @@ def chat(
 
                 try:
                     if agent_tools:
-                        spinner = Spinner("dots", text="Thinking…")
-                        with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
-                            cb = RichToolCallbackHandler(live, show_inputs=True)
+                        cb = RichToolCallbackHandler(show_inputs=True)
 
+                        def _call(callbacks: list[BaseCallbackHandler]):
+                            # Primary path
                             try:
-                                response = chat_service.ask(attempt_question, callbacks=[cb])  # type: ignore[arg-type]
+                                return chat_service.ask(attempt_question, callbacks=callbacks)  # type: ignore[arg-type]
                             except TypeError:
+                                # Compatibility fallback
                                 if dir_mode:
-                                    response = ask_service.ask_with_tools_dir_mode(  # type: ignore[call-arg]
+                                    return ask_service.ask_with_tools_dir_mode(  # type: ignore[call-arg]
                                         index_dirs=getattr(chat_service, "index_dirs", []) or [],
                                         question=attempt_question,
                                         k=resolved_k,
                                         max_steps=agent_max_steps,
                                         timeout_seconds=agent_timeout_seconds,
                                         root_dir=root,
-                                        callbacks=[cb],
+                                        callbacks=callbacks,
                                     )
                                 else:
                                     assert resolved_index_dir is not None
-                                    response = ask_service.ask_with_tools(
+                                    return ask_service.ask_with_tools(
                                         index_dir=resolved_index_dir,
                                         question=attempt_question,
                                         k=resolved_k,
                                         max_steps=agent_max_steps,
                                         timeout_seconds=agent_timeout_seconds,
-                                        callbacks=[cb],
+                                        callbacks=callbacks,
                                     )
+
+                        response_obj, debug_tail = _run_with_live_buffer(
+                            console,
+                            spinner_text="Thinking…",
+                            fn=_call,
+                            callbacks=[cb],
+                        )
+                        response = response_obj  # keep your variable name
+
                     else:
+                        # no tools => no live panel; still want debug tail? keep simple
                         response = chat_service.ask(attempt_question)
+
                 except Exception as exc:
                     _log_exception("chat_service.ask", exc, attempt=attempt)
                     raise
-
+                
                 if response is None:
                     logger.warning("Chat service returned None response", extra={"attempt": attempt})
                     break
@@ -1964,23 +2060,30 @@ def chat(
             if response is None:
                 continue
 
-            if as_json:
-                console.print_json(json.dumps(response.to_dict()))
-            else:
-                console.print(response.answer)
-                if response.sources:
-                    console.print(
-                        "\nSources:\n"
-                        + "\n".join(f"- {src.file_path}:{src.start_line}-{src.end_line}" for src in response.sources)
-                    )
-                if getattr(response, "warnings", None):
-                    console.print("\nWarnings:\n" + "\n".join(f"- {w}" for w in response.warnings))
+            answer = getattr(response, "answer", "") or ""
+            sources = getattr(response, "sources", []) or []
+            warns = getattr(response, "warnings", []) or []
+            trace = getattr(response, "trace", None) or []
+
+            console.print(
+                "\n"
+                + _render_turn_summary(
+                    answer=answer,
+                    sources_count=len(sources),
+                    warnings_count=len(warns),
+                    tool_steps=len(trace),
+                )
+            )
+
+            # print debug tail if we have one from the last tool run
+            if "debug_tail" in locals() and debug_tail:
+                console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
 
             logger.info(
                 "Chat response emitted",
                 extra={
-                    "sources": len(getattr(response, "sources", []) or []),
-                    "warnings": len(getattr(response, "warnings", []) or []),
+                    "sources": len(sources),
+                    "warnings": len(warns),
                 },
             )
 
