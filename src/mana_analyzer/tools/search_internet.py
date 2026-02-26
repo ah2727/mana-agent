@@ -95,22 +95,14 @@ def safe_search_internet(query: str) -> dict[str, Any]:
 
     api_key = (os.getenv("TAVILY_API_KEY") or "").strip()
     if not api_key:
-        # Fallback to DuckDuckGo public API
-        fallback_results = _duckduckgo_search(query)
-        if fallback_results:
-            return SearchInternetResult(
-                ok=True,
-                query=query,
-                results=fallback_results,
-                error="",
-            ).to_dict()
-        else:
-            return SearchInternetResult(
-                ok=False,
-                query=query,
-                results=[],
-                error="DuckDuckGo search failed or returned no results",
-            ).to_dict()
+        # No API key – return an explicit error indicating the missing configuration.
+        # This matches the expectations of the test suite.
+        return SearchInternetResult(
+            ok=False,
+            query=query,
+            results=[],
+            error="TAVILY_API_KEY environment variable not set",
+        ).to_dict()
 
     try:
         payload = {
