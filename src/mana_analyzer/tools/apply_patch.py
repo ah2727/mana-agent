@@ -180,8 +180,26 @@ def build_apply_patch_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
     except Exception:  # pragma: no cover
         from langchain.tools import StructuredTool  # type: ignore
 
-    def _tool(diff: str, check_only: bool = False) -> dict[str, Any]:
-        return safe_apply_patch(repo_root=repo_root, diff=diff, allowed_prefixes=allowed_prefixes, check_only=check_only)
+    def _tool(
+        diff: str | None = None,
+        patch: str | None = None,
+        check_only: bool = False,
+    ) -> dict[str, Any]:
+        # Compatibility: some tool-calling models send `patch` instead of `diff`.
+        effective_diff = diff if diff is not None else patch
+        if effective_diff is None:
+            return ApplyPatchResult(
+                ok=False,
+                touched_files=[],
+                check_only=check_only,
+                error="Error: missing patch content (expected `diff` or `patch`)",
+            ).to_dict()
+        return safe_apply_patch(
+            repo_root=repo_root,
+            diff=effective_diff,
+            allowed_prefixes=allowed_prefixes,
+            check_only=check_only,
+        )
 
     return StructuredTool.from_function(
         func=_tool,

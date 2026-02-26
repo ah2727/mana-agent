@@ -105,8 +105,21 @@ def build_write_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequenc
     except Exception:  # pragma: no cover
         from langchain.tools import StructuredTool  # type: ignore
 
-    def _tool(path: str, content: str) -> dict[str, Any]:
-        return safe_write_file(repo_root=repo_root, path=path, content=content, allowed_prefixes=allowed_prefixes)
+    def _tool(
+        path: str,
+        content: str | None = None,
+        text: str | None = None,
+        body: str | None = None,
+    ) -> dict[str, Any]:
+        # Compatibility: some tool-calling models send `text`/`body` instead of `content`.
+        effective_content = content if content is not None else (text if text is not None else body)
+        if effective_content is None:
+            return WriteFileResult(
+                ok=False,
+                path=path,
+                error="Error: missing file content (expected `content`, `text`, or `body`)",
+            ).to_dict()
+        return safe_write_file(repo_root=repo_root, path=path, content=effective_content, allowed_prefixes=allowed_prefixes)
 
     return StructuredTool.from_function(
         func=_tool,
