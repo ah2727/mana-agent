@@ -87,6 +87,11 @@ class AskAgent:
         traces: list[ToolInvocationTrace] = []
         sources: list[SearchHit] = []
         warnings: list[str] = []
+        resolved_indexes = list(getattr(self, "_resolved_indexes", []) or [])
+        if not resolved_indexes:
+            fallback_index = Path(getattr(self, "_resolved_index", self.project_root / ".mana_index")).resolve()
+            resolved_indexes = [fallback_index]
+            self._resolved_indexes = resolved_indexes
 
         def semantic_search(query: str, k: int = k_default) -> str:
             started = perf_counter()
@@ -96,7 +101,7 @@ class AskAgent:
             try:
                 payload: list[dict] = []
                 all_hits: list[SearchHit] = []
-                for index_dir in self._resolved_indexes:
+                for index_dir in resolved_indexes:
                     try:
                         hits = self.search_service.search(index_dir=index_dir, query=query, k=k)
                     except Exception as exc:
@@ -240,7 +245,7 @@ class AskAgent:
         ]
 
         # ✅ NEW: include any externally-registered tools (write_file/apply_patch/etc)
-        all_tools = [*base_tools, *list(self.tools or [])]
+        all_tools = [*base_tools, *list(getattr(self, "tools", []) or [])]
 
         return all_tools, traces, sources, warnings
 
@@ -303,7 +308,10 @@ class AskAgent:
 
         final_answer = ""
         for _ in range(max_steps):
-            ai_msg = bound.invoke(messages, config=cfg)
+            try:
+                ai_msg = bound.invoke(messages, config=cfg)
+            except TypeError:
+                ai_msg = bound.invoke(messages)
             messages.append(ai_msg)
 
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
@@ -319,7 +327,10 @@ class AskAgent:
                     content = json.dumps({"error": f"unknown tool: {name}"})
                 else:
                     try:
-                        content = tool_map[name].invoke(args, config=cfg)
+                        try:
+                            content = tool_map[name].invoke(args, config=cfg)
+                        except TypeError:
+                            content = tool_map[name].invoke(args)
                     except Exception as exc:
                         content = json.dumps({"error": str(exc)})
 
@@ -367,7 +378,6 @@ class AskAgent:
 
     def run_multi(
         self,
-        *,
         question: str,
         index_dirs: Sequence[str | Path],
         k: int,
@@ -391,6 +401,18 @@ class AskAgent:
         resolved_indexes = [Path(p).resolve() for p in index_dirs]
         if not resolved_indexes:
             raise RuntimeError("run_multi(): index_dirs is empty")
+
+        if not hasattr(self.search_service, "search_multi"):
+            return self.run(
+                question=question,
+                index_dir=resolved_indexes[0],
+                k=k,
+                max_steps=max_steps,
+                timeout_seconds=timeout_seconds,
+                index_dirs=resolved_indexes,
+                callbacks=callbacks,
+                **kwargs,
+            )
 
         # 1) Retrieve across all indexes
         sources, warnings = self.search_service.search_multi(  # type: ignore[attr-defined]

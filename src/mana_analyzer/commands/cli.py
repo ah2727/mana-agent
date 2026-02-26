@@ -228,6 +228,37 @@ def _clamp_detail_line_target(value: int) -> int:
     return value
 
 
+def _render_repository_summary_markdown(summary_payload: dict) -> str:
+    descriptions = summary_payload.get("descriptions") or []
+    selected_files = summary_payload.get("selected_files") or []
+    architecture_summary = str(summary_payload.get("architecture_summary") or "").strip()
+    tech_summary = str(summary_payload.get("tech_summary") or "").strip()
+
+    lines = [
+        "## Repository Summary",
+        f"- Selected files: {len(selected_files)}",
+        f"- Summarized files: {len(descriptions)}",
+    ]
+
+    if architecture_summary:
+        lines.extend(["", "### Architecture Summary", architecture_summary])
+    if tech_summary:
+        lines.extend(["", "### Technology Summary", tech_summary])
+
+    if descriptions:
+        lines.extend(["", "### File Summaries"])
+        for item in descriptions[:12]:
+            file_path = item.get("file_path", "unknown")
+            language = item.get("language", "unknown")
+            summary = str(item.get("summary") or "").strip()
+            if summary:
+                lines.append(f"- `{file_path}` ({language}): {summary}")
+            else:
+                lines.append(f"- `{file_path}` ({language})")
+
+    return "\n".join(lines).rstrip()
+
+
 def build_store(settings: Settings) -> FaissStore:
     _log_call(
         "build_store",
@@ -312,6 +343,22 @@ def build_ask_service(
     )
     _log_return("build_ask_service", service_type=type(svc).__name__)
     return svc
+
+
+def _build_ask_service_compat(
+    settings: Settings,
+    model_override: str | None,
+    *,
+    project_root: Path | None = None,
+) -> AskService:
+    if project_root is None:
+        return build_ask_service(settings, model_override=model_override)
+    try:
+        return build_ask_service(settings, model_override=model_override, project_root=project_root)
+    except TypeError as exc:
+        if "project_root" not in str(exc):
+            raise
+        return build_ask_service(settings, model_override=model_override)
 
 
 def build_dependency_service() -> DependencyService:
@@ -753,7 +800,7 @@ def ask(
 
     # For agent tools, project_root matters (file reads)
     # In dir-mode we set to root later; in classic, cwd is fine
-    service = build_ask_service(settings, model_override=model)
+    service = _build_ask_service_compat(settings, model_override=model)
 
     tmp_single: tempfile.TemporaryDirectory | None = None
     tmp_dir_mode_root: tempfile.TemporaryDirectory | None = None
@@ -765,7 +812,7 @@ def ask(
                 root = root.parent
 
             # rebuild AskService with correct root for tool file reads
-            service = build_ask_service(settings, model_override=model, project_root=root)
+            service = _build_ask_service_compat(settings, model_override=model, project_root=root)
 
             logger.debug(
                 "Resolved ask dir-mode parameters",
@@ -1445,7 +1492,7 @@ def chat(
 
     logger.debug("Resolved chat root", extra={"root": str(root)})
 
-    ask_service = build_ask_service(settings, model_override=model, project_root=root)
+    ask_service = _build_ask_service_compat(settings, model_override=model, project_root=root)
 
     chat_service = ChatService(
         ask_service=ask_service,
@@ -1686,96 +1733,38 @@ def chat(
             # ✅ CODING AGENT PATH (classic + dir-mode supported)
             # ==========================================================
             if coding_agent_instance is not None:
-                try:
-                    if dir_mode:
-                        index_dirs = dir_mode_index_dirs
-                        if not index_dirs:
-                            console.print("[red]No indexes available in dir-mode (internal CLI selection is empty).[/red]")
-                            continue
-                            
-                        result = coding_agent_instance.generate_dir_mode(
-                            question,
-                            index_dirs=index_dirs,
-                            k=resolved_k,
-                            max_steps=max(agent_max_steps, 8),
-                            timeout_seconds=max(agent_timeout_seconds, 60),
-                        )
-                        spinner = Spinner("dots", text="Coding…")
-                        with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
-                            cb = RichToolCallbackHandler(live, show_inputs=True)
+                spinner = Spinner("dots", text="Coding…")
+                with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
+                    cb = RichToolCallbackHandler(live, show_inputs=True)
 
-                            try:
-                                if dir_mode:
-                                    index_dirs = getattr(chat_service, "index_dirs", None) or []
-                                    if not index_dirs:
-                                        console.print("[red]No indexes available in dir-mode (internal index list empty).[/red]")
-                                        continue
+                    try:
+                        if dir_mode:
+                            index_dirs = dir_mode_index_dirs
+                            if not index_dirs:
+                                console.print("[red]No indexes available in dir-mode (internal CLI selection is empty).[/red]")
+                                continue
 
-                                    result = coding_agent_instance.generate_dir_mode(
-                                        question,
-                                        index_dirs=index_dirs,
-                                        k=resolved_k,
-                                        max_steps=min(agent_max_steps, 200),          # clamp insane values
-                                        timeout_seconds=min(agent_timeout_seconds, 600),
-                                        callbacks=[cb],
-                                    )
-                                else:
-                                    assert resolved_index_dir is not None
-                                    result = coding_agent_instance.generate(
-                                        question,
-                                        index_dir=resolved_index_dir,
-                                        k=resolved_k,
-                                        max_steps=min(agent_max_steps, 200),
-                                        timeout_seconds=min(agent_timeout_seconds, 600),
-                                        callbacks=[cb],
-                                    )
-                            except Exception as exc:
-                                _log_exception("coding_agent.generate", exc)
-                                raise
-
-                        # Show output
-                        if as_json:
-                            console.print_json(json.dumps(result))
+                            result = coding_agent_instance.generate_dir_mode(
+                                question,
+                                index_dirs=index_dirs,
+                                k=resolved_k,
+                                max_steps=min(max(agent_max_steps, 8), 200),
+                                timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
+                                callbacks=[cb],
+                            )
                         else:
-                            console.print(result.get("answer", ""))
-
-                            changed = result.get("changed_files", []) or []
-                            if changed:
-                                console.print("\n[bold]Changed files:[/bold]")
-                                for p in changed:
-                                    console.print(f"- {p}")
-                            else:
-                                console.print(
-                                    "\n[yellow]No files were changed.[/yellow]\n"
-                                    "Common causes:\n"
-                                    "- tool loop did not run (agent didn't call write_file/apply_patch)\n"
-                                    "- write was blocked by allowed prefixes\n"
-                                    "- patch failed to apply cleanly\n"
-                                )
-
-                            diff = result.get("diff", "") or ""
-                            if diff:
-                                console.print("\n[bold]Diff:[/bold]\n" + diff)
-
-                            sa = result.get("static_analysis", {}) or {}
-                            if sa.get("finding_count", 0):
-                                console.print("\n[bold yellow]Static analysis findings:[/bold yellow]")
-                                for f in sa.get("findings", []) or []:
-                                    console.print(f"- {f}")
-
-                        continue
-                    else:
-                        assert resolved_index_dir is not None
-                        result = coding_agent_instance.generate(
-                            question,
-                            index_dir=resolved_index_dir,
-                            k=resolved_k,
-                            max_steps=max(agent_max_steps, 8),
-                            timeout_seconds=max(agent_timeout_seconds, 60),
-                        )
-                except Exception as exc:
-                    _log_exception("coding_agent.generate", exc)
-                    raise
+                            assert resolved_index_dir is not None
+                            result = coding_agent_instance.generate(
+                                question,
+                                index_dir=resolved_index_dir,
+                                k=resolved_k,
+                                max_steps=min(max(agent_max_steps, 8), 200),
+                                timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
+                                callbacks=[cb],
+                            )
+                    except Exception as exc:
+                        _log_exception("coding_agent.generate", exc)
+                        raise
 
                 if as_json:
                     console.print_json(json.dumps(result))
@@ -1787,6 +1776,14 @@ def chat(
                         console.print("\n[bold]Changed files:[/bold]")
                         for p in changed:
                             console.print(f"- {p}")
+                    else:
+                        console.print(
+                            "\n[yellow]No files were changed.[/yellow]\n"
+                            "Common causes:\n"
+                            "- tool loop did not run (agent didn't call write_file/apply_patch)\n"
+                            "- write was blocked by allowed prefixes\n"
+                            "- patch failed to apply cleanly\n"
+                        )
 
                     diff = result.get("diff", "") or ""
                     if diff:

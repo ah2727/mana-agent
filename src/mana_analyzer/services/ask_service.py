@@ -217,14 +217,23 @@ class AskService:
         resolved = sorted({Path(p).resolve() for p in index_dirs})
 
         try:
-            result = self.ask_agent.run_multi(
-                question=question,
-                index_dirs=resolved,
-                k=k,
-                max_steps=max_steps,
-                timeout_seconds=timeout_seconds,
-                callbacks=callbacks,
-            )
+            try:
+                result = self.ask_agent.run_multi(
+                    question=question,
+                    index_dirs=resolved,
+                    k=k,
+                    max_steps=max_steps,
+                    timeout_seconds=timeout_seconds,
+                    callbacks=callbacks,
+                )
+            except TypeError:
+                result = self.ask_agent.run_multi(
+                    question=question,
+                    index_dirs=resolved,
+                    k=k,
+                    max_steps=max_steps,
+                    timeout_seconds=timeout_seconds,
+                )
             result.source_groups = self._group_sources_by_index(
                 result.sources,
                 resolved,

@@ -97,6 +97,26 @@ class CodingAgent:
     # Public API
     # ---------------------------------------------------------------------
 
+    _EDIT_INTENT_TOKENS = (
+        "fix",
+        "bug",
+        "issue",
+        "patch",
+        "edit",
+        "update",
+        "modify",
+        "change",
+        "implement",
+        "add",
+        "remove",
+        "delete",
+        "create",
+        "write",
+        "refactor",
+        "rename",
+        "cleanup",
+    )
+
     def generate(
         self,
         request: str,
@@ -113,6 +133,7 @@ class CodingAgent:
         - Otherwise we fallback to `ask(...)`.
         """
         before = self._git_status_paths()
+        warnings: list[str] = []
 
         answer = self._call_agent_single(
             request,
@@ -125,6 +146,34 @@ class CodingAgent:
 
         after = self._git_status_paths()
         changed = sorted(after.difference(before))
+
+        if self._should_retry_for_edit_request(request=request, changed_files=changed):
+            warnings.append("No file changes detected on first pass; retrying with explicit edit instructions.")
+            answer = self._call_agent_single(
+                self._build_mandatory_edit_retry_prompt(request),
+                index_dir=index_dir,
+                k=k,
+                max_steps=max_steps,
+                timeout_seconds=timeout_seconds,
+                callbacks=callbacks,
+            )
+            after = self._git_status_paths()
+            changed = sorted(after.difference(before))
+            if not changed:
+                warnings.append("No file changes after patch-style retry; retrying with python/perl edit fallback.")
+                answer = self._call_agent_single(
+                    self._build_python_perl_retry_prompt(request),
+                    index_dir=index_dir,
+                    k=k,
+                    max_steps=max_steps,
+                    timeout_seconds=timeout_seconds,
+                    callbacks=callbacks,
+                )
+                after = self._git_status_paths()
+                changed = sorted(after.difference(before))
+                if not changed:
+                    warnings.append("No file changes detected after python/perl fallback retry.")
+
         findings = self._run_static_analysis([p for p in changed if p.endswith(".py")])
         diff = self._git_diff(changed)
 
@@ -134,6 +183,7 @@ class CodingAgent:
             "answer": answer,
             "changed_files": changed,
             "diff": diff,
+            "warnings": warnings,
             "static_analysis": {
                 "finding_count": len(findings),
                 "findings": [_as_jsonable(f) for f in findings],
@@ -160,6 +210,7 @@ class CodingAgent:
           3) ask(...) fallback
         """
         before = self._git_status_paths()
+        warnings: list[str] = []
 
         answer = self._call_agent_multi(
             request,
@@ -172,6 +223,34 @@ class CodingAgent:
 
         after = self._git_status_paths()
         changed = sorted(after.difference(before))
+
+        if self._should_retry_for_edit_request(request=request, changed_files=changed):
+            warnings.append("No file changes detected on first pass; retrying with explicit edit instructions.")
+            answer = self._call_agent_multi(
+                self._build_mandatory_edit_retry_prompt(request),
+                index_dirs=index_dirs,
+                k=k,
+                max_steps=max_steps,
+                timeout_seconds=timeout_seconds,
+                callbacks=callbacks,
+            )
+            after = self._git_status_paths()
+            changed = sorted(after.difference(before))
+            if not changed:
+                warnings.append("No file changes after patch-style retry; retrying with python/perl edit fallback.")
+                answer = self._call_agent_multi(
+                    self._build_python_perl_retry_prompt(request),
+                    index_dirs=index_dirs,
+                    k=k,
+                    max_steps=max_steps,
+                    timeout_seconds=timeout_seconds,
+                    callbacks=callbacks,
+                )
+                after = self._git_status_paths()
+                changed = sorted(after.difference(before))
+                if not changed:
+                    warnings.append("No file changes detected after python/perl fallback retry.")
+
         findings = self._run_static_analysis([p for p in changed if p.endswith(".py")])
         diff = self._git_diff(changed)
 
@@ -181,6 +260,7 @@ class CodingAgent:
             "answer": answer,
             "changed_files": changed,
             "diff": diff,
+            "warnings": warnings,
             "static_analysis": {
                 "finding_count": len(findings),
                 "findings": [_as_jsonable(f) for f in findings],
@@ -274,6 +354,38 @@ class CodingAgent:
             "- You must use tools to open files; do not guess.\n"
         )
         return self._call_ask_like(stitched)
+
+    def _looks_like_edit_request(self, request: str) -> bool:
+        lowered = request.lower()
+        return any(token in lowered for token in self._EDIT_INTENT_TOKENS)
+
+    def _should_retry_for_edit_request(self, *, request: str, changed_files: list[str]) -> bool:
+        return not changed_files and self._looks_like_edit_request(request)
+
+    @staticmethod
+    def _build_mandatory_edit_retry_prompt(request: str) -> str:
+        return (
+            f"{request}\n\n"
+            "MANDATORY RETRY:\n"
+            "- The previous attempt made no file changes.\n"
+            "- You MUST apply concrete code edits using write_file or apply_patch.\n"
+            "- Keep changes minimal and scoped to the user request.\n"
+            "- After editing, summarize changed files and rationale.\n"
+        )
+
+    @staticmethod
+    def _build_python_perl_retry_prompt(request: str) -> str:
+        return (
+            f"{request}\n\n"
+            "MANDATORY RETRY 2 (PATCH FAILURE FALLBACK):\n"
+            "- apply_patch/git-based edits likely failed.\n"
+            "- You MUST directly edit files using run_command with python3 or perl.\n"
+            "- Prefer python3 first; perl is acceptable fallback.\n"
+            "- Example python3 pattern: python3 -c \"from pathlib import Path; p=Path('FILE'); s=p.read_text(); p.write_text(s.replace('OLD','NEW',1))\"\n"
+            "- Example perl pattern: perl -0777 -i -pe \"s/OLD/NEW/s\" FILE\n"
+            "- Keep edits minimal and confined to the requested fix.\n"
+            "- After editing, summarize changed files and rationale.\n"
+        )
 
     def _call_ask_like(self, request: str) -> str:
         kwargs: dict[str, Any] = {}
