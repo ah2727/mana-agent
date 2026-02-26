@@ -1,8 +1,9 @@
-"""Internet-search tool backed by Tavily with safe offline fallback."""
+"""Internet-search tool backed by Tavily with safe offline fallback and DuckDuckGo support."""
 
 import json
 import logging
 import os
+import urllib.parse
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib import error, request
@@ -10,6 +11,7 @@ from urllib import error, request
 logger = logging.getLogger(__name__)
 
 _TAVILY_ENDPOINT = "https://api.tavily.com/search"
+_DUCKDUCKGO_ENDPOINT = "https://api.duckduckgo.com/"
 _REQUEST_TIMEOUT_SECONDS = 12
 _MAX_RESULTS = 5
 
@@ -36,20 +38,79 @@ class SearchInternetResult:
         return data
 
 
+def _duckduckgo_search(query: str) -> list[dict[str, Any]]:
+    """Fallback search using DuckDuckGo's instant answer API.
+
+    Returns a list of normalized result dicts similar to the Tavily format.
+    """
+    # Build request URL
+    params = {
+        "q": query,
+        "format": "json",
+        "no_redirect": "1",
+        "no_html": "1",
+        "skip_disambig": "1",
+    }
+    url = f"{_DUCKDUCKGO_ENDPOINT}?{urllib.parse.urlencode(params)}"
+    req = request.Request(url, method="GET", headers={"User-Agent": "mana-analyzer/1.0"})
+    try:
+        with request.urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+            raw = resp.read().decode("utf-8")
+        data = json.loads(raw)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("DuckDuckGo search failed: %s", exc)
+        return []
+
+    # DuckDuckGo returns results in 'RelatedTopics' list; each may have 'Text' and 'FirstURL'
+    results = []
+    for item in data.get("RelatedTopics", [])[:_MAX_RESULTS]:
+        # Some items are nested dicts with a 'Topics' list
+        if "Topics" in item:
+            for sub in item.get("Topics", [])[: _MAX_RESULTS - len(results)]:
+                results.append({
+                    "title": sub.get("Text", "").split(" - ")[0],
+                    "url": sub.get("FirstURL", ""),
+                    "content": sub.get("Text", ""),
+                    "score": 0.0,
+                    "raw": sub,
+                })
+        else:
+            results.append({
+                "title": item.get("Text", "").split(" - ")[0],
+                "url": item.get("FirstURL", ""),
+                "content": item.get("Text", ""),
+                "score": 0.0,
+                "raw": item,
+            })
+        if len(results) >= _MAX_RESULTS:
+            break
+    return results
+
+
 def safe_search_internet(query: str) -> dict[str, Any]:
-    """Search the web with Tavily and return normalized JSON results."""
+    """Search the web with Tavily (or DuckDuckGo fallback) and return normalized JSON results."""
     query = (query or "").strip()
     if not query:
         return SearchInternetResult(ok=False, query="", results=[], error="Query must not be empty").to_dict()
 
     api_key = (os.getenv("TAVILY_API_KEY") or "").strip()
     if not api_key:
-        return SearchInternetResult(
-            ok=False,
-            query=query,
-            results=[],
-            error="TAVILY_API_KEY is not configured",
-        ).to_dict()
+        # Fallback to DuckDuckGo public API
+        fallback_results = _duckduckgo_search(query)
+        if fallback_results:
+            return SearchInternetResult(
+                ok=True,
+                query=query,
+                results=fallback_results,
+                error="",
+            ).to_dict()
+        else:
+            return SearchInternetResult(
+                ok=False,
+                query=query,
+                results=[],
+                error="DuckDuckGo search failed or returned no results",
+            ).to_dict()
 
     try:
         payload = {
@@ -108,15 +169,15 @@ def build_search_internet_tool() -> "StructuredTool":  # type: ignore[name-defin
     """Wrap ``safe_search_internet`` in a LangChain ``StructuredTool``."""
     try:
         from langchain_core.tools import StructuredTool  # type: ignore
-    except Exception:  # pragma: no cover
+    except Exception:
         from langchain.tools import StructuredTool  # type: ignore
 
     return StructuredTool.from_function(
         func=safe_search_internet,
         name="search_internet",
         description=(
-            "Perform a web search via Tavily and return JSON results. "
-            "If Tavily is not configured or unreachable, returns ok=false with an error."
+            "Perform a web search via Tavily; if Tavily is not configured or unreachable, fallback to DuckDuckGo and return JSON results. "
+            "If both fail, returns ok=false with an error."
         ),
         args_schema=None,
     )
