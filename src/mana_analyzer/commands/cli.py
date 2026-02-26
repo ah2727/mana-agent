@@ -25,6 +25,7 @@ from mana_analyzer.llm.qna_chain import QnAChain
 from mana_analyzer.llm.repo_chain import RepositoryMultiChain
 from mana_analyzer.llm.prompts import PLANNING_SYSTEM_GUIDANCE
 from mana_analyzer.llm.coding_agent import CodingAgent  # ✅ NEW
+from mana_analyzer.llm.tool_worker_process import ToolWorkerClient, ToolWorkerProcessError
 from mana_analyzer.parsers.multi_parser import MultiLanguageParser
 from mana_analyzer.services.analyze_service import AnalyzeService
 from mana_analyzer.services.ask_service import AskService
@@ -1902,6 +1903,16 @@ def chat(
         "--coding-agent",
         help="Enable repo-modifying coding agent (write_file/apply_patch) inside chat.",
     ),
+    tool_worker_process: bool = typer.Option(
+        True,
+        "--tool-worker-process/--no-tool-worker-process",
+        help="Run coding-agent tool execution in a persistent worker subprocess.",
+    ),
+    tool_worker_strict: bool = typer.Option(
+        True,
+        "--tool-worker-strict/--no-tool-worker-strict",
+        help="Require at least one successful tool call in worker mode.",
+    ),
     coding_memory: bool = typer.Option(
         True,
         "--coding-memory/--no-coding-memory",
@@ -1960,6 +1971,8 @@ def chat(
             "auto_index_missing": auto_index_missing,
             "agent_tools": agent_tools,
             "coding_agent": coding_agent,
+            "tool_worker_process": tool_worker_process,
+            "tool_worker_strict": tool_worker_strict,
             "coding_memory": coding_memory,
             "flow_id": flow_id,
             "coding_plan_max_steps": coding_plan_max_steps,
@@ -2008,6 +2021,7 @@ def chat(
     # ✅ Initialize CodingAgent (only when enabled)
     coding_agent_instance: CodingAgent | None = None
     coding_memory_service: CodingMemoryService | None = None
+    tool_worker_client: ToolWorkerClient | None = None
     if coding_agent:
         if not agent_tools:
             raise typer.BadParameter("--coding-agent requires --agent-tools (needs tool loop).")
@@ -2018,6 +2032,18 @@ def chat(
                 project_root=root,
                 max_turns=settings.coding_flow_max_turns,
                 max_tasks=settings.coding_flow_max_tasks,
+            )
+        if tool_worker_process:
+            effective_model = model or settings.openai_chat_model
+            tool_worker_client = ToolWorkerClient(
+                api_key=settings.openai_api_key,
+                model=effective_model,
+                base_url=settings.openai_base_url,
+                embed_model=settings.openai_embed_model,
+                repo_root=root,
+                project_root=root,
+                allowed_prefixes=None,
+                tools_only_strict=tool_worker_strict,
             )
 
         # ✅ IMPORTANT: allow_prefixes=None => unrestricted under repo_root
@@ -2034,6 +2060,7 @@ def chat(
             read_budget=max(1, int(coding_read_budget or settings.coding_read_budget)),
             require_read_files=max(1, int(coding_require_read_files or settings.coding_require_read_files)),
             repo_only_internet_default=True,
+            tool_worker_client=tool_worker_client,
         )
 
     tmp_root: tempfile.TemporaryDirectory | None = None
@@ -2254,6 +2281,23 @@ def chat(
         if planning_mode and coding_agent_instance is not None:
             console.print("[yellow]Planning mode is read-only; coding-agent edits are disabled in this session.[/yellow]")
             coding_agent_instance = None
+            if tool_worker_client is not None:
+                tool_worker_client.stop()
+                tool_worker_client = None
+        if coding_agent_instance is not None and tool_worker_client is not None:
+            try:
+                tool_worker_client.start()
+                tool_worker_client.health()
+                console.print(
+                    "[cyan]Tool worker subprocess active:[/cyan] "
+                    f"tools-only strict={tool_worker_strict}"
+                )
+            except Exception as exc:
+                _log_exception("tool_worker_client.start", exc)
+                console.print(
+                    "[yellow]Tool worker failed to initialize. Coding-agent edits are disabled for this session.[/yellow]"
+                )
+                coding_agent_instance = None
 
         planning_request: str | None = None
         planning_answers: list[str] = []
@@ -2455,6 +2499,20 @@ def chat(
                         callbacks=[cb],
                     )
 
+                except ToolWorkerProcessError as exc:
+                    _log_exception("coding_agent.generate.worker", exc)
+                    if exc.code == "tools_only_violation":
+                        console.print(
+                            "[yellow]Tools-only policy blocked this request:[/yellow] "
+                            "no successful tool calls were executed. "
+                            "Ask for specific file/tool actions and retry."
+                        )
+                        continue
+                    console.print(
+                        "[red]Coding agent worker failed.[/red] "
+                        "Retrying this turn read-only is recommended."
+                    )
+                    continue
                 except Exception as exc:
                     _log_exception("coding_agent.generate", exc)
                     console.print("[red]Coding agent failed.[/red]")
@@ -2638,6 +2696,8 @@ def chat(
             )
 
     finally:
+        if tool_worker_client is not None:
+            tool_worker_client.stop()
         if tmp_root is not None:
             tmp_root.cleanup()
         if tmp_base is not None:

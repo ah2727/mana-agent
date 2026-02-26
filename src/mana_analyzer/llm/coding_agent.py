@@ -29,6 +29,11 @@ from mana_analyzer.llm.prompts import (
     CODING_FLOW_MEMORY_PROMPT,
     CODING_FLOW_PLANNER_PROMPT,
 )
+from mana_analyzer.llm.tool_worker_process import (
+    ToolRunRequest,
+    ToolWorkerClient,
+    ToolWorkerProcessError,
+)
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.tools import build_apply_patch_tool, build_write_file_tool
 
@@ -64,7 +69,12 @@ FORBIDDEN:
 Workflow:
 1) First call apply_patch(check_only=true) with the unified diff.
 2) If ok=true, call apply_patch(check_only=false) with the same diff.
-3) If check fails twice OR patch attempts produce no repo changes, STOP patching and switch to write_file fallback:
+3) apply_patch internally tries a fallback chain:
+   - git apply
+   - perl fallback applier
+   - python fallback compute
+   - write_file persistence
+4) If apply_patch still fails twice OR patch attempts produce no repo changes, STOP patch-only loops and use explicit write_file fallback:
    - read_file the target
    - generate full updated file content
    - write_file in chunks with part_index, then finalize=true
@@ -155,6 +165,7 @@ class CodingAgent:
         read_budget: int = 6,
         require_read_files: int = 2,
         repo_only_internet_default: bool = True,
+        tool_worker_client: ToolWorkerClient | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url
@@ -171,6 +182,7 @@ class CodingAgent:
         self.read_budget = max(1, int(read_budget))
         self.require_read_files = max(1, int(require_read_files))
         self.repo_only_internet_default = bool(repo_only_internet_default)
+        self.tool_worker_client = tool_worker_client
 
         planner_kwargs = {
             "api_key": api_key,
@@ -520,7 +532,6 @@ class CodingAgent:
             changed_files=changed,
         )
         if force_fallback:
-            warnings.append(force_reason)
             logger.warning(force_reason)
 
             # Nudge the model strongly toward write_file chunk/finalize.
@@ -565,7 +576,6 @@ class CodingAgent:
         )
 
         if force_write:
-            warnings.append("Forcing write_file fallback: re-running agent with apply_patch disabled.")
             logger.warning("Forcing write_file fallback: re-running agent with apply_patch disabled.")
 
             with self._without_tool("apply_patch"):
@@ -722,6 +732,33 @@ class CodingAgent:
         tool_policy: dict[str, Any] | None = None,
     ) -> str:
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
+        if self.tool_worker_client is not None:
+            try:
+                response = self.tool_worker_client.run_tools(
+                    ToolRunRequest(
+                        question=request,
+                        index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
+                        k=int(k if k is not None else 8),
+                        max_steps=max_steps,
+                        timeout_seconds=timeout_seconds,
+                        tool_policy=tool_policy,
+                        system_prompt=effective_prompt,
+                    )
+                )
+                return self._stringify(response.model_dump())
+            except ToolWorkerProcessError as exc:
+                if exc.code == "tools_only_violation":
+                    return self._stringify(
+                        {
+                            "answer": (
+                                "Request blocked by tools-only worker policy: no successful tool calls were made. "
+                                "Please provide a tool-executable request with specific files or operations."
+                            ),
+                            "trace": [],
+                            "warnings": [f"tools_only_violation: {exc}"],
+                        }
+                    )
+                raise
         if hasattr(self.ask_agent, "run"):
             return self._stringify(
                 self._invoke_run_like(
@@ -754,6 +791,33 @@ class CodingAgent:
         if not resolved:
             return "No index_dirs provided for dir-mode."
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
+        if self.tool_worker_client is not None:
+            try:
+                response = self.tool_worker_client.run_tools(
+                    ToolRunRequest(
+                        question=request,
+                        index_dirs=resolved,
+                        k=int(k if k is not None else 8),
+                        max_steps=max_steps,
+                        timeout_seconds=timeout_seconds,
+                        tool_policy=tool_policy,
+                        system_prompt=effective_prompt,
+                    )
+                )
+                return self._stringify(response.model_dump())
+            except ToolWorkerProcessError as exc:
+                if exc.code == "tools_only_violation":
+                    return self._stringify(
+                        {
+                            "answer": (
+                                "Request blocked by tools-only worker policy: no successful tool calls were made. "
+                                "Please provide a tool-executable request with specific files or operations."
+                            ),
+                            "trace": [],
+                            "warnings": [f"tools_only_violation: {exc}"],
+                        }
+                    )
+                raise
         if hasattr(self.ask_agent, "run_multi"):
             return self._stringify(
                 self._invoke_run_like(

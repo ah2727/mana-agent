@@ -150,3 +150,114 @@ def test_ask_agent_invokes_externally_registered_tool(tmp_path: Path) -> None:
 
     result = agent.run("Need latest info", tmp_path / ".mana_index", 2, max_steps=3, timeout_seconds=2)
     assert result.answer == "Done"
+
+
+def test_ask_agent_does_not_disable_search_internet_after_repeated_calls(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    agent.tools = [
+        StructuredTool.from_function(
+            func=lambda query: {"ok": True, "query": query, "results": [{"title": "x"}], "error": ""},
+            name="search_internet",
+            description="Search external information.",
+        )
+    ]
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "q1"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "search_internet", "args": {"query": "q2"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "3", "name": "search_internet", "args": {"query": "q3"}}]),
+            _FakeAIMessage("Done", tool_calls=[]),
+        ]
+    )
+
+    result = agent.run("Need latest info", tmp_path / ".mana_index", 2, max_steps=5, timeout_seconds=2)
+    assert result.answer == "Done"
+    assert not any("disabled after repeated calls without progress" in str(w) for w in result.warnings)
+
+
+def test_ask_agent_reports_search_internet_failure_once(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    agent.tools = [
+        StructuredTool.from_function(
+            func=lambda query: {"ok": False, "query": query, "results": [], "error": "DuckDuckGo fallback failed"},
+            name="search_internet",
+            description="Search external information.",
+        )
+    ]
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "q1"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "search_internet", "args": {"query": "q1"}}]),
+            _FakeAIMessage("Done", tool_calls=[]),
+        ]
+    )
+
+    result = agent.run("Need latest info", tmp_path / ".mana_index", 2, max_steps=4, timeout_seconds=2)
+    assert result.answer == "Done"
+    matches = [w for w in result.warnings if "search_internet failed: DuckDuckGo fallback failed" in str(w)]
+    assert len(matches) == 1
+
+
+def test_ask_agent_suppresses_missing_backend_search_warning(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    agent.tools = [
+        StructuredTool.from_function(
+            func=lambda query: {
+                "ok": False,
+                "query": query,
+                "results": [],
+                "error": "DuckDuckGo fallback failed (TAVILY_API_KEY not set)",
+            },
+            name="search_internet",
+            description="Search external information.",
+        )
+    ]
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "q1"}}]),
+            _FakeAIMessage("Done", tool_calls=[]),
+        ]
+    )
+
+    result = agent.run("Need latest info", tmp_path / ".mana_index", 2, max_steps=3, timeout_seconds=2)
+    assert result.answer == "Done"
+    assert not any("search_internet failed:" in str(w) for w in result.warnings)
+
+
+def test_is_apply_patch_failure_treats_ok_true_payload_with_error_details_as_success() -> None:
+    payload = (
+        '{"ok": true, "error": "", "attempts": ['
+        '{"strategy":"git","phase":"check-p0","ok":false,"detail":"error: patch failed"}]}'
+    )
+    assert AskAgent._is_apply_patch_failure(payload) is False
+
+
+def test_ask_agent_keeps_looping_after_apply_patch_failures_for_write_file_fallback(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    agent.tools = [
+        StructuredTool.from_function(
+            func=lambda diff: {"ok": False, "error": "hunk context mismatch", "touched_files": ["src/demo.py"]},
+            name="apply_patch",
+            description="Apply a patch.",
+        ),
+        StructuredTool.from_function(
+            func=lambda path, content: {"ok": True, "path": path, "bytes": len(content)},
+            name="write_file",
+            description="Write a file.",
+        ),
+    ]
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "apply_patch", "args": {"diff": "d1"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "apply_patch", "args": {"diff": "d2"}}]),
+            _FakeAIMessage(
+                "",
+                tool_calls=[{"id": "3", "name": "write_file", "args": {"path": "src/demo.py", "content": "print(1)\n"}}],
+            ),
+            _FakeAIMessage("Done", tool_calls=[]),
+        ]
+    )
+
+    result = agent.run("Implement change", tmp_path / ".mana_index", 2, max_steps=6, timeout_seconds=2)
+    assert result.answer == "Done"
+    assert any("apply_patch disabled after repeated failures" in str(w) for w in result.warnings)

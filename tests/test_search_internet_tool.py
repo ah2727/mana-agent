@@ -6,12 +6,17 @@ from urllib.error import HTTPError
 from mana_analyzer.tools.search_internet import safe_search_internet
 
 
-def test_safe_search_internet_requires_api_key(monkeypatch) -> None:
+def test_safe_search_internet_uses_duckduckgo_when_api_key_missing(monkeypatch) -> None:
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "mana_analyzer.tools.search_internet._duckduckgo_search",
+        lambda _q: [{"title": "DDG result", "url": "https://duckduckgo.com/x", "content": "x", "score": 0.0, "raw": {}}],
+    )
     payload = safe_search_internet("latest release")
-    assert payload["ok"] is False
-    assert payload["results"] == []
-    assert "TAVILY_API_KEY" in payload["error"]
+    assert payload["ok"] is True
+    assert payload["results"]
+    assert payload["results"][0]["title"] == "DDG result"
+    assert payload["error"] == ""
 
 
 def test_safe_search_internet_success(monkeypatch) -> None:
@@ -54,8 +59,12 @@ def test_safe_search_internet_http_error(monkeypatch) -> None:
         raise HTTPError(url="https://api.tavily.com/search", code=500, msg="bad", hdrs=None, fp=None)
 
     monkeypatch.setattr("mana_analyzer.tools.search_internet.request.urlopen", _raise_http_error)
+    monkeypatch.setattr(
+        "mana_analyzer.tools.search_internet._duckduckgo_search",
+        lambda _q: [{"title": "DDG fallback", "url": "https://duckduckgo.com/y", "content": "y", "score": 0.0, "raw": {}}],
+    )
 
     payload = safe_search_internet("latest")
-    assert payload["ok"] is False
-    assert payload["results"] == []
-    assert "HTTP error" in payload["error"]
+    assert payload["ok"] is True
+    assert payload["results"]
+    assert payload["results"][0]["title"] == "DDG fallback"

@@ -95,13 +95,14 @@ def safe_search_internet(query: str) -> dict[str, Any]:
 
     api_key = (os.getenv("TAVILY_API_KEY") or "").strip()
     if not api_key:
-        # No API key – return an explicit error indicating the missing configuration.
-        # This matches the expectations of the test suite.
+        ddg_results = _duckduckgo_search(query)
+        if ddg_results:
+            return SearchInternetResult(ok=True, query=query, results=ddg_results, error="").to_dict()
         return SearchInternetResult(
             ok=False,
             query=query,
             results=[],
-            error="TAVILY_API_KEY environment variable not set",
+            error="DuckDuckGo fallback failed (TAVILY_API_KEY not set)",
         ).to_dict()
 
     try:
@@ -147,13 +148,22 @@ def safe_search_internet(query: str) -> dict[str, Any]:
     except error.HTTPError as exc:
         message = f"Tavily HTTP error {exc.code}"
         logger.warning("safe_search_internet http error: %s", message)
+        ddg_results = _duckduckgo_search(query)
+        if ddg_results:
+            return SearchInternetResult(ok=True, query=query, results=ddg_results, error="").to_dict()
         return SearchInternetResult(ok=False, query=query, results=[], error=message).to_dict()
     except error.URLError as exc:
         message = f"Tavily network error: {exc.reason}"
         logger.warning("safe_search_internet url error: %s", message)
+        ddg_results = _duckduckgo_search(query)
+        if ddg_results:
+            return SearchInternetResult(ok=True, query=query, results=ddg_results, error="").to_dict()
         return SearchInternetResult(ok=False, query=query, results=[], error=message).to_dict()
     except Exception as exc:  # pragma: no cover – defensive
         logger.exception("safe_search_internet failed")
+        ddg_results = _duckduckgo_search(query)
+        if ddg_results:
+            return SearchInternetResult(ok=True, query=query, results=ddg_results, error="").to_dict()
         return SearchInternetResult(ok=False, query=query, results=[], error=str(exc)).to_dict()
 
 

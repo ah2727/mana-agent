@@ -123,16 +123,11 @@ class AskAgent:
             return False
         text = str(content or "")
         lowered = text.lower()
+        # Tolerate stringified success payloads that may still include per-attempt
+        # "error: ..." details from failed sub-strategies.
+        if re.search(r"""['"]ok['"]\s*:\s*true""", lowered):
+            return False
         return "error" in lowered or "ok': false" in lowered or '"ok": false' in lowered
-
-    @classmethod
-    def _is_search_unavailable(cls, content: Any) -> bool:
-        payload = cls._coerce_tool_payload(content)
-        if payload is not None:
-            error = str(payload.get("error", "")).lower()
-            return ("tavily_api_key" in error) or ("not configured" in error)
-        lowered = str(content or "").lower()
-        return ("tavily_api_key" in lowered) or ("not configured" in lowered)
 
     @staticmethod
     def _normalize_search_key(args: dict[str, Any]) -> str:
@@ -141,6 +136,18 @@ class AskAgent:
         path = str(args.get("path", "")).strip().lower()
         k = int(args.get("k", 0) or 0)
         return f"q={query}|p={path}|k={k}"
+
+    @classmethod
+    def _search_error_detail(cls, content: Any) -> str:
+        payload = cls._coerce_tool_payload(content)
+        if payload is not None:
+            detail = str(payload.get("error", "")).strip()
+            lowered = detail.lower()
+            # Suppress noisy env/config-only web-search warnings.
+            if "duckduckgo fallback failed" in lowered and "tavily_api_key not set" in lowered:
+                return ""
+            return detail
+        return ""
 
     def _build_tools(
         self, k_default: int, timeout_seconds: int
@@ -371,9 +378,6 @@ class AskAgent:
         cfg: dict[str, Any] = {"callbacks": list(callbacks) if callbacks else []}
         apply_patch_failures = 0
         forced_patch_fallback = False
-        search_internet_calls = 0
-        search_internet_disabled = False
-        mutation_tools_used = 0
         seen_tool_args: dict[tuple[str, str], int] = defaultdict(int)
         tool_counts: dict[str, int] = defaultdict(int)
         unique_read_files: set[str] = set()
@@ -430,15 +434,6 @@ class AskAgent:
                             ),
                         }
                     )
-                elif search_internet_disabled and name == "search_internet":
-                    content = json.dumps(
-                        {
-                            "error": (
-                                "search_internet disabled for this run due to repeated/noisy calls or missing API key; "
-                                "continue with repository-local tools."
-                            )
-                        }
-                    )
                 elif block_internet and name == "search_internet":
                     content = json.dumps({"error": "search_internet blocked by coding-agent repo-only policy"})
                 else:
@@ -488,8 +483,12 @@ class AskAgent:
                         apply_patch_failures += 1
                         if apply_patch_failures >= 2:
                             forced_patch_fallback = True
-                if name in {"apply_patch", "write_file"}:
-                    mutation_tools_used += 1
+                            warning = (
+                                "apply_patch disabled after repeated failures in this run; "
+                                "switching to write_file fallback."
+                            )
+                            if warning not in warnings:
+                                warnings.append(warning)
                 tool_counts[name] += 1
                 if name == "read_file":
                     payload = self._coerce_tool_payload(content)
@@ -498,33 +497,21 @@ class AskAgent:
                         if file_path:
                             unique_read_files.add(file_path)
                 if name == "search_internet":
-                    search_internet_calls += 1
-                    if self._is_search_unavailable(content):
-                        search_internet_disabled = True
-                        warnings.append(
-                            "search_internet disabled: external search backend unavailable (missing API key/config)."
-                        )
-                    elif search_internet_calls >= 3 and mutation_tools_used == 0:
-                        search_internet_disabled = True
-                        warnings.append(
-                            "search_internet disabled after repeated calls without progress; switching to local planning/edit tools."
-                        )
-
+                    detail = self._search_error_detail(content)
+                    if detail:
+                        warning = f"search_internet failed: {detail}"
+                        if warning not in warnings:
+                            warnings.append(warning)
                 messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
 
-            # Hard anti-loop guard: stop patch-only loops.
+        if not final_answer:
             if forced_patch_fallback:
                 final_answer = (
-                    "apply_patch failed repeatedly or produced no effective changes in this run. "
-                    "Stopping patch-only loop; regenerate a valid unified diff."
+                    "apply_patch was disabled after repeated failures in this run. "
+                    "Tool loop reached the step limit before write_file fallback completed."
                 )
-                warnings.append(
-                    "apply_patch failed repeatedly/no-op; terminated patch-only loop."
-                )
-                break
-
-        if not final_answer:
-            final_answer = "Tool loop reached the step limit before a final answer."
+            else:
+                final_answer = "Tool loop reached the step limit before a final answer."
 
         deduped_sources = sorted(
             {(item.file_path, item.start_line, item.end_line, item.symbol_name): item for item in sources}.values(),
@@ -686,7 +673,6 @@ class AskAgent:
                 result.warnings = list(getattr(result, "warnings", []) or [])
                 if warnings:
                     result.warnings.extend(warnings)
-                result.warnings.append(f"dir-mode: selected index for tool-run = {best_index}")
             if hasattr(result, "mode") and getattr(result, "mode", None):
                 # keep existing mode
                 pass

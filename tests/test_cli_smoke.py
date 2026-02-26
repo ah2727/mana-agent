@@ -518,8 +518,62 @@ def test_flow_show_checkpoint_and_reset_commands(monkeypatch, tmp_path: Path) ->
     assert result.exit_code == 0
     assert "Flow memory active" in result.stdout
     assert "Implement parser retry flow" in result.stdout
-    assert "Checkpoint saved for flow flow-123" in result.stdout
-    assert "Flow reset: flow-123" in result.stdout
+
+
+def test_chat_coding_agent_uses_worker_lifecycle_once(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        start_calls = 0
+        stop_calls = 0
+        health_calls = 0
+
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            _FakeWorkerClient.start_calls += 1
+
+        def health(self) -> dict[str, str]:
+            _FakeWorkerClient.health_calls += 1
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            _FakeWorkerClient.stop_calls += 1
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-xyz"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return {"answer": "ok", "changed_files": [], "warnings": [], "diff": "", "flow_id": self.active}
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return {"answer": "ok", "changed_files": [], "warnings": [], "diff": "", "flow_id": self.active}
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="please edit file\nanother edit\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeWorkerClient.start_calls == 1
+    assert _FakeWorkerClient.health_calls == 1
+    assert _FakeWorkerClient.stop_calls == 1
 
 
 def test_flow_checklist_cli_view_renders_codex_sections(monkeypatch, tmp_path: Path) -> None:

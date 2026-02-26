@@ -25,7 +25,8 @@ Hard requirements:
 Workflow:
 1) First produce a checkable patch.
 2) Expect a check step: `git apply --check -`.
-3) If the patch fails to apply, regenerate with fresh context or switch to write_file for minimal rewrite.
+3) `apply_patch` may run internal fallbacks in order: git apply -> perl -> python compute -> write_file persistence.
+4) If apply_patch still fails, regenerate with fresh context.
 
 Output rules:
 - Output ONLY the unified diff text for patch steps (no prose).
@@ -173,6 +174,7 @@ When using the apply_patch tool, you MUST provide a git-unified diff that `git a
 - Include `@@` hunks with context lines.
 - Do NOT use “*** Begin Patch / *** Update File / *** End Patch” format.
 - Do NOT wrap the diff in Markdown fences unless asked.
+- `apply_patch` can run fallback strategies internally (git -> perl -> python -> write_file).
 
 """.strip()
 

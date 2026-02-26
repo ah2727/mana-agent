@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from mana_analyzer.llm.coding_agent import CodingAgent, FlowChecklist, FlowStep
+from mana_analyzer.llm.tool_worker_process import ToolWorkerProcessError
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 
 
@@ -183,3 +184,21 @@ def test_dir_mode_coding_agent_flow_context_included(tmp_path: Path, monkeypatch
         k=4,
     )
     assert isinstance(first.get("plan"), dict)
+
+
+def test_coding_agent_handles_tools_only_worker_violation(tmp_path: Path, monkeypatch) -> None:
+    class _FailingWorker:
+        def run_tools(self, _request):
+            raise ToolWorkerProcessError(
+                code="tools_only_violation",
+                message="no successful tool calls",
+                retriable=False,
+            )
+
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent.tool_worker_client = _FailingWorker()
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    assert "tools-only worker policy" in str(result.get("answer", "")).lower()
+    warnings = result.get("warnings") or []
+    assert any("tools_only_violation" in str(item) for item in warnings)
