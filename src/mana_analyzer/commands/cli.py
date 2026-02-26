@@ -2473,7 +2473,7 @@ def chat(
                                 question,
                                 index_dirs=index_dirs,
                                 k=resolved_k,
-                                max_steps=min(max(agent_max_steps, 8), 200),
+                                max_steps=min(max(agent_max_steps, 8), 200000000000),
                                 timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
                                 callbacks=callbacks,
                                 flow_id=active_flow_id,
