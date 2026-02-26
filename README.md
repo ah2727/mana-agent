@@ -174,8 +174,3 @@ Contributions are welcome! Please follow these steps:
 
 ---
 
-## Contact & Support
-
-- **Issue tracker:** <https://github.com/your-org/mana-analyzer/issues>
-- **Documentation:** <https://github.com/your-org/mana-analyzer#readme>
-- **Chat / Community:** Join the discussion on GitHub Discussions or reach out via email at `maintainer@example.com`.
