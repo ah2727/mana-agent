@@ -112,7 +112,7 @@ def test_coding_agent_does_not_retry_read_only_prompt(tmp_path: Path, monkeypatc
     assert result["warnings"] == []
 
 
-def test_coding_agent_uses_python_perl_fallback_retry(tmp_path: Path, monkeypatch) -> None:
+def test_coding_agent_uses_write_file_fallback_retry(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         "mana_analyzer.llm.coding_agent.build_write_file_tool",
         lambda **_kwargs: _Tool("write_file"),
@@ -140,7 +140,39 @@ def test_coding_agent_uses_python_perl_fallback_retry(tmp_path: Path, monkeypatc
 
     assert len(ask_agent.questions) == 3
     assert "MANDATORY RETRY 2" in ask_agent.questions[2]
-    assert "python3" in ask_agent.questions[2]
-    assert "perl -0777" in ask_agent.questions[2]
+    assert "write_file" in ask_agent.questions[2]
+    assert "Do NOT attempt another patch-only retry" in ask_agent.questions[2]
     assert "src/fixed.py" in result["changed_files"]
-    assert any("python/perl edit fallback" in warning for warning in result["warnings"])
+    assert any("switching to write_file fallback" in warning for warning in result["warnings"])
+
+
+def test_coding_agent_stops_after_write_file_fallback_with_no_changes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "mana_analyzer.llm.coding_agent.build_write_file_tool",
+        lambda **_kwargs: _Tool("write_file"),
+    )
+    monkeypatch.setattr(
+        "mana_analyzer.llm.coding_agent.build_apply_patch_tool",
+        lambda **_kwargs: _Tool("apply_patch"),
+    )
+    (tmp_path / "README.md").write_text("seed\n", encoding="utf-8")
+
+    ask_agent = _FakeAskAgent(tmp_path, write_on_attempt=None)
+    agent = CodingAgent(
+        api_key="test-key",
+        repo_root=tmp_path,
+        ask_agent=ask_agent,
+        allowed_prefixes=None,
+    )
+    _wire_deterministic_status(agent, tmp_path)
+
+    result = agent.generate(
+        "Fix the parser bug in src/mana_analyzer/services/ask_service.py",
+        index_dir=tmp_path / ".mana_index",
+        k=4,
+    )
+
+    assert len(ask_agent.questions) == 3
+    assert result["changed_files"] == []
+    assert any("switching to write_file fallback" in warning for warning in result["warnings"])
+    assert any("Stopping retries to avoid patch-only loops" in warning for warning in result["warnings"])

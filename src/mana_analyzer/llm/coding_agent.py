@@ -160,9 +160,9 @@ class CodingAgent:
             after = self._git_status_paths()
             changed = sorted(after.difference(before))
             if not changed:
-                warnings.append("No file changes after patch-style retry; retrying with python/perl edit fallback.")
+                warnings.append("No file changes after patch-style retry; switching to write_file fallback.")
                 answer = self._call_agent_single(
-                    self._build_python_perl_retry_prompt(request),
+                    self._build_write_file_retry_prompt(request),
                     index_dir=index_dir,
                     k=k,
                     max_steps=max_steps,
@@ -172,7 +172,10 @@ class CodingAgent:
                 after = self._git_status_paths()
                 changed = sorted(after.difference(before))
                 if not changed:
-                    warnings.append("No file changes detected after python/perl fallback retry.")
+                    warnings.append(
+                        "No file changes detected after write_file fallback retry. "
+                        "Stopping retries to avoid patch-only loops; return failure summary with attempted strategy and constraints."
+                    )
 
         findings = self._run_static_analysis([p for p in changed if p.endswith(".py")])
         diff = self._git_diff(changed)
@@ -237,9 +240,9 @@ class CodingAgent:
             after = self._git_status_paths()
             changed = sorted(after.difference(before))
             if not changed:
-                warnings.append("No file changes after patch-style retry; retrying with python/perl edit fallback.")
+                warnings.append("No file changes after patch-style retry; switching to write_file fallback.")
                 answer = self._call_agent_multi(
-                    self._build_python_perl_retry_prompt(request),
+                    self._build_write_file_retry_prompt(request),
                     index_dirs=index_dirs,
                     k=k,
                     max_steps=max_steps,
@@ -249,7 +252,10 @@ class CodingAgent:
                 after = self._git_status_paths()
                 changed = sorted(after.difference(before))
                 if not changed:
-                    warnings.append("No file changes detected after python/perl fallback retry.")
+                    warnings.append(
+                        "No file changes detected after write_file fallback retry. "
+                        "Stopping retries to avoid patch-only loops; return failure summary with attempted strategy and constraints."
+                    )
 
         findings = self._run_static_analysis([p for p in changed if p.endswith(".py")])
         diff = self._git_diff(changed)
@@ -368,21 +374,22 @@ class CodingAgent:
             f"{request}\n\n"
             "MANDATORY RETRY:\n"
             "- The previous attempt made no file changes.\n"
-            "- You MUST apply concrete code edits using write_file or apply_patch.\n"
+            "- You MUST apply concrete code edits using apply_patch first.\n"
+            "- Validate patch application with a check/preview flow before claiming success.\n"
+            "- Do NOT repeat a patch-only strategy if files remain unchanged.\n"
             "- Keep changes minimal and scoped to the user request.\n"
             "- After editing, summarize changed files and rationale.\n"
         )
 
     @staticmethod
-    def _build_python_perl_retry_prompt(request: str) -> str:
+    def _build_write_file_retry_prompt(request: str) -> str:
         return (
             f"{request}\n\n"
             "MANDATORY RETRY 2 (PATCH FAILURE FALLBACK):\n"
-            "- apply_patch/git-based edits likely failed.\n"
-            "- You MUST directly edit files using run_command with python3 or perl.\n"
-            "- Prefer python3 first; perl is acceptable fallback.\n"
-            "- Example python3 pattern: python3 -c \"from pathlib import Path; p=Path('FILE'); s=p.read_text(); p.write_text(s.replace('OLD','NEW',1))\"\n"
-            "- Example perl pattern: perl -0777 -i -pe \"s/OLD/NEW/s\" FILE\n"
+            "- apply_patch/git-based edits likely failed or produced no change.\n"
+            "- You MUST switch to write_file and perform direct file rewrite for the minimum required edits.\n"
+            "- Do NOT attempt another patch-only retry in this pass.\n"
+            "- If write_file also produces no file changes, stop and return a failure summary.\n"
             "- Keep edits minimal and confined to the requested fix.\n"
             "- After editing, summarize changed files and rationale.\n"
         )

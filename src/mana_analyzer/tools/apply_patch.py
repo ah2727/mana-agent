@@ -8,6 +8,9 @@ Key properties:
 - Refuses patches that touch files outside repo_root.
 - Optionally restricts touched paths to allowed prefixes.
 - Applies patch using `git apply` (preferred) without `--unsafe-paths`.
+- Intended usage: run patch validation (`git apply --check`) first, then apply.
+- If repeated patch attempts fail or produce no file changes, callers should switch to
+  non-patch fallback editing (e.g. write_file) and stop retry loops.
 """
 
 from __future__ import annotations
@@ -206,6 +209,7 @@ def build_apply_patch_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
         name="apply_patch",
         description=(
             "Safely apply a unified diff patch inside the repository. "
-            "Refuses absolute paths and paths escaping the repository root."
+            "Refuses absolute paths and paths escaping the repository root. "
+            "Run check-only validation first and use non-patch fallback if patch attempts fail repeatedly."
         ),
     )
