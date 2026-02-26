@@ -12,6 +12,8 @@ import hashlib
 import typer
 from langchain_community.embeddings import OpenAIEmbeddings
 from rich.console import Console
+from rich.markdown import Markdown
+from rich.table import Table
 
 from mana_analyzer.analysis.checks import PythonStaticAnalyzer
 from mana_analyzer.analysis.chunker import CodeChunker
@@ -193,9 +195,14 @@ def _render_turn_summary(
     changed_files_count: int = 0,
     has_diff: bool = False,
 ) -> str:
+    answer_text = (answer or "").strip()
+    preview = _summary(answer_text)
+    truncated = len(preview) < len(answer_text)
     lines = [
         "[bold]Summary[/bold]",
-        f"- preview: {_summary(answer)}",
+        f"- preview: {preview}",
+        f"- answer_chars: {len(answer_text)}",
+        f"- preview_truncated: {'yes' if truncated else 'no'}",
         f"- sources: {sources_count}",
         f"- warnings: {warnings_count}",
         f"- tool steps: {tool_steps}",
@@ -205,6 +212,129 @@ def _render_turn_summary(
     if has_diff:
         lines.append("- diff: yes")
     return "\n".join(lines)
+
+
+def _extract_structured_answer(answer: str) -> tuple[str, dict | None]:
+    raw = (answer or "").strip()
+    if not raw:
+        return "", None
+
+    candidates = [raw]
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            candidates.insert(0, "\n".join(lines[1:-1]).strip())
+
+    for candidate in candidates:
+        if not candidate.startswith("{"):
+            continue
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            nested_answer = payload.get("answer")
+            if isinstance(nested_answer, str):
+                return nested_answer.strip(), payload
+            return candidate, payload
+
+    return raw, None
+
+
+def _render_answer_sections(
+    console: Console,
+    *,
+    answer: str,
+    title: str = "Answer",
+    sources: list | None = None,
+    warnings: list[str] | None = None,
+    trace: list | None = None,
+) -> None:
+    answer_text, payload = _extract_structured_answer(answer)
+
+    payload_sources = payload.get("sources", []) if isinstance(payload, dict) else []
+    payload_trace = payload.get("trace", []) if isinstance(payload, dict) else []
+    payload_warnings = payload.get("warnings", []) if isinstance(payload, dict) else []
+
+    merged_sources = list(sources or [])
+    if not merged_sources and isinstance(payload_sources, list):
+        merged_sources = payload_sources
+
+    merged_trace = list(trace or [])
+    if not merged_trace and isinstance(payload_trace, list):
+        merged_trace = payload_trace
+
+    merged_warnings = list(warnings or [])
+    if isinstance(payload_warnings, list):
+        for item in payload_warnings:
+            txt = str(item).strip()
+            if txt and txt not in merged_warnings:
+                merged_warnings.append(txt)
+
+    console.print(f"\n[bold]{title}[/bold]")
+    if answer_text:
+        console.print(Markdown(answer_text))
+    else:
+        console.print("[dim](no answer text)[/dim]")
+
+    if merged_sources:
+        table = Table(title="Sources", show_lines=False)
+        table.add_column("File", overflow="fold")
+        table.add_column("Lines", justify="right")
+        table.add_column("Symbol", overflow="fold")
+        table.add_column("Score", justify="right")
+
+        for item in merged_sources[:12]:
+            if isinstance(item, dict):
+                file_path = str(item.get("file_path", ""))
+                start_line = int(item.get("start_line", 0) or 0)
+                end_line = int(item.get("end_line", 0) or 0)
+                symbol_name = str(item.get("symbol_name", ""))
+                score_val = item.get("score", "")
+            else:
+                file_path = str(getattr(item, "file_path", ""))
+                start_line = int(getattr(item, "start_line", 0) or 0)
+                end_line = int(getattr(item, "end_line", 0) or 0)
+                symbol_name = str(getattr(item, "symbol_name", ""))
+                score_val = getattr(item, "score", "")
+
+            lines = f"{start_line}-{end_line}" if start_line or end_line else "-"
+            score = "-"
+            if isinstance(score_val, (int, float)):
+                score = f"{float(score_val):.3f}"
+            elif str(score_val).strip():
+                score = str(score_val)
+            table.add_row(file_path or "-", lines, symbol_name or "-", score)
+
+        console.print(table)
+
+    if merged_warnings:
+        warning_lines = "\n".join(f"- {w}" for w in merged_warnings[:12])
+        console.print(Panel(warning_lines, title="Warnings", border_style="yellow"))
+
+    if merged_trace:
+        trace_table = Table(title="Tool Trace", show_lines=False)
+        trace_table.add_column("Tool")
+        trace_table.add_column("Status")
+        trace_table.add_column("Duration (ms)", justify="right")
+        trace_table.add_column("Args", overflow="fold")
+        for item in merged_trace[:12]:
+            if isinstance(item, dict):
+                tool = str(item.get("tool_name", ""))
+                status = str(item.get("status", ""))
+                duration = item.get("duration_ms", "")
+                args_summary = str(item.get("args_summary", ""))
+            else:
+                tool = str(getattr(item, "tool_name", ""))
+                status = str(getattr(item, "status", ""))
+                duration = getattr(item, "duration_ms", "")
+                args_summary = str(getattr(item, "args_summary", ""))
+            if isinstance(duration, (int, float)):
+                duration_text = f"{float(duration):.1f}"
+            else:
+                duration_text = str(duration or "-")
+            trace_table.add_row(tool or "-", status or "-", duration_text, args_summary or "-")
+        console.print(trace_table)
 
 
 class LiveLogBuffer(logging.Handler):
@@ -1994,17 +2124,42 @@ def chat(
                 changed = (result or {}).get("changed_files", []) or []
                 diff = str((result or {}).get("diff", "") or "")
                 warns = (result or {}).get("warnings", []) or []
+                _, parsed_payload = _extract_structured_answer(answer)
+                payload_sources = []
+                payload_warnings = []
+                payload_trace = []
+                if isinstance(parsed_payload, dict):
+                    if isinstance(parsed_payload.get("sources"), list):
+                        payload_sources = parsed_payload["sources"]
+                    if isinstance(parsed_payload.get("warnings"), list):
+                        payload_warnings = [str(w).strip() for w in parsed_payload["warnings"] if str(w).strip()]
+                    if isinstance(parsed_payload.get("trace"), list):
+                        payload_trace = parsed_payload["trace"]
+                merged_warns = list(warns)
+                for warning in payload_warnings:
+                    if warning not in merged_warns:
+                        merged_warns.append(warning)
+                result_trace = (result or {}).get("trace", []) or []
+                effective_trace = result_trace if result_trace else payload_trace
 
                 console.print(
                     "\n"
                     + _render_turn_summary(
                         answer=answer,
-                        sources_count=0,
-                        warnings_count=len(warns),
-                        tool_steps=len((result or {}).get("trace", []) or []),
+                        sources_count=len(payload_sources),
+                        warnings_count=len(merged_warns),
+                        tool_steps=len(effective_trace),
                         changed_files_count=len(changed),
                         has_diff=bool(diff.strip()),
                     )
+                )
+                _render_answer_sections(
+                    console,
+                    answer=answer,
+                    title="Full answer",
+                    sources=payload_sources,
+                    warnings=merged_warns,
+                    trace=effective_trace,
                 )
                 if debug_tail:
                     console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
@@ -2103,6 +2258,14 @@ def chat(
                     warnings_count=len(warns),
                     tool_steps=len(trace),
                 )
+            )
+            _render_answer_sections(
+                console,
+                answer=answer,
+                title="Answer",
+                sources=sources,
+                warnings=warns,
+                trace=trace,
             )
 
             # print debug tail if we have one from the last tool run
