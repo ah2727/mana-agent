@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field, ValidationError
 
 from mana_analyzer.llm.ask_agent import AskAgent
@@ -18,6 +21,8 @@ from mana_analyzer.tools import (
     build_write_file_tool,
 )
 from mana_analyzer.vector_store.faiss_store import FaissStore
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerInitPayload(BaseModel):
@@ -142,14 +147,19 @@ class ToolWorkerClient:
         self.start()
         return self._request("health", {}, expect_event=False)
 
-    def run_tools(self, request: ToolRunRequest) -> ToolRunResponse:
+    def run_tools(
+        self,
+        request: ToolRunRequest,
+        *,
+        on_event: Callable[[WorkerEvent], None] | None = None,
+    ) -> ToolRunResponse:
         self.start()
         try:
-            payload = self._request("run_tools", request.model_dump(), expect_event=False)
+            payload = self._request("run_tools", request.model_dump(), expect_event=False, on_event=on_event)
         except ToolWorkerProcessError as exc:
             if self._can_retry(exc):
                 self._restart()
-                payload = self._request("run_tools", request.model_dump(), expect_event=False)
+                payload = self._request("run_tools", request.model_dump(), expect_event=False, on_event=on_event)
             else:
                 raise
         return ToolRunResponse.model_validate(payload)
@@ -165,11 +175,18 @@ class ToolWorkerClient:
         self.stop()
         self.start()
 
-    def _request(self, msg_type: str, payload: dict[str, Any], *, expect_event: bool) -> dict[str, Any]:
+    def _request(
+        self,
+        msg_type: str,
+        payload: dict[str, Any],
+        *,
+        expect_event: bool,
+        on_event: Callable[[WorkerEvent], None] | None = None,
+    ) -> dict[str, Any]:
         proc = self._proc
         if proc is None:
             raise ToolWorkerProcessError(code="worker_dead", message="worker process is not running", retriable=True)
-        return self._request_with_proc(proc, msg_type, payload, expect_event=expect_event)
+        return self._request_with_proc(proc, msg_type, payload, expect_event=expect_event, on_event=on_event)
 
     def _request_with_proc(
         self,
@@ -178,6 +195,7 @@ class ToolWorkerClient:
         payload: dict[str, Any],
         *,
         expect_event: bool,
+        on_event: Callable[[WorkerEvent], None] | None = None,
     ) -> dict[str, Any]:
         if proc.stdin is None or proc.stdout is None:
             raise ToolWorkerProcessError(code="worker_io_error", message="worker stdio unavailable", retriable=True)
@@ -210,6 +228,11 @@ class ToolWorkerClient:
                 continue
             if reply.type == "event":
                 saw_event = True
+                if on_event is not None:
+                    try:
+                        on_event(WorkerEvent.model_validate(reply.payload))
+                    except Exception:
+                        logger.debug("Failed to process worker event", exc_info=True)
                 continue
             if reply.type == "error":
                 err = WorkerError.model_validate(reply.payload)
@@ -226,6 +249,57 @@ class ToolWorkerClient:
                     retriable=True,
                 )
             return reply.payload
+
+
+class _WorkerToolEventCallback(BaseCallbackHandler):
+    """Emit per-tool events from worker process back to parent client."""
+
+    def __init__(self, *, request_id: str, emit_reply: Callable[[WorkerReply], None]) -> None:
+        self._request_id = request_id
+        self._emit_reply = emit_reply
+        self._tool: str | None = None
+        self._t0: float = 0.0
+
+    def _emit(self, *, name: str, message: str, data: dict[str, Any] | None = None) -> None:
+        self._emit_reply(
+            WorkerReply(
+                type="event",
+                request_id=self._request_id,
+                payload=WorkerEvent(name=name, message=message, data=data or {}).model_dump(),
+            )
+        )
+
+    def on_tool_start(self, serialized, input_str: str, **kwargs) -> None:  # type: ignore[override]
+        _ = kwargs
+        tool = str((serialized or {}).get("name") or "tool")
+        self._tool = tool
+        self._t0 = time.time()
+        args = (input_str or "").strip().replace("\n", " ")
+        if len(args) > 160:
+            args = args[:160] + "…"
+        msg = f"TOOL start: {tool}"
+        if args:
+            msg += f" | args: {args}"
+        self._emit(name="tool_start", message=msg, data={"tool": tool, "args": args})
+
+    def on_tool_end(self, output: str, **kwargs) -> None:  # type: ignore[override]
+        _ = (output, kwargs)
+        tool = self._tool or "tool"
+        dt = max(0.0, time.time() - self._t0)
+        self._tool = None
+        self._emit(
+            name="tool_end",
+            message=f"TOOL end: {tool} ({dt:0.1f}s)",
+            data={"tool": tool, "duration_seconds": round(dt, 3)},
+        )
+
+    def on_tool_error(self, error: BaseException, **kwargs) -> None:  # type: ignore[override]
+        _ = kwargs
+        tool = self._tool or "tool"
+        self._tool = None
+        err = str(error).strip()
+        msg = f"TOOL error: {tool}" + (f" - {err}" if err else "")
+        self._emit(name="tool_error", message=msg, data={"tool": tool, "error": err})
 
 
 class _ToolWorkerServer:
@@ -335,6 +409,7 @@ class _ToolWorkerServer:
             return
         try:
             req = ToolRunRequest.model_validate(env.payload)
+            tool_event_cb = _WorkerToolEventCallback(request_id=env.request_id, emit_reply=self._emit)
             if req.index_dirs:
                 result = self._ask_agent.run_multi(
                     question=req.question,
@@ -344,6 +419,7 @@ class _ToolWorkerServer:
                     timeout_seconds=req.timeout_seconds,
                     system_prompt=req.system_prompt,
                     tool_policy=req.tool_policy,
+                    callbacks=[tool_event_cb],
                 )
             else:
                 if not req.index_dir:
@@ -356,6 +432,7 @@ class _ToolWorkerServer:
                     timeout_seconds=req.timeout_seconds,
                     system_prompt=req.system_prompt,
                     tool_policy=req.tool_policy,
+                    callbacks=[tool_event_cb],
                 )
             trace_rows = [item.to_dict() for item in getattr(result, "trace", [])]
             ok_tools = len([row for row in trace_rows if str(row.get("status", "")).lower().strip() == "ok"])

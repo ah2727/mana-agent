@@ -218,6 +218,53 @@ class CodingAgent:
             )
         return prompt
 
+    @staticmethod
+    def _log_worker_event(event: Any) -> None:
+        name = ""
+        message = ""
+        data: dict[str, Any] = {}
+
+        if isinstance(event, dict):
+            name = str(event.get("name", "") or "")
+            message = str(event.get("message", "") or "")
+            maybe_data = event.get("data")
+            if isinstance(maybe_data, dict):
+                data = maybe_data
+        else:
+            name = str(getattr(event, "name", "") or "")
+            message = str(getattr(event, "message", "") or "")
+            maybe_data = getattr(event, "data", {})
+            if isinstance(maybe_data, dict):
+                data = maybe_data
+
+        message = message.strip()
+        if message.startswith("TOOL "):
+            logger.info(message)
+            return
+
+        tool = str(data.get("tool", "") or "tool")
+        if name == "tool_start":
+            args = str(data.get("args", "") or "").strip()
+            line = f"TOOL start: {tool}"
+            if args:
+                line += f" | args: {args}"
+            logger.info(line)
+            return
+        if name == "tool_end":
+            dt = data.get("duration_seconds")
+            if isinstance(dt, (int, float)):
+                logger.info(f"TOOL end: {tool} ({float(dt):0.1f}s)")
+            else:
+                logger.info(f"TOOL end: {tool}")
+            return
+        if name == "tool_error":
+            err = str(data.get("error", "") or "").strip()
+            line = f"TOOL error: {tool}"
+            if err:
+                line += f" - {err}"
+            logger.info(line)
+            return
+
     def _plan_checklist(self, request: str, *, flow_context: str | None = None) -> tuple[FlowChecklist | None, list[str]]:
         warnings: list[str] = []
         user_prompt = (
@@ -625,6 +672,7 @@ class CodingAgent:
         status = "ok" if not findings else "warning"
         if decision.phase == "blocked":
             status = "warning"
+        trace_rows = [item for item in trace if isinstance(item, dict)]
         result = {
             "status": status,
             "answer": answer,
@@ -646,7 +694,9 @@ class CodingAgent:
                 },
             },
             "checklist": checklist_counts,
-            "actions_taken": [item for item in trace if isinstance(item, dict)][:20],
+            "actions_taken_total": len(trace_rows),
+            "actions_taken_truncated": len(trace_rows) > 20,
+            "actions_taken": trace_rows[:20],
             "next_step": checklist.next_action or decision.why,
             "static_analysis": {
                 "finding_count": len(findings),
@@ -734,17 +784,22 @@ class CodingAgent:
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
         if self.tool_worker_client is not None:
             try:
-                response = self.tool_worker_client.run_tools(
-                    ToolRunRequest(
-                        question=request,
-                        index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
-                        k=int(k if k is not None else 8),
-                        max_steps=max_steps,
-                        timeout_seconds=timeout_seconds,
-                        tool_policy=tool_policy,
-                        system_prompt=effective_prompt,
-                    )
+                tool_req = ToolRunRequest(
+                    question=request,
+                    index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
+                    k=int(k if k is not None else 8),
+                    max_steps=max_steps,
+                    timeout_seconds=timeout_seconds,
+                    tool_policy=tool_policy,
+                    system_prompt=effective_prompt,
                 )
+                try:
+                    response = self.tool_worker_client.run_tools(
+                        tool_req,
+                        on_event=self._log_worker_event,
+                    )
+                except TypeError:
+                    response = self.tool_worker_client.run_tools(tool_req)
                 return self._stringify(response.model_dump())
             except ToolWorkerProcessError as exc:
                 if exc.code == "tools_only_violation":
@@ -793,17 +848,22 @@ class CodingAgent:
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
         if self.tool_worker_client is not None:
             try:
-                response = self.tool_worker_client.run_tools(
-                    ToolRunRequest(
-                        question=request,
-                        index_dirs=resolved,
-                        k=int(k if k is not None else 8),
-                        max_steps=max_steps,
-                        timeout_seconds=timeout_seconds,
-                        tool_policy=tool_policy,
-                        system_prompt=effective_prompt,
-                    )
+                tool_req = ToolRunRequest(
+                    question=request,
+                    index_dirs=resolved,
+                    k=int(k if k is not None else 8),
+                    max_steps=max_steps,
+                    timeout_seconds=timeout_seconds,
+                    tool_policy=tool_policy,
+                    system_prompt=effective_prompt,
                 )
+                try:
+                    response = self.tool_worker_client.run_tools(
+                        tool_req,
+                        on_event=self._log_worker_event,
+                    )
+                except TypeError:
+                    response = self.tool_worker_client.run_tools(tool_req)
                 return self._stringify(response.model_dump())
             except ToolWorkerProcessError as exc:
                 if exc.code == "tools_only_violation":

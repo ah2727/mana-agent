@@ -165,6 +165,73 @@ def test_tool_worker_client_restarts_once_on_worker_failure(monkeypatch) -> None
     client.stop()
 
 
+def test_tool_worker_client_run_tools_forwards_events(monkeypatch) -> None:
+    def _make_proc(*_args, **_kwargs):
+        def _handle_write(text: str) -> None:
+            req = json.loads(text.strip())
+            rid = req["request_id"]
+            kind = req["type"]
+            if kind == "init":
+                proc.stdout.push({"type": "event", "request_id": rid, "payload": {"name": "initialized"}})
+                proc.stdout.push(_reply_ok(rid, {"status": "ok"}))
+                return
+            if kind == "run_tools":
+                proc.stdout.push(
+                    {
+                        "type": "event",
+                        "request_id": rid,
+                        "payload": {
+                            "name": "tool_start",
+                            "message": "TOOL start: read_file | args: {'path':'x.py'}",
+                            "data": {"tool": "read_file", "args": "{'path':'x.py'}"},
+                        },
+                    }
+                )
+                proc.stdout.push(
+                    _reply_ok(
+                        rid,
+                        {
+                            "answer": "ok",
+                            "sources": [],
+                            "mode": "agent-tools",
+                            "trace": [{"tool_name": "read_file", "status": "ok"}],
+                            "warnings": [],
+                        },
+                    )
+                )
+                return
+            if kind == "shutdown":
+                proc.stdout.push(_reply_ok(rid, {"status": "bye"}))
+                proc._alive = False
+
+        proc = _FakeProc(_handle_write)
+        return proc
+
+    monkeypatch.setattr(twp.subprocess, "Popen", _make_proc)
+    client = twp.ToolWorkerClient(
+        api_key="x",
+        model="fake-model",
+        repo_root=Path("/tmp"),
+        project_root=Path("/tmp"),
+    )
+
+    seen_names: list[str] = []
+    response = client.run_tools(
+        twp.ToolRunRequest(
+            question="q",
+            index_dir="/tmp/.mana_index",
+            k=4,
+            max_steps=4,
+            timeout_seconds=5,
+        ),
+        on_event=lambda event: seen_names.append(event.name),
+    )
+
+    assert response.answer == "ok"
+    assert "tool_start" in seen_names
+    client.stop()
+
+
 def test_tool_worker_server_enforces_tools_only_violation(monkeypatch) -> None:
     class _FakeAskAgent:
         def run(self, **_kwargs):
@@ -217,3 +284,42 @@ def test_tool_worker_server_accepts_successful_tool_trace(monkeypatch) -> None:
     assert emitted
     assert emitted[-1].type == "ok"
     assert emitted[-1].payload["answer"] == "done"
+
+
+def test_tool_worker_server_emits_tool_events(monkeypatch) -> None:
+    class _TraceRow:
+        def to_dict(self) -> dict:
+            return {"tool_name": "read_file", "status": "ok", "duration_ms": 1.0}
+
+    class _FakeAskAgent:
+        def run(self, **kwargs):
+            callbacks = kwargs.get("callbacks") or []
+            if callbacks:
+                cb = callbacks[0]
+                cb.on_tool_start({"name": "read_file"}, '{"path":"x.py"}')
+                cb.on_tool_end('{"ok":true}')
+            return SimpleNamespace(
+                answer="done",
+                sources=[],
+                mode="agent-tools",
+                trace=[_TraceRow()],
+                warnings=[],
+            )
+
+    server = twp._ToolWorkerServer()
+    server._ask_agent = _FakeAskAgent()  # type: ignore[assignment]
+    server._tools_only_strict = True
+    emitted: list[twp.WorkerReply] = []
+    monkeypatch.setattr(twp._ToolWorkerServer, "_emit", staticmethod(lambda reply: emitted.append(reply)))
+    server._handle_run_tools(
+        twp.WorkerEnvelope(
+            type="run_tools",
+            request_id="req-events",
+            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana_index").model_dump(),
+        )
+    )
+
+    event_names = [str(reply.payload.get("name", "")) for reply in emitted if reply.type == "event"]
+    assert "tool_start" in event_names
+    assert "tool_end" in event_names
+    assert emitted[-1].type == "ok"

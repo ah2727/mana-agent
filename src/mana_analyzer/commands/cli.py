@@ -59,6 +59,7 @@ console = Console()
 logger = logging.getLogger(__name__)
 OUTPUT_DIR: Path | None = None
 LLM_DEBUG_MODE: bool = False
+UNLIMITED_AGENT_MAX_STEPS = 1_000_000_000
 
 
 class RichToolCallbackHandler(BaseCallbackHandler):
@@ -134,6 +135,21 @@ def _register_tool_if_missing(agent: AskAgent, tool: object) -> None:
     if name in existing:
         return
     agent.tools.append(tool)
+
+
+def _resolve_agent_max_steps(
+    agent_max_steps: int,
+    *,
+    agent_unlimited: bool,
+    min_steps: int = 1,
+    cap: int | None = None,
+) -> int:
+    if agent_unlimited:
+        return max(min_steps, UNLIMITED_AGENT_MAX_STEPS)
+    effective = max(min_steps, int(agent_max_steps))
+    if cap is not None:
+        effective = min(effective, int(cap))
+    return effective
 
 
 _EDIT_INTENT_TOKENS = (
@@ -346,6 +362,9 @@ def _render_coding_sections(console: Console, result: dict[str, Any]) -> None:
     progress = result.get("progress") or {}
     checklist = result.get("checklist") or {}
     actions = result.get("actions_taken") or []
+    raw_actions_total = result.get("actions_taken_total", len(actions))
+    actions_total = int(raw_actions_total) if isinstance(raw_actions_total, int) else len(actions)
+    actions_truncated = bool(result.get("actions_taken_truncated", actions_total > len(actions)))
     changed_files = result.get("changed_files") or []
     static_analysis = result.get("static_analysis") or {}
     next_step = str(result.get("next_step", "") or "").strip()
@@ -383,6 +402,8 @@ def _render_coding_sections(console: Console, result: dict[str, Any]) -> None:
         )
 
     if actions:
+        if actions_truncated and actions_total > len(actions):
+            console.print(f"- actions shown: {len(actions)}/{actions_total}")
         trace_table = Table(title="Actions Taken", show_lines=False)
         trace_table.add_column("Tool")
         trace_table.add_column("Status")
@@ -1217,6 +1238,11 @@ def ask(
     ),
     agent_tools: bool = typer.Option(False, "--agent-tools"),
     agent_max_steps: int = typer.Option(6, "--agent-max-steps"),
+    agent_unlimited: bool = typer.Option(
+        False,
+        "--agent-unlimited/--no-agent-unlimited",
+        help="Use effectively unlimited agent tool steps (subject to timeout/resources).",
+    ),
     agent_timeout_seconds: int = typer.Option(30, "--agent-timeout-seconds"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -1227,6 +1253,11 @@ def ask(
     )
     settings = Settings()
     resolved_k = k or settings.default_top_k
+    effective_agent_max_steps = _resolve_agent_max_steps(
+        agent_max_steps,
+        agent_unlimited=agent_unlimited,
+        min_steps=1,
+    )
 
     # For agent tools, project_root matters (file reads)
     # In dir-mode we set to root later; in classic, cwd is fine
@@ -1252,6 +1283,7 @@ def ask(
                     "max_indexes": max_indexes,
                     "auto_index_missing": auto_index_missing,
                     "agent_tools": agent_tools,
+                    "agent_unlimited": agent_unlimited,
                     "ephemeral_index": ephemeral_index,
                 },
             )
@@ -1356,7 +1388,7 @@ def ask(
                     index_dirs=selected_indexes,
                     question=question,
                     k=resolved_k,
-                    max_steps=agent_max_steps,
+                    max_steps=effective_agent_max_steps,
                     timeout_seconds=agent_timeout_seconds,
                     root_dir=root,
                 )
@@ -1389,7 +1421,7 @@ def ask(
                     index_dir=resolved_index_dir,
                     question=question,
                     k=resolved_k,
-                    max_steps=agent_max_steps,
+                    max_steps=effective_agent_max_steps,
                     timeout_seconds=agent_timeout_seconds,
                 )
             else:
@@ -1954,6 +1986,11 @@ def chat(
         help="Maximum planning clarification questions to ask (1-6).",
     ),
     agent_max_steps: int = typer.Option(6, "--agent-max-steps"),
+    agent_unlimited: bool = typer.Option(
+        False,
+        "--agent-unlimited/--no-agent-unlimited",
+        help="Use effectively unlimited agent tool steps (subject to timeout/resources).",
+    ),
     agent_timeout_seconds: int = typer.Option(30, "--agent-timeout-seconds"),
     as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
 ) -> None:
@@ -1982,6 +2019,7 @@ def chat(
             "planning_mode": planning_mode,
             "planning_max_questions": planning_max_questions,
             "agent_max_steps": agent_max_steps,
+            "agent_unlimited": agent_unlimited,
             "agent_timeout_seconds": agent_timeout_seconds,
             "as_json": as_json,
             "ephemeral_index": ephemeral_index,
@@ -1989,6 +2027,17 @@ def chat(
     )
     as_json = False
     planning_question_limit = max(1, min(planning_max_questions, 6))
+    chat_agent_max_steps = _resolve_agent_max_steps(
+        agent_max_steps,
+        agent_unlimited=agent_unlimited,
+        min_steps=1,
+    )
+    coding_agent_max_steps = _resolve_agent_max_steps(
+        agent_max_steps,
+        agent_unlimited=agent_unlimited,
+        min_steps=8,
+        cap=200,
+    )
     settings = Settings()
     resolved_k = k or settings.default_top_k
 
@@ -2012,7 +2061,7 @@ def chat(
         root_dir=str(root),
         k=resolved_k,
         agent_tools=agent_tools,
-        agent_max_steps=agent_max_steps,
+        agent_max_steps=chat_agent_max_steps,
         agent_timeout_seconds=agent_timeout_seconds,
         max_indexes=max_indexes,
         auto_index_missing=auto_index_missing,
@@ -2473,7 +2522,7 @@ def chat(
                                 question,
                                 index_dirs=index_dirs,
                                 k=resolved_k,
-                                max_steps=min(max(agent_max_steps, 8), 200000000000),
+                                max_steps=coding_agent_max_steps,
                                 timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
                                 callbacks=callbacks,
                                 flow_id=active_flow_id,
@@ -2486,7 +2535,7 @@ def chat(
                                 question,
                                 index_dir=resolved_index_dir,
                                 k=resolved_k,
-                                max_steps=min(max(agent_max_steps, 8), 200),
+                                max_steps=coding_agent_max_steps,
                                 timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
                                 callbacks=callbacks,
                                 flow_id=active_flow_id,
@@ -2545,6 +2594,11 @@ def chat(
                 result_actions = (result or {}).get("actions_taken", []) or []
                 result_trace = (result or {}).get("trace", []) or []  # legacy/compat
                 effective_trace = result_actions or result_trace or payload_trace
+                raw_actions_total = (result or {}).get("actions_taken_total")
+                if isinstance(raw_actions_total, int):
+                    actions_total = raw_actions_total
+                else:
+                    actions_total = len(effective_trace)
                 if isinstance(result, dict):
                     existing_actions = result.get("actions_taken")
                     if effective_trace:
@@ -2553,6 +2607,8 @@ def chat(
                         result["actions_taken"] = existing_actions
                     else:
                         result["actions_taken"] = []
+                    result["actions_taken_total"] = actions_total
+                    result["actions_taken_truncated"] = actions_total > len(result.get("actions_taken", []))
                     result["warnings"] = merged_warns
 
                 console.print(
@@ -2561,7 +2617,7 @@ def chat(
                         answer=answer,
                         sources_count=len(payload_sources),
                         warnings_count=len(merged_warns),
-                        tool_steps=len(effective_trace),
+                        tool_steps=actions_total,
                         changed_files_count=len(changed),
                         has_diff=bool(diff.strip()),
                     )
@@ -2607,7 +2663,7 @@ def chat(
                                         index_dirs=getattr(chat_service, "index_dirs", []) or [],
                                         question=attempt_question,
                                         k=resolved_k,
-                                        max_steps=agent_max_steps,
+                                        max_steps=chat_agent_max_steps,
                                         timeout_seconds=agent_timeout_seconds,
                                         root_dir=root,
                                         callbacks=callbacks,
@@ -2618,7 +2674,7 @@ def chat(
                                         index_dir=resolved_index_dir,
                                         question=attempt_question,
                                         k=resolved_k,
-                                        max_steps=agent_max_steps,
+                                        max_steps=chat_agent_max_steps,
                                         timeout_seconds=agent_timeout_seconds,
                                         callbacks=callbacks,
                                     )

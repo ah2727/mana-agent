@@ -706,3 +706,104 @@ def test_large_json_answer_is_rendered_as_sections_not_raw_blob(monkeypatch, tmp
     assert result.exit_code == 0
     assert "Plan" in result.stdout
     assert "Next Step" in result.stdout
+
+
+def test_chat_coding_agent_unlimited_mode_bypasses_default_step_cap(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        last_max_steps: int | None = None
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, *_args: object, **kwargs: object) -> dict:
+            _FakeCodingAgent.last_max_steps = int(kwargs.get("max_steps", 0) or 0)
+            return {
+                "answer": "done",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "obj", "steps": []},
+                "progress": {"phase": "edit", "why": "ok", "budgets": {"search_used": 0, "search_budget": 4, "read_used": 0, "read_budget": 6, "read_files_observed": 0, "required_read_files": 2}},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *_args: object, **kwargs: object) -> dict:
+            return self.generate(*_args, **kwargs)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent", "--agent-unlimited"],
+        input="implement change\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert isinstance(_FakeCodingAgent.last_max_steps, int)
+    assert _FakeCodingAgent.last_max_steps is not None
+    assert _FakeCodingAgent.last_max_steps > 200
+
+
+def test_chat_summary_uses_actions_taken_total_when_trace_is_truncated(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return {
+                "answer": "done",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "obj", "steps": []},
+                "progress": {"phase": "edit", "why": "ok", "budgets": {"search_used": 0, "search_budget": 4, "read_used": 0, "read_budget": 6, "read_files_observed": 0, "required_read_files": 2}},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken_total": 37,
+                "actions_taken_truncated": True,
+                "actions_taken": [{"tool_name": "read_file", "status": "ok", "duration_ms": 1.0, "args_summary": "x"}],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate(*_args, **_kwargs)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="implement\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "- tool steps: 37" in result.stdout
