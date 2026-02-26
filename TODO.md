@@ -4,7 +4,7 @@
 
 | # | Action | Where | Why |
 |---|--------|-------|-----|
-| 1 | **Add module‑level docstrings** to every package file (e.g. `src/mana_analyzer/services/chat_service.py`, `src/mana_analyzer/services/ask_service.py`, 
+| * | **Add module‑level docstrings** to every package file (e.g. `src/mana_analyzer/services/chat_service.py`, `src/mana_analyzer/services/ask_service.py`, 
 `src/mana_analyzer/llm/repo_chain.py`). The files currently only have empty docstrings or none at all【source: chat_service.py:1‑13】【source: 
 ask_service.py:1‑13】【source: repo_chain.py:1‑13】. | Improves discoverability for users and for generated API docs. |
 | 2 | **Document the public classes & methods** (`ChatService`, `AskService`, `SearchService.search_multi`, `RepositoryMultiChain.summarize_file`, etc.) with 
@@ -20,7 +20,7 @@ file. | Users may want to call these from external agents; explicit schema preve
 
 | # | Action | Where | Why |
 |---|--------|-------|-----|
-| 5 | **Add missing return type hints** for functions that currently lack them, e.g. `AskService.ask_dir_mode_with_tools` (ends with `):` but no `-> 
+| *5* | **Add missing return type hints** for functions that currently lack them, e.g. `AskService.ask_dir_mode_with_tools` (ends with `):` but no `-> 
 AskResponse`). | Improves static analysis, mypy compliance, and IDE autocompletion. |
 | 6 | **Annotate `ChatService.__init__` parameters** (`settings`, `model_override`, `index_dir`, etc.) with concrete types (`Settings`, `str | None`, …). 
 Currently the method signature is untyped beyond the `*` placeholders【source: chat_service.py:23‑71】. |
