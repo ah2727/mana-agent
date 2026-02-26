@@ -124,6 +124,15 @@ class AskAgent:
         lowered = text.lower()
         return "error" in lowered or "ok': false" in lowered or '"ok": false' in lowered
 
+    @classmethod
+    def _is_search_unavailable(cls, content: Any) -> bool:
+        payload = cls._coerce_tool_payload(content)
+        if payload is not None:
+            error = str(payload.get("error", "")).lower()
+            return ("tavily_api_key" in error) or ("not configured" in error)
+        lowered = str(content or "").lower()
+        return ("tavily_api_key" in lowered) or ("not configured" in lowered)
+
     def _build_tools(
         self, k_default: int, timeout_seconds: int
     ) -> tuple[list[BaseTool], list[ToolInvocationTrace], list[SearchHit], list[str]]:
@@ -350,6 +359,10 @@ class AskAgent:
         cfg: dict[str, Any] = {"callbacks": list(callbacks) if callbacks else []}
         apply_patch_failures = 0
         forced_patch_fallback = False
+        search_internet_calls = 0
+        search_internet_disabled = False
+        mutation_tools_used = 0
+        seen_tool_args: dict[tuple[str, str], int] = defaultdict(int)
 
         final_answer = ""
         for _ in range(max_steps):
@@ -367,9 +380,21 @@ class AskAgent:
             for call in tool_calls:
                 name = str(call.get("name", ""))
                 args = call.get("args", {}) or {}
+                args_key = json.dumps(args, sort_keys=True, default=str)
+                tool_sig = (name, args_key)
+                seen_tool_args[tool_sig] += 1
 
                 if name not in tool_map:
                     content = json.dumps({"error": f"unknown tool: {name}"})
+                elif seen_tool_args[tool_sig] > 2:
+                    content = json.dumps(
+                        {
+                            "error": (
+                                f"duplicate tool call blocked: {name}. "
+                                "Use a different step (read_file/apply_patch/write_file) instead of repeating."
+                            )
+                        }
+                    )
                 elif forced_patch_fallback and name == "apply_patch":
                     content = json.dumps(
                         {
@@ -378,6 +403,15 @@ class AskAgent:
                                 "apply_patch disabled after repeated failures/no-op in this run; "
                                 "switch to write_file fallback."
                             ),
+                        }
+                    )
+                elif search_internet_disabled and name == "search_internet":
+                    content = json.dumps(
+                        {
+                            "error": (
+                                "search_internet disabled for this run due to repeated/noisy calls or missing API key; "
+                                "continue with repository-local tools."
+                            )
                         }
                     )
                 else:
@@ -394,6 +428,20 @@ class AskAgent:
                         apply_patch_failures += 1
                         if apply_patch_failures >= 2:
                             forced_patch_fallback = True
+                if name in {"apply_patch", "write_file"}:
+                    mutation_tools_used += 1
+                if name == "search_internet":
+                    search_internet_calls += 1
+                    if self._is_search_unavailable(content):
+                        search_internet_disabled = True
+                        warnings.append(
+                            "search_internet disabled: external search backend unavailable (missing API key/config)."
+                        )
+                    elif search_internet_calls >= 3 and mutation_tools_used == 0:
+                        search_internet_disabled = True
+                        warnings.append(
+                            "search_internet disabled after repeated calls without progress; switching to local planning/edit tools."
+                        )
 
                 messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
 
