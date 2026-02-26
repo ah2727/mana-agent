@@ -7,6 +7,7 @@ import shlex
 import subprocess
 from time import perf_counter
 from typing import Any, Sequence, Optional
+from collections import defaultdict
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool, BaseTool
@@ -250,8 +251,8 @@ class AskAgent:
         *,
         index_dir: str | Path,
         k: int,
-        max_steps: int = 6,
-        timeout_seconds: int = 30,
+        max_steps: int = 9999999999999,
+        timeout_seconds: int = 9999999999999,
         index_dirs: list[str | Path] | None = None,
         callbacks: Sequence[BaseCallbackHandler] | None = None,
         system_prompt: str | None = None,
@@ -361,5 +362,122 @@ class AskAgent:
                     "answer": result.answer,
                 }
             )
+
+        return result
+
+    def run_multi(
+        self,
+        *,
+        question: str,
+        index_dirs: Sequence[str | Path],
+        k: int,
+        max_steps: int = 6,
+        timeout_seconds: int = 30,
+        callbacks: Sequence[Any] | None = None,
+        **kwargs: Any,
+    ):
+        """
+        Dir-mode entrypoint.
+
+        This implementation:
+        1) Searches across multiple indexes (SearchService.search_multi).
+        2) Chooses the best single index to run the agent loop against (highest top-hit score).
+        3) Calls self.run(...) using that chosen index_dir.
+        4) Returns the agent result, but keeps the multi-index sources + warnings.
+        """
+        if getattr(self, "search_service", None) is None:
+            raise RuntimeError("AskAgent.search_service is required for run_multi()")
+
+        resolved_indexes = [Path(p).resolve() for p in index_dirs]
+        if not resolved_indexes:
+            raise RuntimeError("run_multi(): index_dirs is empty")
+
+        # 1) Retrieve across all indexes
+        sources, warnings = self.search_service.search_multi(  # type: ignore[attr-defined]
+            index_dirs=resolved_indexes,
+            query=question,
+            k=k,
+        )
+
+        if not sources:
+            # If your project has AskResponseWithTrace model, return it.
+            # Otherwise return a simple dict-like fallback.
+            try:
+                from mana_analyzer.analysis.models import AskResponseWithTrace  # type: ignore
+
+                return AskResponseWithTrace(
+                    answer="No relevant indexed code context found across indexes.",
+                    sources=[],
+                    source_groups=[],
+                    warnings=warnings or [],
+                    mode="agent-tools",
+                    trace=[],
+                )
+            except Exception:
+                return {
+                    "answer": "No relevant indexed code context found across indexes.",
+                    "sources": [],
+                    "warnings": warnings or [],
+                    "mode": "agent-tools",
+                    "trace": [],
+                }
+
+        # 2) Choose best index based on highest top-hit score per index bucket
+        # We infer which index a hit belongs to by matching hit.file_path under index_dir.parent
+        best_index = resolved_indexes[0]
+        best_score = float("-inf")
+
+        # score_by_index: index_dir -> max_score
+        score_by_index: dict[Path, float] = defaultdict(lambda: float("-inf"))
+        for hit in sources:
+            try:
+                hit_path = Path(hit.file_path).resolve()
+            except Exception:
+                continue
+
+            for idx in resolved_indexes:
+                subproject_root = idx.parent
+                if hit_path == subproject_root or subproject_root in hit_path.parents:
+                    try:
+                        score = float(getattr(hit, "score", 0.0))
+                    except Exception:
+                        score = 0.0
+                    if score > score_by_index[idx]:
+                        score_by_index[idx] = score
+
+        for idx, sc in score_by_index.items():
+            if sc > best_score:
+                best_score = sc
+                best_index = idx
+
+        # 3) Run the normal agent loop against the chosen index
+        result = self.run(
+            question=question,
+            index_dir=best_index,
+            k=k,
+            max_steps=max_steps,
+            timeout_seconds=timeout_seconds,
+            callbacks=callbacks,
+            **kwargs,
+        )
+
+        # 4) Attach multi-index sources + warnings so CLI can show them consistently
+        # (works for AskResponseWithTrace dataclass-like objects)
+        try:
+            if hasattr(result, "sources"):
+                result.sources = sources
+            if hasattr(result, "warnings"):
+                result.warnings = list(getattr(result, "warnings", []) or [])
+                if warnings:
+                    result.warnings.extend(warnings)
+                result.warnings.append(f"dir-mode: selected index for tool-run = {best_index}")
+            if hasattr(result, "mode") and getattr(result, "mode", None):
+                # keep existing mode
+                pass
+            elif hasattr(result, "mode"):
+                result.mode = "agent-tools-dir"
+        except Exception:
+            # If it's a string/dict/etc, just return as-is
+            pass
 
         return result

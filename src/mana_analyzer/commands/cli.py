@@ -1473,6 +1473,7 @@ def chat(
         # ✅ IMPORTANT: allow_prefixes=None => unrestricted under repo_root
         coding_agent_instance = CodingAgent(
             api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
             repo_root=root,
             ask_agent=ask_service.ask_agent,
             allowed_prefixes=None,
@@ -1691,7 +1692,7 @@ def chat(
                         if not index_dirs:
                             console.print("[red]No indexes available in dir-mode (internal CLI selection is empty).[/red]")
                             continue
-
+                            
                         result = coding_agent_instance.generate_dir_mode(
                             question,
                             index_dirs=index_dirs,
@@ -1699,6 +1700,70 @@ def chat(
                             max_steps=max(agent_max_steps, 8),
                             timeout_seconds=max(agent_timeout_seconds, 60),
                         )
+                        spinner = Spinner("dots", text="Coding…")
+                        with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
+                            cb = RichToolCallbackHandler(live, show_inputs=True)
+
+                            try:
+                                if dir_mode:
+                                    index_dirs = getattr(chat_service, "index_dirs", None) or []
+                                    if not index_dirs:
+                                        console.print("[red]No indexes available in dir-mode (internal index list empty).[/red]")
+                                        continue
+
+                                    result = coding_agent_instance.generate_dir_mode(
+                                        question,
+                                        index_dirs=index_dirs,
+                                        k=resolved_k,
+                                        max_steps=min(agent_max_steps, 200),          # clamp insane values
+                                        timeout_seconds=min(agent_timeout_seconds, 600),
+                                        callbacks=[cb],
+                                    )
+                                else:
+                                    assert resolved_index_dir is not None
+                                    result = coding_agent_instance.generate(
+                                        question,
+                                        index_dir=resolved_index_dir,
+                                        k=resolved_k,
+                                        max_steps=min(agent_max_steps, 200),
+                                        timeout_seconds=min(agent_timeout_seconds, 600),
+                                        callbacks=[cb],
+                                    )
+                            except Exception as exc:
+                                _log_exception("coding_agent.generate", exc)
+                                raise
+
+                        # Show output
+                        if as_json:
+                            console.print_json(json.dumps(result))
+                        else:
+                            console.print(result.get("answer", ""))
+
+                            changed = result.get("changed_files", []) or []
+                            if changed:
+                                console.print("\n[bold]Changed files:[/bold]")
+                                for p in changed:
+                                    console.print(f"- {p}")
+                            else:
+                                console.print(
+                                    "\n[yellow]No files were changed.[/yellow]\n"
+                                    "Common causes:\n"
+                                    "- tool loop did not run (agent didn't call write_file/apply_patch)\n"
+                                    "- write was blocked by allowed prefixes\n"
+                                    "- patch failed to apply cleanly\n"
+                                )
+
+                            diff = result.get("diff", "") or ""
+                            if diff:
+                                console.print("\n[bold]Diff:[/bold]\n" + diff)
+
+                            sa = result.get("static_analysis", {}) or {}
+                            if sa.get("finding_count", 0):
+                                console.print("\n[bold yellow]Static analysis findings:[/bold yellow]")
+                                for f in sa.get("findings", []) or []:
+                                    console.print(f"- {f}")
+
+                        continue
                     else:
                         assert resolved_index_dir is not None
                         result = coding_agent_instance.generate(

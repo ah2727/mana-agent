@@ -103,8 +103,8 @@ class CodingAgent:
         *,
         index_dir: str | Path | None = None,
         k: int | None = None,
-        max_steps: int = 12,
-        timeout_seconds: int = 60,
+        max_steps: int = 9999999999999999999,
+        timeout_seconds: int = 9999999999999999999,
         callbacks: Sequence[Any] | None = None,
     ) -> dict[str, Any]:
         """

@@ -92,6 +92,10 @@ class ChatService:
         """Used by the CLI to supply the computed dir-mode index list."""
         self._index_dirs = [Path(p).resolve() for p in index_dirs]
 
+    @property
+    def index_dirs(self) -> list[Path]:
+        return list(self._index_dirs)
+
     def ask(
         self,
         question: str,
