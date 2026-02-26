@@ -1,21 +1,34 @@
+"""
+mana_analyzer.services.ask_service
+
+Central orchestration layer for answering questions over indexed code context.
+"""
+
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any, Protocol, Sequence, runtime_checkable
 
-from mana_analyzer.analysis.models import AskResponse, AskResponseWithTrace, SearchHit, SourceGroup
+from mana_analyzer.analysis.models import (
+    AskResponse,
+    AskResponseWithTrace,
+    SearchHit,
+    SourceGroup,
+)
 from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.llm.qna_chain import QnAChain
 from mana_analyzer.services.search_service import SearchService
 from mana_analyzer.vector_store.faiss_store import FaissStore
-from typing import Protocol, runtime_checkable, Any,Sequence
-logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
 class AskCallback(Protocol):
-    def on_event(self, event: str, payload: dict[str, Any] | None = None) -> None: ...
+    def on_event(self, event: str, payload: dict[str, Any] | None = None) -> None:
+        ...
+
 
 class AskService:
     def __init__(
@@ -46,26 +59,30 @@ class AskService:
             )
         return "\n\n---\n\n".join(blocks)
 
+    # ==========================================================
+    # Classic ask
+    # ==========================================================
+
     def ask(self, index_dir: str | Path, question: str, k: int) -> AskResponse:
         resolved_index = Path(index_dir).resolve()
         logger.info("Running ask flow: index_dir=%s k=%d", resolved_index, k)
-        logger.debug("Question: %s", question)
+
         sources = self.store.search(resolved_index, query=question, k=k)
-        logger.info("Retrieved context sources: %d", len(sources))
+
         if not sources:
             message = (
                 "I could not find relevant indexed code context. "
                 "Re-run indexing or provide a narrower question."
             )
-            logger.warning("No sources found for ask flow")
             return AskResponse(answer=message, sources=[])
 
         context = self._render_context(sources)
-        logger.debug("Rendered context length: %d chars", len(context))
         answer = self.qna_chain.run(question=question, context=context)
-        logger.info("LLM answer generated")
         return AskResponse(answer=answer, sources=sources)
 
+    # ==========================================================
+    # Agent tools (single index)
+    # ==========================================================
 
     def ask_with_tools(
         self,
@@ -76,12 +93,11 @@ class AskService:
         timeout_seconds: int = 30,
         callbacks: Sequence[Any] | None = None,
     ) -> AskResponseWithTrace:
+
         if self.ask_agent is None:
             raise RuntimeError("ask agent is not configured")
 
         try:
-            # If your AskAgent supports callbacks, pass them.
-            # If not, this will TypeError and we catch + retry without.
             try:
                 return self.ask_agent.run(
                     question=question,
@@ -99,15 +115,11 @@ class AskService:
                     max_steps=max_steps,
                     timeout_seconds=timeout_seconds,
                 )
-        except Exception:
-            logger.exception("ask agent failed; falling back to classic ask flow")
-            fallback = self.ask(index_dir=index_dir, question=question, k=k)
 
-            # Notify callbacks of fallback if you want
-            if callbacks:
-                for cb in callbacks:
-                    if hasattr(cb, "on_event"):
-                        cb.on_event("fallback", {"mode": "classic", "reason": "agent_error"})
+        except Exception:
+            logger.exception("ask agent failed; falling back to classic")
+
+            fallback = self.ask(index_dir=index_dir, question=question, k=k)
 
             return AskResponseWithTrace(
                 answer=fallback.answer,
@@ -116,34 +128,39 @@ class AskService:
                 trace=[],
                 warnings=[],
             )
-                
+
+    # ==========================================================
+    # Dir mode
+    # ==========================================================
+
     @staticmethod
-    def _group_sources_by_index(sources: list[SearchHit], index_dirs: list[Path]) -> list[SourceGroup]:
-        grouped: dict[Path, list[SearchHit]] = {item.resolve(): [] for item in index_dirs}
+    def _group_sources_by_index(
+        sources: list[SearchHit],
+        index_dirs: list[Path],
+    ) -> list[SourceGroup]:
+
+        grouped: dict[Path, list[SearchHit]] = {
+            item.resolve(): [] for item in index_dirs
+        }
+
         for source in sources:
             source_path = Path(source.file_path).resolve()
-            matched: Path | None = None
             for index_dir in grouped.keys():
                 subproject_root = index_dir.parent
-                if source_path == subproject_root or subproject_root in source_path.parents:
-                    if matched is None or len(str(subproject_root)) > len(str(matched.parent)):
-                        matched = index_dir
-            if matched is not None:
-                grouped[matched].append(source)
+                if subproject_root in source_path.parents:
+                    grouped[index_dir].append(source)
 
-        payload: list[SourceGroup] = []
-        for index_dir in sorted(grouped.keys(), key=lambda item: str(item)):
-            hits = grouped[index_dir]
-            if not hits:
-                continue
-            payload.append(
-                SourceGroup(
-                    index_dir=str(index_dir),
-                    subproject_root=str(index_dir.parent),
-                    sources=hits,
+        result: list[SourceGroup] = []
+        for index_dir, hits in grouped.items():
+            if hits:
+                result.append(
+                    SourceGroup(
+                        index_dir=str(index_dir),
+                        subproject_root=str(index_dir.parent),
+                        sources=hits,
+                    )
                 )
-            )
-        return payload
+        return result
 
     def ask_dir_mode(
         self,
@@ -152,114 +169,37 @@ class AskService:
         k: int,
         root_dir: str | Path,
     ) -> AskResponse:
+
         if self.search_service is None:
             raise RuntimeError("search service is not configured")
-        resolved_indexes = sorted({Path(item).resolve() for item in index_dirs}, key=lambda item: str(item))
-        if not resolved_indexes:
-            root = Path(root_dir).resolve()
-            answer = (
-                f"No usable indexes found under {root}. "
-                f"Run: mana-analyzer index {root} or re-run ask with --auto-index-missing."
-            )
-            return AskResponse(answer=answer, sources=[], source_groups=[], warnings=[answer])
 
-        sources, warnings = self.search_service.search_multi(index_dirs=resolved_indexes, query=question, k=k)
+        resolved = sorted({Path(p).resolve() for p in index_dirs})
+
+        if not resolved:
+            root = Path(root_dir).resolve()
+            msg = f"No usable indexes found under {root}"
+            return AskResponse(answer=msg, sources=[], warnings=[msg])
+
+        sources, warnings = self.search_service.search_multi(
+            index_dirs=resolved,
+            query=question,
+            k=k,
+        )
+
         if not sources:
-            answer = (
-                "I could not find relevant indexed code context across discovered indexes. "
-                "Try a narrower question or rebuild indexes."
-            )
-            return AskResponse(answer=answer, sources=[], source_groups=[], warnings=warnings)
+            msg = "No relevant indexed code context found."
+            return AskResponse(answer=msg, sources=[], warnings=warnings)
 
         context = self._render_context(sources)
         answer = self.qna_chain.run(question=question, context=context)
+
         return AskResponse(
             answer=answer,
             sources=sources,
-            source_groups=self._group_sources_by_index(sources, resolved_indexes),
+            source_groups=self._group_sources_by_index(sources, resolved),
             warnings=warnings,
         )
 
-    def ask_dir_mode_with_tools(
-        self,
-        index_dirs: list[str | Path],
-        question: str,
-        k: int,
-        max_steps: int = 6,
-        timeout_seconds: int = 30,
-        root_dir: str | Path | None = None,
-        callbacks: Sequence[Any] | None = None,
-    ):
-        if self.ask_agent is None:
-            raise RuntimeError("ask agent is not configured")
-
-        resolved_indexes = sorted(
-            {Path(item).resolve() for item in index_dirs}, key=lambda item: str(item)
-        )
-
-        if not resolved_indexes:
-            root = Path(root_dir or Path.cwd()).resolve()
-            answer = (
-                f"No usable indexes found under {root}. "
-                f"Run: mana-analyzer index {root} or re-run ask with --auto-index-missing."
-            )
-            from mana_analyzer.analysis.models import AskResponseWithTrace
-            return AskResponseWithTrace(
-                answer=answer,
-                sources=[],
-                source_groups=[],
-                warnings=[answer],
-                mode="agent-tools",
-                trace=[],
-            )
-
-        try:
-            # pass callbacks if AskAgent supports it; otherwise retry without
-            try:
-                result = self.ask_agent.run_multi(
-                    question=question,
-                    index_dirs=resolved_indexes,
-                    k=k,
-                    max_steps=max_steps,
-                    timeout_seconds=timeout_seconds,
-                    callbacks=callbacks,
-                )
-            except TypeError:
-                result = self.ask_agent.run_multi(
-                    question=question,
-                    index_dirs=resolved_indexes,
-                    k=k,
-                    max_steps=max_steps,
-                    timeout_seconds=timeout_seconds,
-                )
-
-            # ensure consistent source grouping
-            result.source_groups = self._group_sources_by_index(result.sources, resolved_indexes)
-            return result
-
-        except Exception:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.exception("ask agent (dir-mode) failed; falling back to classic dir-mode flow")
-
-            fallback = self.ask_dir_mode(
-                index_dirs=resolved_indexes,
-                question=question,
-                k=k,
-                root_dir=root_dir or Path.cwd(),
-            )
-
-            from mana_analyzer.analysis.models import AskResponseWithTrace
-            return AskResponseWithTrace(
-                answer=fallback.answer,
-                sources=fallback.sources,
-                source_groups=fallback.source_groups or [],
-                warnings=fallback.warnings or [],
-                mode="classic-dir-fallback",
-                trace=[],
-            )
-
-    # ✅ THIS is what your CLI is calling in the fallback path:
     def ask_with_tools_dir_mode(
         self,
         index_dirs: list[str | Path],
@@ -269,13 +209,43 @@ class AskService:
         timeout_seconds: int = 30,
         root_dir: str | Path | None = None,
         callbacks: Sequence[Any] | None = None,
-    ):
-        return self.ask_dir_mode_with_tools(
-            index_dirs=index_dirs,
-            question=question,
-            k=k,
-            max_steps=max_steps,
-            timeout_seconds=timeout_seconds,
-            root_dir=root_dir,
-            callbacks=callbacks,
-        )
+    ) -> AskResponseWithTrace:
+
+        if self.ask_agent is None:
+            raise RuntimeError("ask agent is not configured")
+
+        resolved = sorted({Path(p).resolve() for p in index_dirs})
+
+        try:
+            result = self.ask_agent.run_multi(
+                question=question,
+                index_dirs=resolved,
+                k=k,
+                max_steps=max_steps,
+                timeout_seconds=timeout_seconds,
+                callbacks=callbacks,
+            )
+            result.source_groups = self._group_sources_by_index(
+                result.sources,
+                resolved,
+            )
+            return result
+
+        except Exception:
+            logger.exception("dir-mode agent failed; falling back")
+
+            fallback = self.ask_dir_mode(
+                index_dirs=resolved,
+                question=question,
+                k=k,
+                root_dir=root_dir or Path.cwd(),
+            )
+
+            return AskResponseWithTrace(
+                answer=fallback.answer,
+                sources=fallback.sources,
+                source_groups=fallback.source_groups or [],
+                warnings=fallback.warnings or [],
+                mode="classic-dir-fallback",
+                trace=[],
+            )

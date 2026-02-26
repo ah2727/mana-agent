@@ -82,7 +82,7 @@ The `scan` command runs `pip list --outdated` alongside `safety check --full-rep
 
 
 ## security analyze 
-mana-analyzer --verbose --log-dir logs/ --output-dir logs/ report /Users/ah/Documents/karlancer/loanbot \                                                    1 ↵
+mana-analyzer --verbose --log-dir logs/ --output-dir logs/ report /Users/ah/Documents/karlancer/loanbot \
   --with-llm \
   --output-format markdown \
   --report-profile deep \

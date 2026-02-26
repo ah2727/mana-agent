@@ -20,6 +20,7 @@ from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.llm.analyze_chain import AnalyzeChain
 from mana_analyzer.llm.qna_chain import QnAChain
 from mana_analyzer.llm.repo_chain import RepositoryMultiChain
+from mana_analyzer.llm.coding_agent import CodingAgent  # ✅ NEW
 from mana_analyzer.parsers.multi_parser import MultiLanguageParser
 from mana_analyzer.services.analyze_service import AnalyzeService
 from mana_analyzer.services.ask_service import AskService
@@ -37,7 +38,6 @@ from mana_analyzer.services.chat_service import ChatService  # adjust import pat
 
 from mana_analyzer.services.vulnerability_service import VulnerabilityService
 from mana_analyzer.services.report_service import ReportService
-from typing import Sequence
 from langchain_core.callbacks.base import BaseCallbackHandler
 from rich.live import Live
 from rich.spinner import Spinner
@@ -50,11 +50,9 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR: Path | None = None
 
 
-
-
-
 class RichToolCallbackHandler(BaseCallbackHandler):
     """Live-updates a Rich spinner when tools start/end."""
+
     def __init__(self, live: Live, *, show_inputs: bool = True) -> None:
         self.live = live
         self.show_inputs = show_inputs
@@ -83,9 +81,12 @@ class RichToolCallbackHandler(BaseCallbackHandler):
         tool = self._tool or "tool"
         self._tool = None
         self.live.update(Text(f"Tool error: {tool} - {error}"))
+
+
 # -----------------------------------------
 # "Full logging" helpers (added, non-breaking)
 # -----------------------------------------
+
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -148,6 +149,7 @@ def _index_has_search_data(index_dir: Path) -> bool:
 # Ephemeral index helpers
 # ----------------------------
 
+
 def _make_ephemeral_index_dir(prefix: str = "mana_index_") -> tuple[tempfile.TemporaryDirectory, Path]:
     tmp = tempfile.TemporaryDirectory(prefix=prefix)
     return tmp, Path(tmp.name).resolve()
@@ -162,8 +164,13 @@ def _stable_subdir_name(path: Path) -> str:
 # Report artifact helpers
 # ----------------------------
 
+
 def _resolve_report_artifact_dir(project_root: Path) -> Path:
-    _log_call("_resolve_report_artifact_dir", project_root=str(project_root), output_dir=str(OUTPUT_DIR) if OUTPUT_DIR else None)
+    _log_call(
+        "_resolve_report_artifact_dir",
+        project_root=str(project_root),
+        output_dir=str(OUTPUT_DIR) if OUTPUT_DIR else None,
+    )
     if OUTPUT_DIR is not None:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         _log_return("_resolve_report_artifact_dir", resolved=str(OUTPUT_DIR))
@@ -370,7 +377,11 @@ def build_report_service(
 
 
 def _resolve_output_file(target_path: str | Path | None = None) -> Path | None:
-    _log_call("_resolve_output_file", target_path=str(target_path) if target_path else None, output_dir=str(OUTPUT_DIR) if OUTPUT_DIR else None)
+    _log_call(
+        "_resolve_output_file",
+        target_path=str(target_path) if target_path else None,
+        output_dir=str(OUTPUT_DIR) if OUTPUT_DIR else None,
+    )
     if OUTPUT_DIR is None:
         _log_return("_resolve_output_file", result=None, reason="OUTPUT_DIR_none")
         return None
@@ -446,7 +457,11 @@ def main(
     global OUTPUT_DIR
     OUTPUT_DIR = Path(output_dir).resolve() if output_dir else None
     log_file = setup_logging(verbose=verbose, log_dir=log_dir)
-    logger.debug("CLI initialized", extra={"verbose": verbose, "log_file": str(log_file), "output_dir": str(OUTPUT_DIR) if OUTPUT_DIR else None})
+    logger.debug(
+        "CLI initialized",
+        extra={"verbose": verbose, "log_file": str(log_file), "output_dir": str(OUTPUT_DIR) if OUTPUT_DIR else None},
+    )
+
 
 
 @app.command()
@@ -1347,7 +1362,12 @@ async def scan(
     logger.info("Scan command completed", extra={"pip_code": pip_code, "safety_code": safety_code})
     if fail_on_vulnerabilities and safety_code != 0:
         raise typer.Exit(code=1)
-    
+
+# ----------------------------------------------------------------------
+# NOTE: index/search/analyze/ask/deps/graph/describe/report/scan omitted
+# from this snippet for brevity — keep your existing implementations as-is.
+# ----------------------------------------------------------------------
+
 @app.command()
 def chat(
     model: str | None = typer.Option(None, "--model"),
@@ -1383,6 +1403,11 @@ def chat(
         "--agent-tools",
         help="Enable tool-aware answering (calls specialized tools).",
     ),
+    coding_agent: bool = typer.Option(
+        False,
+        "--coding-agent",
+        help="Enable repo-modifying coding agent (write_file/apply_patch) inside chat.",
+    ),
     agent_max_steps: int = typer.Option(6, "--agent-max-steps"),
     agent_timeout_seconds: int = typer.Option(30, "--agent-timeout-seconds"),
     as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
@@ -1400,6 +1425,7 @@ def chat(
             "max_indexes": max_indexes,
             "auto_index_missing": auto_index_missing,
             "agent_tools": agent_tools,
+            "coding_agent": coding_agent,
             "agent_max_steps": agent_max_steps,
             "agent_timeout_seconds": agent_timeout_seconds,
             "as_json": as_json,
@@ -1436,9 +1462,25 @@ def chat(
         auto_index_missing=auto_index_missing,
     )
 
+    # ✅ Initialize CodingAgent (only when enabled)
+    coding_agent_instance: CodingAgent | None = None
+    if coding_agent:
+        if not agent_tools:
+            raise typer.BadParameter("--coding-agent requires --agent-tools (needs tool loop).")
+        if getattr(ask_service, "ask_agent", None) is None:
+            raise typer.BadParameter("--coding-agent requires AskService.ask_agent to be configured.")
+
+        # ✅ IMPORTANT: allow_prefixes=None => unrestricted under repo_root
+        coding_agent_instance = CodingAgent(
+            api_key=settings.openai_api_key,
+            repo_root=root,
+            ask_agent=ask_service.ask_agent,
+            allowed_prefixes=None,
+        )
+
     tmp_root: tempfile.TemporaryDirectory | None = None
     tmp_base: Path | None = None
-
+    dir_mode_index_dirs: list[Path] = []
     try:
         # -----------------------------
         # Resolve indexes (dir-mode vs classic)
@@ -1540,14 +1582,16 @@ def chat(
                 raise typer.Exit(code=2)
 
             chat_service.set_index_dirs(selected_indexes)
-
+            dir_mode_index_dirs = selected_indexes
+            
             _emit_text(
                 "mana-analyzer chat (dir-mode)\n"
                 f"- root: {root}\n"
                 f"- indexes: {len(selected_indexes)}\n"
                 f"- auto-indexed: {auto_indexed_count}\n"
                 f"- skipped: {skipped_missing_count}\n"
-                f"- ephemeral-index: {ephemeral_index}",
+                f"- ephemeral-index: {ephemeral_index}\n"
+                f"- coding-agent: {coding_agent}",
                 output_file=output_file,
             )
             if warnings:
@@ -1565,7 +1609,8 @@ def chat(
                 "mana-analyzer chat\n"
                 f"- index: {resolved_index_dir}\n"
                 f"- k: {resolved_k}\n"
-                f"- ephemeral-index: {ephemeral_index}",
+                f"- ephemeral-index: {ephemeral_index}\n"
+                f"- coding-agent: {coding_agent}",
                 output_file=output_file,
             )
 
@@ -1575,11 +1620,25 @@ def chat(
         def _looks_like_guess(answer: str) -> bool:
             a = (answer or "").lower()
             triggers = [
-                "i can't", "cannot", "can't", "no source", "no actual source",
-                "snippets you provided", "from the snippets", "i don’t have",
-                "i don't have", "not enough", "insufficient", "based on the repository name",
-                "infer", "guess", "might be", "appears to", "only clues",
-                "doesn’t contain application logic", "does not contain application logic",
+                "i can't",
+                "cannot",
+                "can't",
+                "no source",
+                "no actual source",
+                "snippets you provided",
+                "from the snippets",
+                "i don’t have",
+                "i don't have",
+                "not enough",
+                "insufficient",
+                "based on the repository name",
+                "infer",
+                "guess",
+                "might be",
+                "appears to",
+                "only clues",
+                "doesn’t contain application logic",
+                "does not contain application logic",
                 "path is outside project root",
             ]
             return any(t in a for t in triggers)
@@ -1590,7 +1649,6 @@ def chat(
                 "TOOL-FIRST INSTRUCTIONS (MANDATORY):\n"
                 "- Do NOT guess.\n"
                 "- You MUST use tools to search the repository and inspect real source files.\n"
-                "- Focus on backend/ and loanapp/.\n"
                 "- You MUST open at least TWO real source files before concluding.\n"
                 "- Avoid caches/build output: node_modules/, .next/, .angular/, dist/, build/, .cache/, .npm-cache/, generated/.\n"
                 "- Final answer MUST include evidence (file path + line ranges).\n"
@@ -1602,6 +1660,8 @@ def chat(
         console.print("mana-analyzer chat – type 'exit' or 'quit' to end.")
         if not agent_tools:
             console.print("[yellow]Tip:[/yellow] run with --agent-tools for real tool-driven investigation.")
+        if coding_agent:
+            console.print("[bold red]Coding agent enabled:[/bold red] this session can modify any files under the repository root.")
 
         while True:
             try:
@@ -1620,27 +1680,83 @@ def chat(
 
             logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
 
+
+            # ==========================================================
+            # ✅ CODING AGENT PATH (classic + dir-mode supported)
+            # ==========================================================
+            if coding_agent_instance is not None:
+                try:
+                    if dir_mode:
+                        index_dirs = dir_mode_index_dirs
+                        if not index_dirs:
+                            console.print("[red]No indexes available in dir-mode (internal CLI selection is empty).[/red]")
+                            continue
+
+                        result = coding_agent_instance.generate_dir_mode(
+                            question,
+                            index_dirs=index_dirs,
+                            k=resolved_k,
+                            max_steps=max(agent_max_steps, 8),
+                            timeout_seconds=max(agent_timeout_seconds, 60),
+                        )
+                    else:
+                        assert resolved_index_dir is not None
+                        result = coding_agent_instance.generate(
+                            question,
+                            index_dir=resolved_index_dir,
+                            k=resolved_k,
+                            max_steps=max(agent_max_steps, 8),
+                            timeout_seconds=max(agent_timeout_seconds, 60),
+                        )
+                except Exception as exc:
+                    _log_exception("coding_agent.generate", exc)
+                    raise
+
+                if as_json:
+                    console.print_json(json.dumps(result))
+                else:
+                    console.print(result.get("answer", ""))
+
+                    changed = result.get("changed_files", []) or []
+                    if changed:
+                        console.print("\n[bold]Changed files:[/bold]")
+                        for p in changed:
+                            console.print(f"- {p}")
+
+                    diff = result.get("diff", "") or ""
+                    if diff:
+                        console.print("\n[bold]Diff:[/bold]\n" + diff)
+
+                    sa = result.get("static_analysis", {}) or {}
+                    if sa.get("finding_count", 0):
+                        console.print("\n[bold yellow]Static analysis findings:[/bold yellow]")
+                        for f in sa.get("findings", []) or []:
+                            console.print(f"- {f}")
+
+                    warns = result.get("warnings", []) or []
+                    if warns:
+                        console.print("\nWarnings:\n" + "\n".join(f"- {w}" for w in warns))
+
+                continue
+            # ==========================================================
+            # ✅ NORMAL CHAT PATH (your existing logic)
+            # ==========================================================
             response = None
             attempt_question = question
 
             for attempt in range(1, max_attempts + 1):
                 logger.debug("Chat attempt", extra={"attempt": attempt, "max_attempts": max_attempts})
 
-                # ✅ NEW: live spinner + tool animation (only in agent_tools mode)
                 try:
                     if agent_tools:
                         spinner = Spinner("dots", text="Thinking…")
                         with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
                             cb = RichToolCallbackHandler(live, show_inputs=True)
 
-                            # If your ChatService.ask supports callbacks, use it:
                             try:
                                 response = chat_service.ask(attempt_question, callbacks=[cb])  # type: ignore[arg-type]
                             except TypeError:
-                                # Fallback: call AskService directly (classic mode uses chat_service)
                                 if dir_mode:
-                                    # dir-mode tool path should be in AskService, but you may already have a method.
-                                    # If you have ask_with_tools_dir_mode that accepts callbacks, prefer that.
                                     response = ask_service.ask_with_tools_dir_mode(  # type: ignore[call-arg]
                                         index_dirs=getattr(chat_service, "index_dirs", []) or [],
                                         question=attempt_question,
@@ -1710,3 +1826,5 @@ def chat(
     finally:
         if tmp_root is not None:
             tmp_root.cleanup()
+        if tmp_base is not None:
+            tmp_base.cleanup()

@@ -1,0 +1,51 @@
+diff --git a/src/mana_analyzer/llm/ask_agent.py b/src/mana_analyzer/llm/ask_agent.py
+--- a/src/mana_analyzer/llm/ask_agent.py
++++ b/src/mana_analyzer/llm/ask_agent.py
+@@ -68,6 +68,18 @@ class AskAgent:
+         self._resolved_index = self.project_root / ".mana_index"
+         self._resolved_indexes = [self._resolved_index]
+         self.run_logger = LlmRunLogger()
++        # Extra tools (e.g. coding agent: write_file/apply_patch)
++        self.extra_tools: list[StructuredTool] = []
++
++    @property
++    def tools(self) -> list[StructuredTool]:
++        """
++        Compatibility surface: lets callers do `ask_agent.tools.extend([...])`.
++        Tools here are merged into the per-run tool list in `_build_tools()`.
++        """
++        return self.extra_tools
+@@ -211,6 +223,11 @@ class AskAgent:
+             StructuredTool.from_function(
+                 func=run_command,
+                 name="run_command",
+                 description="Run a non-destructive shell command in project root and return JSON stdout/stderr.",
+                 args_schema=_RunCommandInput,
+             ),
+         ]
++
++        # ✅ Allow callers to inject additional tools (coding agent, etc.)
++        if self.extra_tools:
++            tools.extend(self.extra_tools)
++
+         return tools, traces, sources, warnings
+@@ -224,6 +237,7 @@ class AskAgent:
+     def run(
+         self,
+         question: str,
+         index_dir: str | Path,
+         k: int,
++        system_prompt: str | None = None,
+         max_steps: int = 6,
+         timeout_seconds: int = 30,
+         index_dirs: list[str | Path] | None = None,
+         callbacks: Sequence[BaseCallbackHandler] | None = None,
+     ) -> AskResponseWithTrace:
+@@ -233,7 +247,7 @@ class AskAgent:
+         bound = self.llm.bind_tools(tools)
+
+         messages = [
+-            SystemMessage(content=ASK_AGENT_SYSTEM_PROMPT),
++            SystemMessage(content=system_prompt or ASK_AGENT_SYSTEM_PROMPT),
+             HumanMessage(content=question),
+         ]

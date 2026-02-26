@@ -244,6 +244,8 @@ mana-analyzer describe /path/to/codebase --llm-model gpt-4.1-mini --max-files 20
 
 # Security scan
 mana-analyzer scan --requirements-file requirements.txt
+
+mana-analyzer chat --agent-tools --coding-agent
 ```
 All commands support `--json`, `--verbose`, `--log-dir <path>`, and `--output-dir <path>`.
 

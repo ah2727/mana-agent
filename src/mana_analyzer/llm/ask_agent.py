@@ -6,13 +6,13 @@ from pathlib import Path
 import shlex
 import subprocess
 from time import perf_counter
+from typing import Any, Sequence, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import StructuredTool, BaseTool
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from typing import Any, Sequence
 from langchain_core.callbacks.base import BaseCallbackHandler
 from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_analyzer.llm.prompts import ASK_AGENT_SYSTEM_PROMPT
@@ -73,13 +73,16 @@ class AskAgent:
         self._resolved_indexes = [self._resolved_index]
         self.run_logger = LlmRunLogger()
 
+        # ✅ NEW: allow external code to register extra tools (e.g. write_file/apply_patch)
+        self.tools: list[BaseTool] = []
+
     def _is_blocked_command(self, cmd: str) -> bool:
         lowered = f"{cmd.lower()} "
         return any(pattern in lowered for pattern in self._BLOCKED_PATTERNS)
 
     def _build_tools(
         self, k_default: int, timeout_seconds: int
-    ) -> tuple[list[StructuredTool], list[ToolInvocationTrace], list[SearchHit], list[str]]:
+    ) -> tuple[list[BaseTool], list[ToolInvocationTrace], list[SearchHit], list[str]]:
         traces: list[ToolInvocationTrace] = []
         sources: list[SearchHit] = []
         warnings: list[str] = []
@@ -171,7 +174,6 @@ class AskAgent:
             try:
                 if self._is_blocked_command(cmd):
                     raise PermissionError("command blocked by safety policy")
-                # Parse to fail fast on malformed shell syntax.
                 shlex.split(cmd)
                 completed = subprocess.run(
                     cmd,
@@ -215,7 +217,7 @@ class AskAgent:
                     )
                 )
 
-        tools = [
+        base_tools: list[BaseTool] = [
             StructuredTool.from_function(
                 func=semantic_search,
                 name="semantic_search",
@@ -235,7 +237,38 @@ class AskAgent:
                 args_schema=_RunCommandInput,
             ),
         ]
-        return tools, traces, sources, warnings
+
+        # ✅ NEW: include any externally-registered tools (write_file/apply_patch/etc)
+        all_tools = [*base_tools, *list(self.tools or [])]
+
+        return all_tools, traces, sources, warnings
+
+    # ✅ NEW: public "ask" API (what your CodingAgent expects)
+    def ask(
+        self,
+        question: str,
+        *,
+        index_dir: str | Path,
+        k: int,
+        max_steps: int = 6,
+        timeout_seconds: int = 30,
+        index_dirs: list[str | Path] | None = None,
+        callbacks: Sequence[BaseCallbackHandler] | None = None,
+        system_prompt: str | None = None,
+        tool_use: bool = True,
+    ) -> AskResponseWithTrace:
+        # tool_use kept for compatibility; this AskAgent is tool-based by design.
+        return self.run(
+            question=question,
+            index_dir=index_dir,
+            k=k,
+            max_steps=max_steps,
+            timeout_seconds=timeout_seconds,
+            index_dirs=index_dirs,
+            callbacks=callbacks,
+            system_prompt=system_prompt,
+        )
+
     def run(
         self,
         question: str,
@@ -245,6 +278,7 @@ class AskAgent:
         timeout_seconds: int = 30,
         index_dirs: list[str | Path] | None = None,
         callbacks: Sequence[BaseCallbackHandler] | None = None,
+        system_prompt: str | None = None,  # ✅ NEW
     ) -> AskResponseWithTrace:
         started = perf_counter()
 
@@ -257,20 +291,17 @@ class AskAgent:
         tools, traces, sources, warnings = self._build_tools(k_default=k, timeout_seconds=timeout_seconds)
         tool_map = {tool.name: tool for tool in tools}
 
-        # Bind tools to LLM (still need to pass callbacks at invoke-time via config)
         bound = self.llm.bind_tools(tools)
 
         messages = [
-            SystemMessage(content=ASK_AGENT_SYSTEM_PROMPT),
+            SystemMessage(content=system_prompt or ASK_AGENT_SYSTEM_PROMPT),
             HumanMessage(content=question),
         ]
 
-        # LangChain config (where callbacks are consumed)
         cfg: dict[str, Any] = {"callbacks": list(callbacks) if callbacks else []}
 
         final_answer = ""
         for _ in range(max_steps):
-            # ✅ IMPORTANT: pass callbacks here so you get live updates (e.g. spinner)
             ai_msg = bound.invoke(messages, config=cfg)
             messages.append(ai_msg)
 
@@ -287,7 +318,6 @@ class AskAgent:
                     content = json.dumps({"error": f"unknown tool: {name}"})
                 else:
                     try:
-                        # ✅ IMPORTANT: pass callbacks to tool invoke so on_tool_start/on_tool_end fire
                         content = tool_map[name].invoke(args, config=cfg)
                     except Exception as exc:
                         content = json.dumps({"error": str(exc)})
@@ -298,10 +328,7 @@ class AskAgent:
             final_answer = "Tool loop reached the step limit before a final answer."
 
         deduped_sources = sorted(
-            {
-                (item.file_path, item.start_line, item.end_line, item.symbol_name): item
-                for item in sources
-            }.values(),
+            {(item.file_path, item.start_line, item.end_line, item.symbol_name): item for item in sources}.values(),
             key=lambda item: (item.file_path, item.start_line, item.end_line, item.symbol_name),
         )
 
@@ -336,31 +363,3 @@ class AskAgent:
             )
 
         return result
-    
-    def run_multi(
-        self,
-        question: str,
-        index_dirs: list[str | Path],
-        k: int,
-        max_steps: int = 6,
-        timeout_seconds: int = 30,
-    ) -> AskResponseWithTrace:
-        resolved = sorted({Path(item).resolve() for item in index_dirs}, key=lambda item: str(item))
-        if not resolved:
-            return AskResponseWithTrace(
-                answer="No indexes were provided for tool-enabled ask mode.",
-                sources=[],
-                mode="agent-tools",
-                trace=[],
-                warnings=["No index directories available."],
-            )
-        self._resolved_index = resolved[0]
-        self._resolved_indexes = resolved
-        return self.run(
-            question=question,
-            index_dir=self._resolved_index,
-            index_dirs=resolved,
-            k=k,
-            max_steps=max_steps,
-            timeout_seconds=timeout_seconds,
-        )

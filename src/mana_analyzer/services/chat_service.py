@@ -1,8 +1,25 @@
+"""
+mana_analyzer.services.chat_service
+
+This module provides `ChatService`, a thin wrapper around `AskService` that offers a
+simple `ask()` API suitable for interactive CLI chat.
+
+Design notes:
+- `ChatService` does not construct `AskService`. The CLI is expected to build a fully
+  configured `AskService` (e.g., via a `build_ask_service(...)` helper) and inject it.
+- Two operating modes are supported:
+  1) Single-index mode: use exactly one index directory.
+  2) Dir-mode: operate over multiple index directories selected by the CLI.
+
+The service optionally forwards `callbacks` to downstream methods when supported.
+If a downstream method does not accept `callbacks`, the call is retried without them.
+"""
+
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, Sequence
 
 from mana_analyzer.config.settings import Settings, default_index_dir
 from mana_analyzer.services.ask_service import AskService
@@ -12,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 class ChatService:
     """
-    ChatService wraps a fully-configured AskService and provides a simple
-    ask() API for interactive CLI chat.
+    ChatService wraps a fully-configured AskService and provides a simple ask() API
+    for interactive CLI chat.
 
     IMPORTANT:
     - This class does NOT build AskService itself.
@@ -25,11 +42,11 @@ class ChatService:
         *,
         ask_service: AskService,
         settings: Settings,
-        model_override: Optional[str] = None,
-        index_dir: Optional[Union[str, Path]] = None,
+        model_override: str | None = None,
+        index_dir: str | Path | None = None,
         dir_mode: bool = False,
-        root_dir: Optional[Union[str, Path]] = None,
-        k: Optional[int] = None,
+        root_dir: str | Path | None = None,
+        k: int | None = None,
         agent_tools: bool = False,
         agent_max_steps: int = 6,
         agent_timeout_seconds: int = 30,
@@ -48,16 +65,17 @@ class ChatService:
 
         self._dir_mode = bool(dir_mode)
         self._root_dir: Path = (
-            Path(root_dir).expanduser().resolve() if root_dir is not None else Path.cwd().resolve()
+            Path(root_dir).expanduser().resolve()
+            if root_dir is not None
+            else Path.cwd().resolve()
         )
 
-        self._history: List[tuple[str, str]] = []
+        # (question, answer) history for the current session
+        self._history: list[tuple[str, str]] = []
 
         if self._dir_mode:
-            # Let AskService handle discovery/auto-indexing in dir-mode,
-            # because your CLI already has this logic and AskService expects search_service configured.
-            # We will select indexes in the CLI and pass them to ask_dir_mode.
-            self._index_dirs: List[Path] = []
+            # In dir-mode, the CLI computes/chooses index_dirs and supplies them via set_index_dirs.
+            self._index_dirs: list[Path] = []
             self._max_indexes = int(max_indexes)
             self._auto_index_missing = bool(auto_index_missing)
         else:
@@ -70,16 +88,17 @@ class ChatService:
             self._max_indexes = 0
             self._auto_index_missing = False
 
-    def set_index_dirs(self, index_dirs: List[Path]) -> None:
+    def set_index_dirs(self, index_dirs: list[Path]) -> None:
         """Used by the CLI to supply the computed dir-mode index list."""
         self._index_dirs = [Path(p).resolve() for p in index_dirs]
+
     def ask(
         self,
         question: str,
         *,
         callbacks: Sequence[Any] | None = None,
         **kwargs: Any,
-    ):
+    ) -> Any:
         """
         Ask a question using either:
           - dir-mode: multiple indexes via search_service / agent tools, or
@@ -92,8 +111,10 @@ class ChatService:
         if not question:
             return None
 
-        # Helper: call a function with callbacks if supported; otherwise retry without.
-        def _call_with_optional_callbacks(fn, /, **call_kwargs):
+        def _call_with_optional_callbacks(fn, /, **call_kwargs: Any) -> Any:
+            """
+            Call `fn` with `callbacks` if supported; otherwise retry without callbacks.
+            """
             if callbacks is None:
                 return fn(**call_kwargs)
             try:
@@ -119,17 +140,18 @@ class ChatService:
                     max_steps=self._agent_max_steps,
                     timeout_seconds=self._agent_timeout_seconds,
                     root_dir=self._root_dir,
+                    **kwargs,
                 )
             else:
-                # Classic dir-mode path (usually no callbacks, but we allow if you add it later)
+                # Classic dir-mode path
                 response = _call_with_optional_callbacks(
                     self._ask_service.ask_dir_mode,
                     index_dirs=self._index_dirs,
                     question=question,
                     k=self._k,
                     root_dir=self._root_dir,
+                    **kwargs,
                 )
-
         else:
             if not self._index_dirs:
                 raise RuntimeError(
@@ -148,6 +170,7 @@ class ChatService:
                     k=self._k,
                     max_steps=self._agent_max_steps,
                     timeout_seconds=self._agent_timeout_seconds,
+                    **kwargs,
                 )
             else:
                 # Classic single-index path
@@ -156,14 +179,15 @@ class ChatService:
                     index_dir=index_dir,
                     question=question,
                     k=self._k,
+                    **kwargs,
                 )
 
         # Record history safely
         try:
             answer_text = getattr(response, "answer", None)
-            if answer_text is not None:
+            if isinstance(answer_text, str) and answer_text:
                 self._history.append((question, answer_text))
         except Exception:
-            pass
+            logger.debug("Failed to record chat history.", exc_info=True)
 
         return response
