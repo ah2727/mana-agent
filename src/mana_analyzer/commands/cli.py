@@ -281,6 +281,24 @@ def build_index_service(settings: Settings) -> IndexService:
     return svc
 
 
+def _index_service_index_compat(
+    index_service: IndexService,
+    *,
+    target_path: Path,
+    index_dir: Path,
+    rebuild: bool,
+    vectors: bool | None = None,
+) -> object:
+    try:
+        if vectors is None:
+            return index_service.index(target_path=target_path, index_dir=index_dir, rebuild=rebuild)
+        return index_service.index(target_path=target_path, index_dir=index_dir, rebuild=rebuild, vectors=vectors)
+    except TypeError as exc:
+        if "vectors" not in str(exc):
+            raise
+        return index_service.index(target_path=target_path, index_dir=index_dir, rebuild=rebuild)
+
+
 def build_search_service(settings: Settings) -> SearchService:
     _log_call("build_search_service")
     svc = SearchService(store=build_store(settings))
@@ -575,7 +593,13 @@ def search(
         tmp, resolved_index_dir = _make_ephemeral_index_dir()
         # Ensure index exists for search
         index_service = build_index_service(settings)
-        index_service.index(target_path=Path.cwd(), index_dir=resolved_index_dir, rebuild=False, vectors=True)
+        _index_service_index_compat(
+            index_service,
+            target_path=Path.cwd(),
+            index_dir=resolved_index_dir,
+            rebuild=False,
+            vectors=True,
+        )
     else:
         resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
 
@@ -858,7 +882,13 @@ def ask(
                     if auto_index_missing:
                         try:
                             logger.info("Auto-indexing missing/empty index", extra={"subproject_root": str(subproject.root_path), "index_dir": str(expected_index)})
-                            index_service.index(target_path=subproject.root_path, index_dir=expected_index, rebuild=False, vectors=True)
+                            _index_service_index_compat(
+                                index_service,
+                                target_path=subproject.root_path,
+                                index_dir=expected_index,
+                                rebuild=False,
+                                vectors=True,
+                            )
                             auto_indexed_count += 1
                             selected_indexes.append(expected_index)
                         except Exception as exc:
@@ -883,7 +913,13 @@ def ask(
                 elif auto_index_missing:
                     try:
                         logger.info("Auto-indexing root", extra={"root": str(root), "index_dir": str(root_index)})
-                        index_service.index(target_path=root, index_dir=root_index, rebuild=False, vectors=True)
+                        _index_service_index_compat(
+                            index_service,
+                            target_path=root,
+                            index_dir=root_index,
+                            rebuild=False,
+                            vectors=True,
+                        )
                         auto_indexed_count = 1
                         selected_indexes = [root_index]
                     except Exception as exc:
@@ -927,7 +963,13 @@ def ask(
             if ephemeral_index and not index_dir:
                 tmp_single, resolved_index_dir = _make_ephemeral_index_dir()
                 index_service = build_index_service(settings)
-                index_service.index(target_path=Path.cwd(), index_dir=resolved_index_dir, rebuild=False, vectors=True)
+                _index_service_index_compat(
+                    index_service,
+                    target_path=Path.cwd(),
+                    index_dir=resolved_index_dir,
+                    rebuild=False,
+                    vectors=True,
+                )
             else:
                 resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
 
@@ -1552,7 +1594,13 @@ def chat(
             def _auto_index(target_path: Path, idx_dir: Path) -> bool:
                 logger.info("Chat auto-index attempt", extra={"target_path": str(target_path), "idx_dir": str(idx_dir)})
                 try:
-                    index_service.index(target_path=target_path, index_dir=idx_dir, rebuild=False, vectors=True)
+                    _index_service_index_compat(
+                        index_service,
+                        target_path=target_path,
+                        index_dir=idx_dir,
+                        rebuild=False,
+                        vectors=True,
+                    )
                     logger.info("Chat auto-index vectors success", extra={"idx_dir": str(idx_dir)})
                     return True
                 except Exception as exc:
@@ -1560,7 +1608,13 @@ def chat(
                     logger.warning(warning)
                     warnings.append(warning)
                     try:
-                        index_service.index(target_path=target_path, index_dir=idx_dir, rebuild=False, vectors=False)
+                        _index_service_index_compat(
+                            index_service,
+                            target_path=target_path,
+                            index_dir=idx_dir,
+                            rebuild=False,
+                            vectors=False,
+                        )
                         logger.info("Chat auto-index chunks-only success", extra={"idx_dir": str(idx_dir)})
                         return True
                     except Exception as exc2:
@@ -1649,7 +1703,13 @@ def chat(
             if ephemeral_index and not index_dir:
                 tmp_root, resolved_index_dir = _make_ephemeral_index_dir(prefix="mana_chat_index_")
                 index_service = build_index_service(settings)
-                index_service.index(target_path=Path.cwd(), index_dir=resolved_index_dir, rebuild=False, vectors=True)
+                _index_service_index_compat(
+                    index_service,
+                    target_path=Path.cwd(),
+                    index_dir=resolved_index_dir,
+                    rebuild=False,
+                    vectors=True,
+                )
             else:
                 resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
 
