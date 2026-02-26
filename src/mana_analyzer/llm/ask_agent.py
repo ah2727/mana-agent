@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 import shlex
 import subprocess
+import ast
 from time import perf_counter
 from typing import Any, Sequence, Optional
 from collections import defaultdict
@@ -80,6 +81,48 @@ class AskAgent:
     def _is_blocked_command(self, cmd: str) -> bool:
         lowered = f"{cmd.lower()} "
         return any(pattern in lowered for pattern in self._BLOCKED_PATTERNS)
+
+    @staticmethod
+    def _coerce_tool_payload(content: Any) -> dict[str, Any] | None:
+        if isinstance(content, dict):
+            return content
+        if not isinstance(content, str):
+            return None
+        text = content.strip()
+        if not text:
+            return None
+        try:
+            loaded = json.loads(text)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            pass
+        # Some models/tools may return Python dict repr with single quotes.
+        try:
+            loaded = ast.literal_eval(text)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            return None
+        return None
+
+    @classmethod
+    def _is_apply_patch_failure(cls, content: Any) -> bool:
+        payload = cls._coerce_tool_payload(content)
+        if payload is not None:
+            ok = payload.get("ok")
+            if ok is False:
+                return True
+            error = str(payload.get("error", "")).strip()
+            if error:
+                return True
+            touched = payload.get("touched_files")
+            if isinstance(touched, list) and not touched and not payload.get("check_only", False):
+                return True
+            return False
+        text = str(content or "")
+        lowered = text.lower()
+        return "error" in lowered or "ok': false" in lowered or '"ok": false' in lowered
 
     def _build_tools(
         self, k_default: int, timeout_seconds: int
@@ -305,6 +348,8 @@ class AskAgent:
         ]
 
         cfg: dict[str, Any] = {"callbacks": list(callbacks) if callbacks else []}
+        apply_patch_failures = 0
+        forced_patch_fallback = False
 
         final_answer = ""
         for _ in range(max_steps):
@@ -325,6 +370,16 @@ class AskAgent:
 
                 if name not in tool_map:
                     content = json.dumps({"error": f"unknown tool: {name}"})
+                elif forced_patch_fallback and name == "apply_patch":
+                    content = json.dumps(
+                        {
+                            "ok": False,
+                            "error": (
+                                "apply_patch disabled after repeated failures/no-op in this run; "
+                                "switch to write_file fallback."
+                            ),
+                        }
+                    )
                 else:
                     try:
                         try:
@@ -334,7 +389,24 @@ class AskAgent:
                     except Exception as exc:
                         content = json.dumps({"error": str(exc)})
 
+                if name == "apply_patch":
+                    if self._is_apply_patch_failure(content):
+                        apply_patch_failures += 1
+                        if apply_patch_failures >= 2:
+                            forced_patch_fallback = True
+
                 messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+
+            # Hard anti-loop guard: stop patch-only tool loops and force upper-layer fallback.
+            if forced_patch_fallback:
+                final_answer = (
+                    "apply_patch failed repeatedly or produced no effective changes in this run. "
+                    "Stopping patch-only loop; switch to write_file fallback."
+                )
+                warnings.append(
+                    "apply_patch failed repeatedly/no-op; terminated patch-only loop to allow write_file fallback."
+                )
+                break
 
         if not final_answer:
             final_answer = "Tool loop reached the step limit before a final answer."

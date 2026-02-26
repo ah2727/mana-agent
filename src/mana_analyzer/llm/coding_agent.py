@@ -19,6 +19,7 @@ import inspect
 import json
 import logging
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional, Protocol, Sequence
 
@@ -161,14 +162,15 @@ class CodingAgent:
             changed = sorted(after.difference(before))
             if not changed:
                 warnings.append("No file changes after patch-style retry; switching to write_file fallback.")
-                answer = self._call_agent_single(
-                    self._build_write_file_retry_prompt(request),
-                    index_dir=index_dir,
-                    k=k,
-                    max_steps=max_steps,
-                    timeout_seconds=timeout_seconds,
-                    callbacks=callbacks,
-                )
+                with self._without_tool("apply_patch"):
+                    answer = self._call_agent_single(
+                        self._build_write_file_retry_prompt(request),
+                        index_dir=index_dir,
+                        k=k,
+                        max_steps=max_steps,
+                        timeout_seconds=timeout_seconds,
+                        callbacks=callbacks,
+                    )
                 after = self._git_status_paths()
                 changed = sorted(after.difference(before))
                 if not changed:
@@ -241,14 +243,15 @@ class CodingAgent:
             changed = sorted(after.difference(before))
             if not changed:
                 warnings.append("No file changes after patch-style retry; switching to write_file fallback.")
-                answer = self._call_agent_multi(
-                    self._build_write_file_retry_prompt(request),
-                    index_dirs=index_dirs,
-                    k=k,
-                    max_steps=max_steps,
-                    timeout_seconds=timeout_seconds,
-                    callbacks=callbacks,
-                )
+                with self._without_tool("apply_patch"):
+                    answer = self._call_agent_multi(
+                        self._build_write_file_retry_prompt(request),
+                        index_dirs=index_dirs,
+                        k=k,
+                        max_steps=max_steps,
+                        timeout_seconds=timeout_seconds,
+                        callbacks=callbacks,
+                    )
                 after = self._git_status_paths()
                 changed = sorted(after.difference(before))
                 if not changed:
@@ -387,12 +390,26 @@ class CodingAgent:
             f"{request}\n\n"
             "MANDATORY RETRY 2 (PATCH FAILURE FALLBACK):\n"
             "- apply_patch/git-based edits likely failed or produced no change.\n"
+            "- apply_patch is disabled for this retry.\n"
             "- You MUST switch to write_file and perform direct file rewrite for the minimum required edits.\n"
             "- Do NOT attempt another patch-only retry in this pass.\n"
             "- If write_file also produces no file changes, stop and return a failure summary.\n"
             "- Keep edits minimal and confined to the requested fix.\n"
             "- After editing, summarize changed files and rationale.\n"
         )
+
+    @contextmanager
+    def _without_tool(self, tool_name: str):
+        tools = getattr(self.ask_agent, "tools", None)
+        if not isinstance(tools, list):
+            yield
+            return
+        original = list(tools)
+        tools[:] = [tool for tool in tools if str(getattr(tool, "name", "")) != tool_name]
+        try:
+            yield
+        finally:
+            tools[:] = original
 
     def _call_ask_like(self, request: str) -> str:
         kwargs: dict[str, Any] = {}

@@ -52,6 +52,7 @@ app = typer.Typer(help="mana-analyzer CLI")
 console = Console()
 logger = logging.getLogger(__name__)
 OUTPUT_DIR: Path | None = None
+LLM_DEBUG_MODE: bool = False
 
 
 class RichToolCallbackHandler(BaseCallbackHandler):
@@ -72,18 +73,18 @@ class RichToolCallbackHandler(BaseCallbackHandler):
             if len(inp) > 160:
                 inp = inp[:160] + "…"
             msg += f" | args: {inp}"
-        logger.debug(msg)
+        logger.info(msg)
 
     def on_tool_end(self, output: str, **kwargs) -> None:
         tool = self._tool or "tool"
         dt = max(0.0, time.time() - self._t0)
         self._tool = None
-        logger.debug(f"TOOL end: {tool} ({dt:0.1f}s)")
+        logger.info(f"TOOL end: {tool} ({dt:0.1f}s)")
 
     def on_tool_error(self, error: BaseException, **kwargs) -> None:
         tool = self._tool or "tool"
         self._tool = None
-        logger.debug(f"TOOL error: {tool} - {error}")
+        logger.info(f"TOOL error: {tool} - {error}")
 
 
 # -----------------------------------------
@@ -158,7 +159,12 @@ def _run_with_live_buffer(
     """
     spinner = Spinner("dots", text=spinner_text)
     with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
-        log_buf = LiveLogBuffer(live, capacity=250, show_lines=14)
+        log_buf = LiveLogBuffer(
+            live,
+            capacity=250,
+            show_lines=14,
+            show_all_logs=LLM_DEBUG_MODE,
+        )
         log_buf.setFormatter(_make_log_formatter())
 
         # capture everything (root) so you see internal debug + tool messages
@@ -204,17 +210,27 @@ def _render_turn_summary(
 class LiveLogBuffer(logging.Handler):
     """Capture recent log records and stream a tail into Rich Live."""
 
-    def __init__(self, live: Live, capacity: int = 250, show_lines: int = 14) -> None:
+    def __init__(
+        self,
+        live: Live,
+        capacity: int = 250,
+        show_lines: int = 14,
+        show_all_logs: bool = False,
+    ) -> None:
         super().__init__(level=logging.DEBUG)
         self.live = live
         self.records: deque[str] = deque(maxlen=capacity)
         self.show_lines = show_lines
+        self.show_all_logs = show_all_logs
 
     def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if not self.show_all_logs and not message.startswith("TOOL "):
+            return
         try:
             msg = self.format(record)
         except Exception:
-            msg = record.getMessage()
+            msg = message
         self.records.append(msg)
 
         tail = list(self.records)[-self.show_lines :]
@@ -633,15 +649,29 @@ def _truncate_output(text: str, limit: int = 4000) -> str:
 @app.callback()
 def main(
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logs."),
+    debug_llm: bool = typer.Option(
+        False,
+        "--debug-llm/--no-debug-llm",
+        help="Show internal LLM transport/request logs in live chat panels.",
+    ),
     log_dir: str | None = typer.Option(None, "--log-dir", help="Directory for application log files."),
     output_dir: str | None = typer.Option(None, "--output-dir", help="Directory for saving command output logs."),
 ) -> None:
-    global OUTPUT_DIR
+    global OUTPUT_DIR, LLM_DEBUG_MODE
     OUTPUT_DIR = Path(output_dir).resolve() if output_dir else None
+    LLM_DEBUG_MODE = debug_llm
     log_file = setup_logging(verbose=verbose, log_dir=log_dir)
+    if not debug_llm:
+        for noisy_logger in ("openai", "httpx", "httpcore"):
+            logging.getLogger(noisy_logger).setLevel(logging.WARNING)
     logger.debug(
         "CLI initialized",
-        extra={"verbose": verbose, "log_file": str(log_file), "output_dir": str(OUTPUT_DIR) if OUTPUT_DIR else None},
+        extra={
+            "verbose": verbose,
+            "debug_llm": debug_llm,
+            "log_file": str(log_file),
+            "output_dir": str(OUTPUT_DIR) if OUTPUT_DIR else None,
+        },
     )
 
 
