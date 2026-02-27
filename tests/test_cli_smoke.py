@@ -672,7 +672,7 @@ def test_chat_coding_agent_uses_worker_lifecycle_once(monkeypatch, tmp_path: Pat
     assert _FakeWorkerClient.stop_calls == 1
 
 
-def test_chat_plan_trigger_shows_checklist_and_skips_conflict_prompt(monkeypatch, tmp_path: Path) -> None:
+def test_chat_plan_trigger_is_quiet_and_skips_conflict_prompt(monkeypatch, tmp_path: Path) -> None:
     class _FakeAskService(FakeAskService):
         def __init__(self) -> None:
             self.ask_agent = object()
@@ -724,10 +724,226 @@ def test_chat_plan_trigger_shows_checklist_and_skips_conflict_prompt(monkeypatch
         input="implement plan.\nquit\n",
     )
     assert result.exit_code == 0
-    assert "Executing active flow plan..." in result.stdout
-    assert "Document public API" in result.stdout
-    assert "Add missing type hints" in result.stdout
+    assert "Executing active flow plan..." not in result.stdout
+    assert "Document public API" not in result.stdout
+    assert "Add missing type hints" not in result.stdout
+    assert "Auto-Execute" not in result.stdout
     assert "This request appears to diverge from the active flow." not in result.stdout
+
+
+def test_chat_plan_trigger_with_preview_keeps_progress_quiet(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def preview_execution_checklist(self, request: str, *, flow_id: str | None = None, flow_context: str | None = None) -> dict:
+            _ = (request, flow_id, flow_context)
+            return {
+                "flow_id": self.active,
+                "prechecklist": {
+                    "objective": "Implement TODO sections",
+                    "source": "planner",
+                    "steps": [
+                        {"id": "s1", "status": "in_progress", "title": "Inspect TODO.md section 1"},
+                        {"id": "s2", "status": "pending", "title": "Apply TODO.md section 2 updates"},
+                    ],
+                },
+                "prechecklist_source": "planner",
+                "prechecklist_warning": "",
+            }
+
+        def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:
+            return {
+                "answer": "done",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "Implement TODO sections", "steps": []},
+                "progress": {"phase": "answer", "why": "complete"},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "manager_stop",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="implement plan.\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Inspect TODO.md section 1" not in result.stdout
+    assert "Apply TODO.md section 2 updates" not in result.stdout
+    assert "Checklist source: planner" not in result.stdout
+    assert "Executing active flow plan..." not in result.stdout
+
+
+def test_chat_plan_trigger_preview_fallback_hides_warning_panel_in_quiet_mode(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def preview_execution_checklist(self, request: str, *, flow_id: str | None = None, flow_context: str | None = None) -> dict:
+            _ = (request, flow_id, flow_context)
+            return {
+                "flow_id": self.active,
+                "prechecklist": {
+                    "objective": "Fallback objective",
+                    "source": "deterministic_fallback",
+                    "steps": [{"id": "s1", "status": "in_progress", "title": "Discover target file(s)"}],
+                },
+                "prechecklist_source": "deterministic_fallback",
+                "prechecklist_warning": "Planner parse failed; using deterministic fallback checklist.",
+            }
+
+        def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:
+            return {
+                "answer": "done",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "Fallback objective", "steps": []},
+                "progress": {"phase": "answer", "why": "complete"},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "manager_stop",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="implement plan.\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Planner Warning" not in result.stdout
+    assert "deterministic fallback checklist" not in result.stdout.lower()
+
+
+def test_chat_plan_trigger_auto_execute_without_coding_agent_hides_progress(monkeypatch, tmp_path: Path) -> None:
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeAutoResult:
+        def model_dump(self) -> dict:
+            return {
+                "answer": "auto execution complete",
+                "sources": [],
+                "trace": [],
+                "warnings": [],
+                "changed_files": [],
+                "plan": {"objective": "Implement plan", "steps": [{"id": "s1", "title": "Inspect"}]},
+                "passes": 1,
+                "terminal_reason": "manager_stop",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [
+                    {
+                        "pass_index": 1,
+                        "requests_count": 1,
+                        "request_fingerprints": ["abc123"],
+                        "tool_steps": 0,
+                        "warnings_delta": 0,
+                        "expected_progress": "inspection complete",
+                    }
+                ],
+            }
+
+    class _FakeOrchestrator:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def preview_plan(self, **_kwargs: object) -> dict:
+            return {
+                "prechecklist": {
+                    "objective": "Implement plan",
+                    "source": "planner",
+                    "steps": [{"id": "s1", "status": "in_progress", "title": "Inspect files"}],
+                },
+                "prechecklist_source": "planner",
+                "prechecklist_warning": "",
+                "warnings": [],
+            }
+
+        def run(self, **_kwargs: object):
+            return _FakeAutoResult()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolsManagerOrchestrator", _FakeOrchestrator)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools"],
+        input="implement plan.\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Executing active flow plan..." not in result.stdout
+    assert "Auto-executing plan" not in result.stdout
+    assert "Auto-Execute" not in result.stdout
+    assert "auto execution complete" in result.stdout
 
 
 def test_chat_planning_mode_auto_executes_after_clarifications(monkeypatch, tmp_path: Path) -> None:

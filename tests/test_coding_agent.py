@@ -452,3 +452,51 @@ def test_plan_checklist_parses_list_blocks_with_plan_text(tmp_path: Path, monkey
     assert len(checklist.steps) >= 3
     assert checklist.steps[0].title.startswith("Inspect README.md")
     assert warnings == []
+
+
+def test_preview_execution_checklist_uses_planner_and_persists_to_flow_memory(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    monkeypatch.setattr(
+        agent,
+        "_plan_checklist_with_source",
+        lambda request, flow_context=None: (_fixed_checklist(), [], "planner"),
+    )
+
+    preview = agent.preview_execution_checklist("implement plan.")
+    assert preview["prechecklist_source"] == "planner"
+    assert isinstance(preview.get("prechecklist"), dict)
+    assert preview["prechecklist"]["objective"] == "Implement request"
+    flow_id = preview.get("flow_id")
+    assert isinstance(flow_id, str) and flow_id
+    summary = agent.flow_summary(flow_id)
+    assert isinstance(summary, dict)
+    checklist = summary.get("checklist")
+    assert isinstance(checklist, dict)
+    assert checklist.get("objective") == "Implement request"
+
+
+def test_preview_execution_checklist_reports_repair_source(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    monkeypatch.setattr(
+        agent,
+        "_plan_checklist_with_source",
+        lambda request, flow_context=None: (_fixed_checklist(), ["planner parse failed; attempting repair"], "planner_repair"),
+    )
+    preview = agent.preview_execution_checklist("implement plan.")
+    assert preview["prechecklist_source"] == "planner_repair"
+    assert str(preview.get("prechecklist_warning", "")).strip() == ""
+
+
+def test_preview_execution_checklist_surfaces_deterministic_fallback_warning(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    monkeypatch.setattr(
+        agent,
+        "_plan_checklist_with_source",
+        lambda request, flow_context=None: (_fixed_checklist(), ["planner parse failed"], "deterministic_fallback"),
+    )
+    preview = agent.preview_execution_checklist("implement plan.")
+    assert preview["prechecklist_source"] == "deterministic_fallback"
+    assert "deterministic fallback checklist" in str(preview.get("prechecklist_warning", "")).lower()

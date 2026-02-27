@@ -457,6 +457,9 @@ def _log_chat_turn(
     toolsmanager_requests_count: int = 0,
     auto_execute_pass_logs: list[dict[str, Any]] | None = None,
     planner_decisions: list[dict[str, Any]] | None = None,
+    prechecklist_source: str | None = None,
+    prechecklist_steps_count: int = 0,
+    prechecklist_warning: str | None = None,
 ) -> None:
     if run_logger is None:
         return
@@ -490,6 +493,9 @@ def _log_chat_turn(
                 "toolsmanager_requests_count": int(toolsmanager_requests_count),
                 "auto_execute_pass_logs": list(auto_execute_pass_logs or []),
                 "planner_decisions": list(planner_decisions or []),
+                "prechecklist_source": str(prechecklist_source or ""),
+                "prechecklist_steps_count": int(prechecklist_steps_count),
+                "prechecklist_warning": str(prechecklist_warning or ""),
             }
         )
     except Exception:
@@ -1111,6 +1117,139 @@ def _render_coding_sections(
     console.print(next_step or "-")
 
 
+def _build_flow_summary_payload(
+    coding_memory_service: CodingMemoryService,
+    flow_id: str,
+) -> dict[str, Any] | None:
+    summary = coding_memory_service.get_flow_summary(flow_id)
+    if summary is None:
+        return None
+    return {
+        "flow_id": summary.flow_id,
+        "objective": summary.objective,
+        "updated_at": summary.updated_at,
+        "constraints": summary.constraints,
+        "acceptance": summary.acceptance,
+        "open_tasks": summary.open_tasks,
+        "recent_decisions": summary.recent_decisions,
+        "last_changed_files": summary.last_changed_files,
+        "unresolved_static_findings": summary.unresolved_static_findings,
+        "checklist": summary.checklist,
+        "transitions": summary.transitions,
+        "last_blocked_reason": summary.last_blocked_reason,
+        "recent_turns": coding_memory_service.list_recent_turns(summary.flow_id),
+    }
+
+
+def _render_flow_summary(
+    console: Console,
+    summary: dict[str, Any],
+    *,
+    include_checklist: bool,
+    include_transitions: bool,
+    include_recent_turns: bool,
+) -> None:
+    console.print(f"[bold]Flow[/bold]: {summary['flow_id']}")
+    console.print(f"[bold]Objective[/bold]: {summary['objective']}")
+    updated_at = str(summary.get("updated_at", "") or "").strip()
+    if updated_at:
+        console.print(f"[bold]Updated[/bold]: {updated_at}")
+
+    constraints = summary.get("constraints", []) or []
+    if constraints:
+        console.print("[bold]Constraints[/bold]")
+        for item in constraints:
+            console.print(f"- {item}")
+
+    acceptance = summary.get("acceptance", []) or []
+    if acceptance:
+        console.print("[bold]Acceptance Criteria[/bold]")
+        for item in acceptance:
+            console.print(f"- {item}")
+
+    tasks = summary.get("open_tasks", []) or []
+    if tasks:
+        console.print("[bold]Open tasks[/bold]")
+        for item in tasks:
+            console.print(f"- [ ] {item}")
+
+    decisions = summary.get("recent_decisions", []) or []
+    if decisions:
+        console.print("[bold]Recent decisions[/bold]")
+        for item in decisions:
+            if isinstance(item, dict):
+                decision = str(item.get("decision", "")).strip()
+                rationale = str(item.get("rationale", "")).strip()
+                if decision and rationale:
+                    console.print(f"- {decision} ({rationale})")
+                elif decision:
+                    console.print(f"- {decision}")
+
+    files = summary.get("last_changed_files", []) or []
+    if files:
+        console.print("[bold]Last changed files[/bold]")
+        for item in files[:20]:
+            console.print(f"- {item}")
+
+    static_findings = summary.get("unresolved_static_findings", []) or []
+    if static_findings:
+        console.print("[bold]Unresolved static findings[/bold]")
+        for item in static_findings[:20]:
+            console.print(f"- {item}")
+
+    blocked_reason = str(summary.get("last_blocked_reason", "") or "").strip()
+    if blocked_reason:
+        console.print(f"[bold]Last blocked reason[/bold]: {blocked_reason}")
+
+    if include_checklist:
+        checklist = summary.get("checklist")
+        if isinstance(checklist, dict):
+            _render_flow_checklist(console, checklist)
+
+    if include_transitions:
+        transitions = summary.get("transitions", [])
+        if isinstance(transitions, list) and transitions:
+            console.print("[bold]Recent transitions[/bold]")
+            for item in transitions[:20]:
+                if isinstance(item, dict):
+                    from_phase = str(item.get("from_phase", "")).strip() or "?"
+                    to_phase = str(item.get("to_phase", "")).strip() or "?"
+                    reason = str(item.get("reason", "")).strip()
+                    if reason:
+                        console.print(f"- {from_phase} -> {to_phase}: {reason}")
+                    else:
+                        console.print(f"- {from_phase} -> {to_phase}")
+
+    if include_recent_turns:
+        turns = summary.get("recent_turns", [])
+        if isinstance(turns, list) and turns:
+            console.print("[bold]Recent turns[/bold]")
+            for item in turns[:20]:
+                if not isinstance(item, dict):
+                    continue
+                created_at = str(item.get("created_at", "")).strip()
+                request = str(item.get("user_request", "")).strip()
+                changed_count = len(item.get("changed_files", []) or [])
+                warnings_count = len(item.get("warnings", []) or [])
+                console.print(
+                    f"- {created_at or '-'} | request: {request[:80] or '-'}"
+                    f" | changed_files={changed_count} warnings={warnings_count}"
+                )
+
+
+def _render_flow_checklist(console: Console, checklist: dict[str, Any]) -> None:
+    console.print("[bold]Flow Checklist[/bold]")
+    objective = str(checklist.get("objective", "")).strip()
+    if objective:
+        console.print(f"- objective: {objective}")
+    steps = checklist.get("steps") if isinstance(checklist.get("steps"), list) else []
+    for step in steps[:20]:
+        if isinstance(step, dict):
+            console.print(
+                f"- [{step.get('status', 'pending')}] {step.get('title', 'step')}"
+            )
+
+
 class LiveLogBuffer(logging.Handler):
     """Capture recent log records and stream a tail into Rich Live."""
 
@@ -1159,13 +1298,29 @@ def _looks_like_plan_trigger_request(question: str) -> bool:
 def _looks_like_plan_only_answer(answer_text: str, payload: dict | None = None) -> bool:
     text = (answer_text or "").strip().lower()
     if not text:
-        return False
+        text_empty = True
+    else:
+        text_empty = False
     if isinstance(payload, dict):
         ui_blocks = payload.get("ui_blocks")
         if isinstance(ui_blocks, list):
+            has_plan = False
+            has_non_plan = False
             for item in ui_blocks:
-                if isinstance(item, dict) and str(item.get("type", "")).strip().lower() == "plan":
-                    return True
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("type", "")).strip().lower()
+                if kind == "plan":
+                    has_plan = True
+                elif kind:
+                    has_non_plan = True
+            # Auto-execute only when payload is truly plan-only.
+            if has_plan and not has_non_plan and (
+                text_empty or text.startswith("plan:") or text.startswith("execution plan:")
+            ):
+                return True
+    if not text:
+        return False
     if text.startswith("plan:"):
         return True
     if text.startswith("execution plan:"):
@@ -1186,7 +1341,7 @@ def _render_auto_execute_pass_status(
     batch_reason: str = "",
     expected_progress: str,
 ) -> None:
-    console.print("\n[bold cyan]Planner Decision[/bold cyan]")
+    console.print("\n[bold cyan]Auto-Execute[/bold cyan]")
     console.print(f"- objective: {objective or '-'}")
     console.print(f"- pass: {pass_index}/{pass_cap}")
     if planner_step_id or planner_step_title:
@@ -1201,6 +1356,32 @@ def _render_auto_execute_pass_status(
     if batch_reason:
         console.print(f"- batch reason: {batch_reason}")
     console.print(f"- expected progress: {expected_progress or '-'}")
+
+
+def _render_prechecklist_preview(
+    console: Console,
+    *,
+    prechecklist: dict[str, Any],
+    warning: str = "",
+) -> None:
+    objective = str(prechecklist.get("objective", "") or "").strip()
+    source = str(prechecklist.get("source", "") or "").strip()
+    steps = prechecklist.get("steps") if isinstance(prechecklist.get("steps"), list) else []
+    console.print("[cyan]Executing active flow plan...[/cyan]")
+    if objective:
+        console.print(f"[bold]Plan objective:[/bold] {objective}")
+    if source:
+        console.print(f"[dim]Checklist source: {source}[/dim]")
+    if steps:
+        console.print("[bold]Checklist[/bold]")
+        for item in steps[:12]:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status", "pending") or "pending")
+            title = str(item.get("title", "step") or "step")
+            console.print(f"- [{status}] {title}")
+    if warning.strip():
+        console.print(Panel(f"- {warning.strip()}", title="Planner Warning", border_style="yellow"))
 
 
 def _planning_questions(max_questions: int) -> list[str]:
@@ -1851,6 +2032,55 @@ def search(
         lines.append(f"  {hit.snippet[:180].strip()}")
         lines.append("")
     _emit_text("\n".join(lines).rstrip(), output_file=output_file)
+
+
+@app.command("flow")
+def flow_cmd(
+    project_path: str | None = typer.Argument(
+        None,
+        help="Project root containing .mana_index/chat_memory.sqlite3.",
+    ),
+    flow_id: str | None = typer.Option(None, "--flow-id", help="Flow ID to inspect; defaults to active flow."),
+    output_format: str = typer.Option("text", "--format", help="Output format: text or json."),
+    max_turns: int = typer.Option(5, "--max-turns", help="Maximum recent turns to include."),
+    max_tasks: int = typer.Option(20, "--max-tasks", help="Maximum open tasks to include."),
+) -> None:
+    resolved_project_path = project_path or "."
+    output_file = _resolve_output_file(resolved_project_path)
+    project_root = Path(resolved_project_path).resolve()
+    resolved_format = str(output_format or "text").strip().lower()
+    if resolved_format not in {"text", "json"}:
+        raise typer.BadParameter("--format must be 'text' or 'json'.")
+
+    memory_service = CodingMemoryService(
+        project_root=project_root,
+        max_turns=max(1, int(max_turns)),
+        max_tasks=max(1, int(max_tasks)),
+    )
+
+    target_flow_id = flow_id or memory_service.get_active_flow_id()
+    if not target_flow_id:
+        _emit_text("No active coding flow found.", output_file=output_file)
+        return
+
+    summary_payload = _build_flow_summary_payload(memory_service, str(target_flow_id))
+    if summary_payload is None:
+        _emit_text(f"Flow not found: {target_flow_id}", output_file=output_file)
+        return
+
+    if resolved_format == "json":
+        _emit_json(summary_payload, output_file=output_file)
+        return
+
+    capture_console = Console(record=True)
+    _render_flow_summary(
+        capture_console,
+        summary_payload,
+        include_checklist=True,
+        include_transitions=True,
+        include_recent_turns=True,
+    )
+    _emit_text(capture_console.export_text().rstrip(), output_file=output_file)
 
 
 @app.command()
@@ -2974,7 +3204,8 @@ def chat(
             worker_client=tool_worker_client,
             repo_root=root,
         )
-        coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
+        if hasattr(coding_agent_instance, "set_tools_manager_orchestrator"):
+            coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
 
     tmp_root: tempfile.TemporaryDirectory | None = None
     tmp_base: Path | None = None
@@ -3197,7 +3428,7 @@ def chat(
                     console.print("[cyan]Flow memory active:[/cyan] new flow will be created on first coding request.")
         if agent_tools:
             console.print(
-                f"[cyan]Plan auto-execute:[/cyan] {'enabled' if auto_execute_plan else 'disabled'} "
+                f"[cyan]Auto-execute:[/cyan] {'enabled' if auto_execute_plan else 'disabled'} "
                 f"(max passes: {auto_execute_max_passes})"
             )
         if diagram_render_images:
@@ -3228,6 +3459,9 @@ def chat(
         active_flow_id: str | None = flow_id
         pending_conflict_question: str | None = None
         pending_ui_selection: dict[str, Any] | None = None
+        pending_prechecklist: dict[str, Any] | None = None
+        pending_prechecklist_source: str = ""
+        pending_prechecklist_warning: str = ""
         session_turns: list[ChatTurnTelemetry] = []
 
         def _base_auto_execute_tool_policy(user_question: str) -> dict[str, Any]:
@@ -3282,11 +3516,15 @@ def chat(
                 worker_client=tool_worker_client,
                 repo_root=root,
             )
-            if coding_agent_instance is not None:
+            if coding_agent_instance is not None and hasattr(coding_agent_instance, "set_tools_manager_orchestrator"):
                 coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
             return tools_manager_orchestrator
 
-        def _run_auto_execute_pipeline(user_question: str) -> tuple[dict[str, Any], str]:
+        def _run_auto_execute_pipeline(
+            user_question: str,
+            *,
+            render_progress: bool = True,
+        ) -> tuple[dict[str, Any], str]:
             if not agent_tools or not auto_execute_plan:
                 return {}, ""
             orchestrator = _ensure_tools_manager_orchestrator()
@@ -3303,6 +3541,9 @@ def chat(
                     "toolsmanager_requests_count": 0,
                     "pass_logs": [],
                     "planner_decisions": [],
+                    "prechecklist": None,
+                    "prechecklist_source": "",
+                    "prechecklist_warning": "",
                 }, ""
             if dir_mode:
                 if not dir_mode_index_dirs:
@@ -3318,6 +3559,9 @@ def chat(
                         "toolsmanager_requests_count": 0,
                         "pass_logs": [],
                         "planner_decisions": [],
+                        "prechecklist": None,
+                        "prechecklist_source": "",
+                        "prechecklist_warning": "",
                     }, ""
                 target_index_dir: Path | None = None
                 target_index_dirs: list[Path] | None = list(dir_mode_index_dirs)
@@ -3350,11 +3594,49 @@ def chat(
                     if lines:
                         flow_context_text = "\n".join(lines)
 
-            console.print(
-                f"[cyan]Auto-executing plan:[/cyan] max passes {auto_execute_max_passes} (same turn, no extra confirmation)."
+            preview_payload: dict[str, Any] = {}
+            if hasattr(orchestrator, "preview_plan"):
+                try:
+                    preview_payload = orchestrator.preview_plan(
+                        request=user_question,
+                        flow_context=flow_context_text,
+                        pass_cap=auto_execute_max_passes,
+                    )
+                except Exception as exc:
+                    _log_exception("tools_manager.preview_plan", exc)
+                    preview_payload = {
+                        "prechecklist": None,
+                        "prechecklist_source": "",
+                        "prechecklist_warning": f"Planner preview failed: {exc}",
+                        "warnings": [],
+                    }
+            else:
+                preview_payload = {
+                    "prechecklist": None,
+                    "prechecklist_source": "",
+                    "prechecklist_warning": "",
+                    "warnings": [],
+                }
+            preview_checklist = (
+                preview_payload.get("prechecklist")
+                if isinstance(preview_payload.get("prechecklist"), dict)
+                else None
             )
+            preview_warning = str(preview_payload.get("prechecklist_warning", "") or "").strip()
+            if render_progress and preview_checklist is not None:
+                _render_prechecklist_preview(
+                    console,
+                    prechecklist=preview_checklist,
+                    warning=preview_warning,
+                )
 
-            def _call(_callbacks: list[BaseCallbackHandler]):
+            if render_progress:
+                console.print(
+                    f"[cyan]Auto-executing plan:[/cyan] max passes {auto_execute_max_passes} (same turn, no extra confirmation)."
+                )
+
+            def _call(callbacks: list[BaseCallbackHandler]):
+                _ = callbacks
                 return orchestrator.run(
                     request=user_question,
                     flow_context=flow_context_text,
@@ -3380,23 +3662,27 @@ def chat(
                 payload = dict(result_obj)
             else:
                 payload = {"answer": str(result_obj)}
+            payload["prechecklist"] = preview_checklist
+            payload["prechecklist_source"] = str(preview_payload.get("prechecklist_source", "") or "")
+            payload["prechecklist_warning"] = preview_warning
             plan_payload = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
             objective = str(plan_payload.get("objective", "")).strip()
-            for item in payload.get("pass_logs", []) if isinstance(payload.get("pass_logs"), list) else []:
-                if not isinstance(item, dict):
-                    continue
-                _render_auto_execute_pass_status(
-                    console,
-                    objective=objective,
-                    pass_index=int(item.get("pass_index", 0) or 0),
-                    pass_cap=auto_execute_max_passes,
-                    planner_step_id=str(item.get("planner_step_id", "") or ""),
-                    planner_step_title=str(item.get("planner_step_title", "") or ""),
-                    planner_decision=str(item.get("planner_decision", "") or ""),
-                    planner_decision_reason=str(item.get("planner_decision_reason", "") or ""),
-                    batch_reason=str(item.get("batch_reason", "") or ""),
-                    expected_progress=str(item.get("expected_progress", "") or ""),
-                )
+            if render_progress:
+                for item in payload.get("pass_logs", []) if isinstance(payload.get("pass_logs"), list) else []:
+                    if not isinstance(item, dict):
+                        continue
+                    _render_auto_execute_pass_status(
+                        console,
+                        objective=objective,
+                        pass_index=int(item.get("pass_index", 0) or 0),
+                        pass_cap=auto_execute_max_passes,
+                        planner_step_id=str(item.get("planner_step_id", "") or ""),
+                        planner_step_title=str(item.get("planner_step_title", "") or ""),
+                        planner_decision=str(item.get("planner_decision", "") or ""),
+                        planner_decision_reason=str(item.get("planner_decision_reason", "") or ""),
+                        batch_reason=str(item.get("batch_reason", "") or ""),
+                        expected_progress=str(item.get("expected_progress", "") or ""),
+                    )
             return payload, debug_tail
 
         def _emit_auto_execute_terminal(
@@ -3485,6 +3771,14 @@ def chat(
                 toolsmanager_requests_count=int(payload.get("toolsmanager_requests_count", 0) or 0),
                 auto_execute_pass_logs=payload.get("pass_logs", []) if isinstance(payload.get("pass_logs"), list) else [],
                 planner_decisions=payload.get("planner_decisions", []) if isinstance(payload.get("planner_decisions"), list) else [],
+                prechecklist_source=str(payload.get("prechecklist_source", "") or ""),
+                prechecklist_steps_count=(
+                    len(payload.get("prechecklist", {}).get("steps", []))
+                    if isinstance(payload.get("prechecklist"), dict)
+                    and isinstance(payload.get("prechecklist", {}).get("steps"), list)
+                    else 0
+                ),
+                prechecklist_warning=str(payload.get("prechecklist_warning", "") or ""),
             )
 
         while True:
@@ -3536,34 +3830,13 @@ def chat(
                     if not summary:
                         console.print("[yellow]No active coding flow.[/yellow]")
                         continue
-                    console.print(f"[bold]Flow[/bold]: {summary['flow_id']}")
-                    console.print(f"[bold]Objective[/bold]: {summary['objective']}")
-                    constraints = summary.get("constraints", []) or []
-                    if constraints:
-                        console.print("[bold]Constraints[/bold]")
-                        for item in constraints:
-                            console.print(f"- {item}")
-                    tasks = summary.get("open_tasks", []) or []
-                    if tasks:
-                        console.print("[bold]Open tasks[/bold]")
-                        for item in tasks:
-                            console.print(f"- [ ] {item}")
-                    decisions = summary.get("recent_decisions", []) or []
-                    if decisions:
-                        console.print("[bold]Recent decisions[/bold]")
-                        for item in decisions:
-                            if isinstance(item, dict):
-                                decision = str(item.get("decision", "")).strip()
-                                rationale = str(item.get("rationale", "")).strip()
-                                if decision and rationale:
-                                    console.print(f"- {decision} ({rationale})")
-                                elif decision:
-                                    console.print(f"- {decision}")
-                    files = summary.get("last_changed_files", []) or []
-                    if files:
-                        console.print("[bold]Last changed files[/bold]")
-                        for item in files[:20]:
-                            console.print(f"- {item}")
+                    _render_flow_summary(
+                        console,
+                        summary,
+                        include_checklist=False,
+                        include_transitions=False,
+                        include_recent_turns=False,
+                    )
                     continue
                 if action == "checklist":
                     summary = coding_agent_instance.flow_summary(active_flow_id)
@@ -3571,16 +3844,7 @@ def chat(
                     if not isinstance(checklist, dict):
                         console.print("[yellow]No checklist stored for the active flow.[/yellow]")
                         continue
-                    console.print("[bold]Flow Checklist[/bold]")
-                    objective = str(checklist.get("objective", "")).strip()
-                    if objective:
-                        console.print(f"- objective: {objective}")
-                    steps = checklist.get("steps") if isinstance(checklist.get("steps"), list) else []
-                    for step in steps[:20]:
-                        if isinstance(step, dict):
-                            console.print(
-                                f"- [{step.get('status', 'pending')}] {step.get('title', 'step')}"
-                            )
+                    _render_flow_checklist(console, checklist)
                     continue
                 if action == "checkpoint":
                     checkpointed = coding_agent_instance.checkpoint_flow(active_flow_id)
@@ -3603,25 +3867,36 @@ def chat(
                 )
                 continue
 
-            if coding_agent_instance is not None and _looks_like_plan_trigger_request(question):
+            if (
+                coding_agent_instance is not None
+                and auto_execute_plan
+                and hasattr(coding_agent_instance, "generate_auto_execute")
+                and _looks_like_plan_trigger_request(question)
+            ):
+                pending_prechecklist = None
+                pending_prechecklist_source = ""
+                pending_prechecklist_warning = ""
+                if hasattr(coding_agent_instance, "preview_execution_checklist"):
+                    try:
+                        preview_payload = coding_agent_instance.preview_execution_checklist(
+                            question,
+                            flow_id=active_flow_id,
+                        )
+                    except Exception as exc:
+                        _log_exception("coding_agent.preview_execution_checklist", exc)
+                        preview_payload = {}
+                    if isinstance(preview_payload, dict):
+                        flow_id_from_preview = preview_payload.get("flow_id")
+                        if isinstance(flow_id_from_preview, str) and flow_id_from_preview.strip():
+                            active_flow_id = flow_id_from_preview.strip()
+                        preview = preview_payload.get("prechecklist")
+                        if isinstance(preview, dict):
+                            pending_prechecklist = preview
+                            pending_prechecklist_source = str(preview_payload.get("prechecklist_source", "") or "")
+                            pending_prechecklist_warning = str(preview_payload.get("prechecklist_warning", "") or "")
                 target_flow = active_flow_id or coding_agent_instance.get_active_flow_id()
                 if isinstance(target_flow, str) and target_flow.strip():
                     active_flow_id = target_flow.strip()
-                    summary = coding_agent_instance.flow_summary(active_flow_id)
-                    checklist = summary.get("checklist") if isinstance(summary, dict) else None
-                    if isinstance(checklist, dict):
-                        console.print("[cyan]Executing active flow plan...[/cyan]")
-                        objective = str(checklist.get("objective", "")).strip()
-                        if objective:
-                            console.print(f"[bold]Plan objective:[/bold] {objective}")
-                        steps = checklist.get("steps") if isinstance(checklist.get("steps"), list) else []
-                        if steps:
-                            console.print("[bold]Checklist[/bold]")
-                            for step in steps[:12]:
-                                if isinstance(step, dict):
-                                    status = str(step.get("status", "pending"))
-                                    title = str(step.get("title", "step"))
-                                    console.print(f"- [{status}] {title}")
 
             if planning_mode:
                 if planning_request is None:
@@ -3709,7 +3984,7 @@ def chat(
             if (
                 _looks_like_edit_request(question)
                 and coding_agent_instance is None
-                and not (agent_tools and auto_execute_plan and tool_worker_process)
+                and not (agent_tools and auto_execute_plan and tool_worker_process and _looks_like_plan_trigger_request(question))
             ):
                 console.print(
                     "[yellow]This chat session is read-only for file edits.[/yellow] "
@@ -3748,7 +4023,7 @@ def chat(
                 and auto_execute_plan
                 and _looks_like_plan_trigger_request(question)
             ):
-                auto_payload, auto_debug_tail = _run_auto_execute_pipeline(question)
+                auto_payload, auto_debug_tail = _run_auto_execute_pipeline(question, render_progress=False)
                 _emit_auto_execute_terminal(
                     user_question=question,
                     payload=auto_payload,
@@ -3781,6 +4056,16 @@ def chat(
                                     pass_cap=auto_execute_max_passes,
                                     callbacks=callbacks,
                                     flow_id=active_flow_id,
+                                    prechecklist_payload=(
+                                        {
+                                            "flow_id": active_flow_id,
+                                            "prechecklist": pending_prechecklist,
+                                            "prechecklist_source": pending_prechecklist_source,
+                                            "prechecklist_warning": pending_prechecklist_warning,
+                                        }
+                                        if isinstance(pending_prechecklist, dict)
+                                        else None
+                                    ),
                                 )
                             return coding_agent_instance.generate_dir_mode(
                                 question,
@@ -3805,6 +4090,16 @@ def chat(
                                     pass_cap=auto_execute_max_passes,
                                     callbacks=callbacks,
                                     flow_id=active_flow_id,
+                                    prechecklist_payload=(
+                                        {
+                                            "flow_id": active_flow_id,
+                                            "prechecklist": pending_prechecklist,
+                                            "prechecklist_source": pending_prechecklist_source,
+                                            "prechecklist_warning": pending_prechecklist_warning,
+                                        }
+                                        if isinstance(pending_prechecklist, dict)
+                                        else None
+                                    ),
                                 )
                             return coding_agent_instance.generate(
                                 question,
@@ -3851,24 +4146,12 @@ def chat(
                 if isinstance(result_flow_id, str) and result_flow_id.strip():
                     active_flow_id = result_flow_id.strip()
                 if execute_plan_now and isinstance(result, dict):
-                    plan_payload = result.get("plan") if isinstance(result.get("plan"), dict) else {}
-                    objective = str(plan_payload.get("objective", "")).strip()
-                    pass_logs = result.get("pass_logs") if isinstance(result.get("pass_logs"), list) else []
-                    for item in pass_logs:
-                        if not isinstance(item, dict):
-                            continue
-                        _render_auto_execute_pass_status(
-                            console,
-                            objective=objective,
-                            pass_index=int(item.get("pass_index", 0) or 0),
-                            pass_cap=auto_execute_max_passes,
-                            planner_step_id=str(item.get("planner_step_id", "") or ""),
-                            planner_step_title=str(item.get("planner_step_title", "") or ""),
-                            planner_decision=str(item.get("planner_decision", "") or ""),
-                            planner_decision_reason=str(item.get("planner_decision_reason", "") or ""),
-                            batch_reason=str(item.get("batch_reason", "") or ""),
-                            expected_progress=str(item.get("expected_progress", "") or ""),
-                        )
+                    if isinstance(pending_prechecklist, dict) and not isinstance(result.get("prechecklist"), dict):
+                        result["prechecklist"] = pending_prechecklist
+                    if pending_prechecklist_source and not str(result.get("prechecklist_source", "")).strip():
+                        result["prechecklist_source"] = pending_prechecklist_source
+                    if pending_prechecklist_warning and not str(result.get("prechecklist_warning", "")).strip():
+                        result["prechecklist_warning"] = pending_prechecklist_warning
                 answer_text, parsed_payload = _extract_structured_answer(answer)
                 payload_sources = []
                 payload_warnings = []
@@ -3994,7 +4277,27 @@ def chat(
                     toolsmanager_requests_count=int((result or {}).get("toolsmanager_requests_count", 0) or 0) if isinstance(result, dict) else 0,
                     auto_execute_pass_logs=(result or {}).get("pass_logs", []) if isinstance(result, dict) else [],
                     planner_decisions=(result or {}).get("planner_decisions", []) if isinstance(result, dict) else [],
+                    prechecklist_source=(
+                        str((result or {}).get("prechecklist_source", "") or "")
+                        if isinstance(result, dict)
+                        else pending_prechecklist_source
+                    ),
+                    prechecklist_steps_count=(
+                        len((result or {}).get("prechecklist", {}).get("steps", []))
+                        if isinstance(result, dict)
+                        and isinstance((result or {}).get("prechecklist"), dict)
+                        and isinstance((result or {}).get("prechecklist", {}).get("steps"), list)
+                        else (len(pending_prechecklist.get("steps", [])) if isinstance(pending_prechecklist, dict) and isinstance(pending_prechecklist.get("steps"), list) else 0)
+                    ),
+                    prechecklist_warning=(
+                        str((result or {}).get("prechecklist_warning", "") or "")
+                        if isinstance(result, dict)
+                        else pending_prechecklist_warning
+                    ),
                 )
+                pending_prechecklist = None
+                pending_prechecklist_source = ""
+                pending_prechecklist_warning = ""
                 if not (answer_only_fallback or answer_only_no_edit or answer_only_auto_execute):
                     _render_coding_sections(
                         console,

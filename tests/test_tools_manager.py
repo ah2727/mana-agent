@@ -132,7 +132,7 @@ def test_tools_manager_stalled_twice_stops_loop(tmp_path: Path, monkeypatch) -> 
         stop_conditions=["done"],
         finalize_action="answer",
     )
-    monkeypatch.setattr(orchestrator, "_plan", lambda **_kwargs: (plan, []))
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
     monkeypatch.setattr(
         orchestrator,
         "_build_batch",
@@ -156,6 +156,56 @@ def test_tools_manager_stalled_twice_stops_loop(tmp_path: Path, monkeypatch) -> 
     assert isinstance(result, AutoExecuteResult)
     assert result.terminal_reason == "stalled_no_actionable_requests"
     assert result.passes == 2
+    assert result.answer
+    assert "terminal_reason=stalled_no_actionable_requests" in result.answer
+
+
+def test_tools_manager_empty_batch_uses_deterministic_request_fallback(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+
+    plan = ToolsPlan(
+        objective="Run",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Inspect key files",
+                "tool_intent": "inspect",
+                "args_hint": "read TODO.md and cli.py",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        stop_conditions=["done"],
+        finalize_action="answer",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(requests=[], continue_after=True, expected_progress="waiting"),
+            [],
+        ),
+    )
+
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+    assert isinstance(result, AutoExecuteResult)
+    assert result.terminal_reason == "pass_cap_reached"
+    assert result.toolsmanager_requests_count == 1
+    assert result.pass_logs
+    assert result.pass_logs[0]["requests_count"] == 1
+    assert result.pass_logs[0]["batch_reason"] == "deterministic_empty_batch_fallback"
+    assert any("deterministic fallback request" in str(item).lower() for item in result.warnings)
 
 
 def test_tools_manager_invalid_request_batch_terminal_reason(tmp_path: Path, monkeypatch) -> None:
@@ -167,7 +217,7 @@ def test_tools_manager_invalid_request_batch_terminal_reason(tmp_path: Path, mon
         stop_conditions=["done"],
         finalize_action="answer",
     )
-    monkeypatch.setattr(orchestrator, "_plan", lambda **_kwargs: (plan, []))
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
     monkeypatch.setattr(orchestrator, "_build_batch", lambda **_kwargs: (None, ["bad batch"]))
 
     result = orchestrator.run(
@@ -184,3 +234,50 @@ def test_tools_manager_invalid_request_batch_terminal_reason(tmp_path: Path, mon
     assert result.terminal_reason == "invalid_request_batch"
     assert "bad batch" in result.warnings
     assert result.passes == 0
+    assert result.answer
+    assert "terminal_reason=invalid_request_batch" in result.answer
+
+
+def test_tools_manager_preview_plan_returns_normalized_prechecklist_without_worker_calls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _BoomWorker:
+        def run_tools(self, _request, on_event=None):  # noqa: ANN001
+            _ = on_event
+            raise AssertionError("preview_plan must not execute worker tools")
+
+    orchestrator = _build_orchestrator(tmp_path)
+    orchestrator.worker_client = _BoomWorker()
+    plan = ToolsPlan(
+        objective="Implement planner flow",
+        steps=[],
+        stop_conditions=["done"],
+        finalize_action="answer",
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_plan_with_source",
+        lambda **_kwargs: (plan, [], "planner"),
+    )
+    preview = orchestrator.preview_plan(request="implement plan.", flow_context=None, pass_cap=4)
+    assert isinstance(preview.get("prechecklist"), dict)
+    assert preview.get("prechecklist_source") == "planner"
+    assert str(preview.get("prechecklist_warning", "")).strip() == ""
+
+
+def test_tools_manager_preview_plan_surfaces_deterministic_fallback_warning(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    plan = ToolsPlan(
+        objective="Fallback objective",
+        steps=[],
+        stop_conditions=["done"],
+        finalize_action="answer",
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_plan_with_source",
+        lambda **_kwargs: (plan, ["planner parse failed"], "deterministic_fallback"),
+    )
+    preview = orchestrator.preview_plan(request="implement plan.", flow_context=None, pass_cap=4)
+    assert preview.get("prechecklist_source") == "deterministic_fallback"
+    assert "deterministic fallback checklist" in str(preview.get("prechecklist_warning", "")).lower()

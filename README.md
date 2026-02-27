@@ -11,11 +11,12 @@
 4. [Quick‑Start Guide](#quick-start-guide)
 5. [Command‑Line Interface (CLI) Reference](#cli-reference)
 6. [Tooling & Integrations](#tooling--integrations)
-7. [Architecture Overview](#architecture-overview)
-8. [Development & Testing](#development--testing)
-9. [Contributing](#contributing)
-10. [License](#license)
-11. [Contact & Support](#contact--support)
+7. [Coding Flows & Debugging](#coding-flows--debugging)
+8. [Architecture Overview](#architecture-overview)
+9. [Development & Testing](#development--testing)
+10. [Contributing](#contributing)
+11. [License](#license)
+12. [Contact & Support](#contact--support)
 
 ---
 
@@ -128,6 +129,35 @@ All commands share common options:
 - `safe_github_search` is a thin wrapper around the public GitHub code search API. It normalizes the response into the same schema as the `search_internet` tool so commands and agents can treat both uniformly.
 - The tool honors `GITHUB_TOKEN` when provided and caps the returned results to five entries to stay within GitHub's rate limits. When a request fails (timeout, rate limit, network), it returns a friendly error payload instead of raising an exception, keeping long-running chats stable.
 - Coding agents that need examples from external projects can now call `github_code_search` to retrieve relevant code snippets before generating answers or patches.
+
+---
+
+## Coding Flows & Debugging
+
+When `chat` runs with `--coding-agent --coding-memory`, the coding agent persists flow state in
+`<project>/.mana_index/chat_memory.sqlite3` so follow-up turns can reuse objective/context/checklists.
+
+Use the new command to inspect flow state outside chat:
+
+```bash
+# Active flow summary
+mana-analyzer flow .
+
+# Explicit flow id as JSON
+mana-analyzer flow . --flow-id <flow_id> --format json
+```
+
+Inside chat, `/flow` helpers are still available:
+
+```text
+/flow show
+/flow checklist
+/flow checkpoint
+/flow reset
+```
+
+Detailed flow schema, planner/fallback lifecycle, and debugging guidance:
+[`docs/coding-flows.md`](docs/coding-flows.md).
 
 ---
 

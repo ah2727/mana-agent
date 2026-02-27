@@ -403,6 +403,93 @@ class CodingAgent:
     def set_tools_manager_orchestrator(self, orchestrator: ToolsManagerOrchestrator | None) -> None:
         self.tools_manager_orchestrator = orchestrator
 
+    @staticmethod
+    def _normalize_prechecklist(checklist: FlowChecklist, *, source: str) -> dict[str, Any]:
+        steps: list[dict[str, str]] = []
+        for item in checklist.steps[:20]:
+            steps.append(
+                {
+                    "id": str(item.id or "").strip() or "step",
+                    "title": str(item.title or "").strip() or "step",
+                    "status": str(item.status or "pending"),
+                }
+            )
+        return {
+            "objective": str(checklist.objective or "").strip(),
+            "steps": steps,
+            "source": str(source or ""),
+        }
+
+    def preview_execution_checklist(
+        self,
+        request: str,
+        *,
+        flow_id: str | None = None,
+        flow_context: str | None = None,
+    ) -> dict[str, Any]:
+        """Build and persist a pre-execution checklist preview for UI rendering."""
+        before = self._git_status_paths()
+        warnings: list[str] = []
+        active_flow_id = flow_id
+        effective_flow_context = flow_context
+
+        if self.coding_memory_enabled and self.coding_memory_service is not None:
+            try:
+                active_flow_id = self.coding_memory_service.ensure_flow(flow_id=flow_id, request=request)
+                self._current_flow_id = active_flow_id
+                if effective_flow_context is None:
+                    effective_flow_context = self.coding_memory_service.build_flow_context(
+                        active_flow_id,
+                        sorted(before),
+                    )
+            except Exception as exc:
+                warnings.append(f"coding memory setup failed: {exc}")
+
+        checklist, plan_warnings, source = self._plan_checklist_with_source(
+            request,
+            flow_context=effective_flow_context,
+        )
+        warnings.extend(plan_warnings)
+        if checklist is None:
+            return {
+                "flow_id": active_flow_id,
+                "flow_context": effective_flow_context,
+                "prechecklist": {"objective": "", "steps": [], "source": "deterministic_fallback"},
+                "prechecklist_source": "deterministic_fallback",
+                "prechecklist_warning": "Planner failed to produce a preview checklist.",
+                "warnings": warnings,
+            }
+
+        prechecklist = self._normalize_prechecklist(checklist, source=source)
+        prechecklist_warning = ""
+        if source == "deterministic_fallback":
+            prechecklist_warning = "Planner parse failed; using deterministic fallback checklist."
+
+        if (
+            self.coding_memory_enabled
+            and self.coding_memory_service is not None
+            and active_flow_id is not None
+        ):
+            try:
+                self.coding_memory_service.persist_preview_checklist(
+                    flow_id=active_flow_id,
+                    user_request=request,
+                    checklist=checklist.model_dump(),
+                    source=source,
+                    warning=prechecklist_warning,
+                )
+            except Exception as exc:
+                warnings.append(f"coding memory preview persistence failed: {exc}")
+
+        return {
+            "flow_id": active_flow_id,
+            "flow_context": effective_flow_context,
+            "prechecklist": prechecklist,
+            "prechecklist_source": source,
+            "prechecklist_warning": prechecklist_warning,
+            "warnings": warnings,
+        }
+
     def generate_auto_execute(
         self,
         request: str,
@@ -416,7 +503,17 @@ class CodingAgent:
         flow_context: str | None = None,
         flow_id: str | None = None,
         callbacks: Sequence[Any] | None = None,
+        prechecklist_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        preview_payload = prechecklist_payload or self.preview_execution_checklist(
+            request,
+            flow_id=flow_id,
+            flow_context=flow_context,
+        )
+        prechecklist = preview_payload.get("prechecklist") if isinstance(preview_payload.get("prechecklist"), dict) else None
+        prechecklist_source = str(preview_payload.get("prechecklist_source", "") or "")
+        prechecklist_warning = str(preview_payload.get("prechecklist_warning", "") or "")
+
         if self.tools_manager_orchestrator is None:
             return {
                 "status": "warning",
@@ -438,12 +535,22 @@ class CodingAgent:
                 "toolsmanager_requests_count": 0,
                 "pass_logs": [],
                 "planner_decisions": [],
+                "prechecklist": prechecklist,
+                "prechecklist_source": prechecklist_source,
+                "prechecklist_warning": prechecklist_warning,
             }
 
         before = self._git_status_paths()
         warnings: list[str] = []
+        preview_warnings = preview_payload.get("warnings") if isinstance(preview_payload.get("warnings"), list) else []
+        warnings.extend(str(item).strip() for item in preview_warnings if str(item).strip())
         active_flow_id = flow_id
         effective_flow_context = flow_context
+        if isinstance(preview_payload.get("flow_id"), str) and str(preview_payload.get("flow_id")).strip():
+            active_flow_id = str(preview_payload.get("flow_id")).strip()
+        if effective_flow_context is None and isinstance(preview_payload.get("flow_context"), str):
+            flow_ctx = str(preview_payload.get("flow_context") or "").strip()
+            effective_flow_context = flow_ctx or None
         if self.coding_memory_enabled and self.coding_memory_service is not None:
             try:
                 active_flow_id = self.coding_memory_service.ensure_flow(flow_id=flow_id, request=request)
@@ -493,6 +600,9 @@ class CodingAgent:
                 "toolsmanager_requests_count": 0,
                 "pass_logs": [],
                 "planner_decisions": [],
+                "prechecklist": prechecklist,
+                "prechecklist_source": prechecklist_source,
+                "prechecklist_warning": prechecklist_warning,
             }
 
         changed_files = sorted(self._git_status_paths().difference(before))
@@ -585,6 +695,9 @@ class CodingAgent:
             "toolsmanager_requests_count": orchestrated.toolsmanager_requests_count,
             "pass_logs": orchestrated.pass_logs,
             "planner_decisions": planner_decisions,
+            "prechecklist": prechecklist,
+            "prechecklist_source": prechecklist_source,
+            "prechecklist_warning": prechecklist_warning,
         }
 
     def _looks_like_edit_request(self, request: str) -> bool:
@@ -727,7 +840,12 @@ class CodingAgent:
             logger.info(line)
             return
 
-    def _plan_checklist(self, request: str, *, flow_context: str | None = None) -> tuple[FlowChecklist | None, list[str]]:
+    def _plan_checklist_with_source(
+        self,
+        request: str,
+        *,
+        flow_context: str | None = None,
+    ) -> tuple[FlowChecklist | None, list[str], str]:
         warnings: list[str] = []
         user_prompt = (
             f"User request:\n{request}\n\n"
@@ -745,7 +863,7 @@ class CodingAgent:
             checklist = self._parse_flow_checklist_json(raw, request=request)
             if len(checklist.steps) > self.plan_max_steps:
                 checklist.steps = checklist.steps[: self.plan_max_steps]
-            return checklist, warnings
+            return checklist, warnings, "planner"
         except (json.JSONDecodeError, ValidationError, TypeError) as exc:
             warnings.append(f"planner parse failed; attempting repair: {exc}")
             try:
@@ -765,21 +883,25 @@ class CodingAgent:
                 checklist = self._parse_flow_checklist_json(repaired_raw, request=request)
                 if len(checklist.steps) > self.plan_max_steps:
                     checklist.steps = checklist.steps[: self.plan_max_steps]
-                return checklist, warnings
+                return checklist, warnings, "planner_repair"
             except Exception as exc2:  # pragma: no cover - deterministic fallback
                 warnings.append(f"planner repair failed: {exc2}")
                 warnings.append("planner fallback: using deterministic checklist")
                 fallback = self._fallback_checklist(request)
                 if len(fallback.steps) > self.plan_max_steps:
                     fallback.steps = fallback.steps[: self.plan_max_steps]
-                return fallback, warnings
+                return fallback, warnings, "deterministic_fallback"
         except Exception as exc:  # pragma: no cover
             warnings.append(f"planner invocation failed: {exc}")
             warnings.append("planner fallback: using deterministic checklist")
             fallback = self._fallback_checklist(request)
             if len(fallback.steps) > self.plan_max_steps:
                 fallback.steps = fallback.steps[: self.plan_max_steps]
-            return fallback, warnings
+            return fallback, warnings, "deterministic_fallback"
+
+    def _plan_checklist(self, request: str, *, flow_context: str | None = None) -> tuple[FlowChecklist | None, list[str]]:
+        checklist, warnings, _source = self._plan_checklist_with_source(request, flow_context=flow_context)
+        return checklist, warnings
 
     @staticmethod
     def _extract_payload(text: str) -> dict[str, Any] | None:

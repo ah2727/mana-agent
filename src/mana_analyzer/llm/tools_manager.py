@@ -67,6 +67,9 @@ class AutoExecuteResult(BaseModel):
     toolsmanager_requests_count: int = 0
     pass_logs: list[dict[str, Any]] = Field(default_factory=list)
     planner_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    prechecklist: dict[str, Any] | None = None
+    prechecklist_source: str = ""
+    prechecklist_warning: str = ""
 
 
 class ToolsManagerOrchestrator:
@@ -347,6 +350,8 @@ class ToolsManagerOrchestrator:
         raw = str(text or "").strip()
         if not raw:
             return None
+        if "\\n" in raw and "\n" not in raw:
+            raw = raw.replace("\\n", "\n")
 
         objective = ""
         extracted_steps: list[dict[str, str]] = []
@@ -469,7 +474,16 @@ class ToolsManagerOrchestrator:
             return self._normalize_plan(parsed, previous_plan=previous_plan)
         except Exception:
             pass
-        return self._plan_from_markdown_text(raw_text, request=request, previous_plan=previous_plan)
+        direct = self._plan_from_markdown_text(raw_text, request=request, previous_plan=previous_plan)
+        if direct is not None:
+            return direct
+        for candidate in self._collect_candidates(raw_text):
+            if not isinstance(candidate, str):
+                continue
+            parsed_text = self._plan_from_markdown_text(candidate, request=request, previous_plan=previous_plan)
+            if parsed_text is not None:
+                return parsed_text
+        return None
 
     def _normalize_batch(self, batch: ToolsManagerBatch, *, planner_step_id: str) -> ToolsManagerBatch:
         requests: list[ToolsManagerRequest] = []
@@ -543,60 +557,26 @@ class ToolsManagerOrchestrator:
         *,
         request: str,
         flow_context: str | None,
-        pass_index: int,
-        pass_cap: int,
-        previous_plan: ToolsPlan | None,
-        pass_logs: Sequence[dict[str, Any]],
-        warnings: Sequence[str],
-        changed_files: Sequence[str],
-        latest_answer: str,
+        pass_index: int = 0,
+        pass_cap: int = 4,
+        previous_plan: ToolsPlan | None = None,
+        pass_logs: Sequence[dict[str, Any]] = (),
+        warnings: Sequence[str] = (),
+        changed_files: Sequence[str] = (),
+        latest_answer: str = "",
     ) -> tuple[ToolsPlan, list[str]]:
-        issues: list[str] = []
-        payload = {
-            "request": request,
-            "flow_context": (flow_context or "none").strip(),
-            "pass_index": int(pass_index),
-            "pass_cap": int(pass_cap),
-            "previous_plan": previous_plan.model_dump() if previous_plan is not None else None,
-            "pass_logs": list(pass_logs)[-4:],
-            "warnings": list(warnings)[-12:],
-            "changed_files": list(changed_files),
-            "latest_answer": str(latest_answer or "")[:1500],
-        }
-        human_prompt = json.dumps(payload, ensure_ascii=False, indent=2)
-
-        raw = self._invoke_model(system_prompt=HEAD_TOOLS_PLANNER_PROMPT, human_prompt=human_prompt)
-        parsed = self.parse_tools_plan(raw, request=request, previous_plan=previous_plan)
-        if parsed is not None:
-            return parsed, issues
-
-        issues.append("head_tools_planner parse failed; attempting repair")
-        repaired_raw = self._invoke_model(
-            system_prompt=HEAD_TOOLS_PLANNER_PROMPT,
-            human_prompt=(
-                "Repair this planner output to strict JSON schema.\n"
-                "Do not add markdown. Return only one JSON object.\n\n"
-                f"Broken output:\n{raw}\n\n"
-                f"Execution payload:\n{human_prompt}"
-            ),
-        )
-        repaired = self.parse_repair(
-            repaired_raw,
-            "plan",
-            request=request,
-            previous_plan=previous_plan,
-        )
-        if isinstance(repaired, ToolsPlan):
-            return repaired, issues
-
-        issues.append("head_tools_planner repair failed; using deterministic fallback")
-        fallback_plan = self._deterministic_fallback_plan(
+        plan, issues, _source = self._plan_with_source(
             request=request,
             flow_context=flow_context,
+            pass_index=pass_index,
+            pass_cap=pass_cap,
             previous_plan=previous_plan,
-            reason="planner_parse_failed",
+            pass_logs=pass_logs,
+            warnings=warnings,
+            changed_files=changed_files,
+            latest_answer=latest_answer,
         )
-        return fallback_plan, issues
+        return plan, issues
 
     def _build_batch(
         self,
@@ -609,7 +589,7 @@ class ToolsManagerOrchestrator:
         pass_logs: Sequence[dict[str, Any]],
         warnings: Sequence[str],
         changed_files: Sequence[str],
-        latest_answer: str,
+        latest_answer: str = "",
     ) -> tuple[ToolsManagerBatch | None, list[str]]:
         issues: list[str] = []
         payload = {
@@ -707,18 +687,6 @@ class ToolsManagerOrchestrator:
         return plan.steps[0] if plan.steps else None
 
     @staticmethod
-    def _verify_completed(batch: ToolsManagerBatch, answer: str) -> bool:
-        lower_answer = str(answer or "").lower()
-        if "verify" in lower_answer or "verified" in lower_answer or "tests" in lower_answer:
-            return True
-        for req in batch.requests:
-            q = str(req.question or "").lower()
-            if any(token in q for token in ("verify", "test", "lint", "mypy", "ruff", "check")):
-                return True
-        expected = str(batch.expected_progress or "").lower()
-        return "verify" in expected
-
-    @staticmethod
     def _planner_decision_row(plan: ToolsPlan, pass_index: int) -> dict[str, Any]:
         step = next((item for item in plan.steps if item.id == plan.current_step_id), None)
         return {
@@ -728,6 +696,209 @@ class ToolsManagerOrchestrator:
             "decision": str(plan.decision or "continue"),
             "decision_reason": str(plan.decision_reason or ""),
         }
+
+    @staticmethod
+    def _truncate_line(value: str, *, limit: int = 220) -> str:
+        text = " ".join(str(value or "").strip().split())
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1].rstrip() + "…"
+
+    def _deterministic_fallback_request(
+        self,
+        *,
+        request: str,
+        flow_context: str | None,
+        plan: ToolsPlan,
+        step: ToolsPlanStep | None,
+        pass_index: int,
+    ) -> ToolsManagerRequest | None:
+        if step is None:
+            return None
+
+        step_title = self._truncate_line(step.title or "current step")
+        step_hint = self._truncate_line(step.args_hint or step.fallback or step.success_signal or "")
+        objective = self._truncate_line(plan.objective or request or "Execute requested plan")
+        flow = self._truncate_line(flow_context or "", limit=320)
+        user_request = self._truncate_line(request or "", limit=320)
+
+        if step.tool_intent == "inspect":
+            directive = (
+                "Inspect repository files for this step using semantic_search/read_file/run_command. "
+                "Gather concrete evidence with file paths and line ranges."
+            )
+        elif step.tool_intent == "search":
+            directive = (
+                "Run targeted repository search for the requested behavior and gather concrete file evidence "
+                "before proposing edits."
+            )
+        elif step.tool_intent == "edit":
+            directive = (
+                "Apply concrete repository edits for this step. Prefer apply_patch first and use write_file fallback "
+                "if patch application fails."
+            )
+        elif step.tool_intent == "verify":
+            directive = (
+                "Verify relevant changes with targeted checks (tests/lint/type checks or focused run_command checks), "
+                "then summarize verification evidence."
+            )
+        else:
+            directive = (
+                "Summarize current status with concrete repository evidence and identify the next actionable step."
+            )
+
+        lines = [
+            f"Deterministic fallback request for planner pass {int(pass_index)}.",
+            f"Objective: {objective}",
+            f"Planner step: {step_title}",
+            f"Intent: {step.tool_intent}",
+            f"Original request: {user_request or '-'}",
+        ]
+        if step_hint:
+            lines.append(f"Step hint: {step_hint}")
+        if flow:
+            lines.append(f"Flow context: {flow}")
+        lines.append(f"Action: {directive}")
+        return ToolsManagerRequest(question="\n".join(lines))
+
+    @staticmethod
+    def _synthesize_terminal_answer(
+        *,
+        terminal_reason: str,
+        pass_logs: Sequence[dict[str, Any]],
+        planner_decisions: Sequence[dict[str, Any]],
+        toolsmanager_requests_count: int,
+    ) -> str:
+        reason = str(terminal_reason or "unknown").strip() or "unknown"
+        passes = len(pass_logs)
+        last_pass = pass_logs[-1] if pass_logs else {}
+        if not isinstance(last_pass, dict):
+            last_pass = {}
+        last_step = str(last_pass.get("planner_step_title", "") or "").strip()
+        decision_reason = ""
+        if planner_decisions:
+            tail = planner_decisions[-1]
+            if isinstance(tail, dict):
+                decision_reason = str(tail.get("decision_reason", "") or "").strip()
+        if not decision_reason:
+            decision_reason = str(last_pass.get("planner_decision_reason", "") or "").strip()
+
+        lines = [
+            "Auto-execute ended without a direct answer from tool runs.",
+            f"terminal_reason={reason}",
+            f"passes={passes}",
+            f"toolsmanager_requests={int(toolsmanager_requests_count)}",
+        ]
+        if last_step:
+            lines.append(f"last_step={last_step}")
+        if decision_reason:
+            lines.append(f"planner_reason={decision_reason}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _normalize_prechecklist(plan: ToolsPlan, *, source: str) -> dict[str, Any]:
+        steps: list[dict[str, str]] = []
+        for item in plan.steps[:20]:
+            steps.append(
+                {
+                    "id": str(item.id or "").strip() or "step",
+                    "title": str(item.title or "").strip() or "step",
+                    "status": str(item.status or "pending"),
+                }
+            )
+        return {
+            "objective": str(plan.objective or "").strip(),
+            "steps": steps,
+            "source": str(source or ""),
+        }
+
+    def preview_plan(
+        self,
+        *,
+        request: str,
+        flow_context: str | None,
+        pass_cap: int,
+    ) -> dict[str, Any]:
+        plan, warnings, source = self._plan_with_source(
+            request=request,
+            flow_context=flow_context,
+            pass_index=0,
+            pass_cap=pass_cap,
+            previous_plan=None,
+            pass_logs=[],
+            warnings=[],
+            changed_files=[],
+            latest_answer="",
+        )
+        warning_text = ""
+        if source == "deterministic_fallback":
+            warning_text = "Planner parse failed; using deterministic fallback checklist."
+        return {
+            "prechecklist": self._normalize_prechecklist(plan, source=source),
+            "prechecklist_source": source,
+            "prechecklist_warning": warning_text,
+            "warnings": warnings,
+        }
+
+    def _plan_with_source(
+        self,
+        *,
+        request: str,
+        flow_context: str | None,
+        pass_index: int = 0,
+        pass_cap: int = 4,
+        previous_plan: ToolsPlan | None = None,
+        pass_logs: Sequence[dict[str, Any]] = (),
+        warnings: Sequence[str] = (),
+        changed_files: Sequence[str] = (),
+        latest_answer: str = "",
+    ) -> tuple[ToolsPlan, list[str], str]:
+        issues: list[str] = []
+        payload = {
+            "request": request,
+            "flow_context": (flow_context or "none").strip(),
+            "pass_index": int(pass_index),
+            "pass_cap": int(pass_cap),
+            "previous_plan": previous_plan.model_dump() if previous_plan is not None else None,
+            "pass_logs": list(pass_logs)[-4:],
+            "warnings": list(warnings)[-12:],
+            "changed_files": list(changed_files),
+            "latest_answer": str(latest_answer or "")[:1500],
+        }
+        human_prompt = json.dumps(payload, ensure_ascii=False, indent=2)
+
+        raw = self._invoke_model(system_prompt=HEAD_TOOLS_PLANNER_PROMPT, human_prompt=human_prompt)
+        parsed = self.parse_tools_plan(raw, request=request, previous_plan=previous_plan)
+        if parsed is not None:
+            return parsed, issues, "planner"
+
+        issues.append("head_tools_planner parse failed; attempting repair")
+        repaired_raw = self._invoke_model(
+            system_prompt=HEAD_TOOLS_PLANNER_PROMPT,
+            human_prompt=(
+                "Repair this planner output to strict JSON schema.\n"
+                "Do not add markdown. Return only one JSON object.\n\n"
+                f"Broken output:\n{raw}\n\n"
+                f"Execution payload:\n{human_prompt}"
+            ),
+        )
+        repaired = self.parse_repair(
+            repaired_raw,
+            "plan",
+            request=request,
+            previous_plan=previous_plan,
+        )
+        if isinstance(repaired, ToolsPlan):
+            return repaired, issues, "planner_repair"
+
+        issues.append("head_tools_planner repair failed; using deterministic fallback")
+        fallback_plan = self._deterministic_fallback_plan(
+            request=request,
+            flow_context=flow_context,
+            previous_plan=previous_plan,
+            reason="planner_parse_failed",
+        )
+        return fallback_plan, issues, "deterministic_fallback"
 
     def run(
         self,
@@ -754,7 +925,7 @@ class ToolsManagerOrchestrator:
         latest_answer = ""
         stalled_passes = 0
 
-        plan, plan_warnings = self._plan(
+        plan, plan_warnings, _source = self._plan_with_source(
             request=request,
             flow_context=flow_context,
             pass_index=0,
@@ -812,6 +983,33 @@ class ToolsManagerOrchestrator:
             if batch is None:
                 terminal_reason = "invalid_request_batch"
                 break
+
+            if plan.decision == "continue" and not batch.requests:
+                fallback_request = self._deterministic_fallback_request(
+                    request=request,
+                    flow_context=flow_context,
+                    plan=plan,
+                    step=step,
+                    pass_index=pass_index,
+                )
+                if fallback_request is not None:
+                    batch = ToolsManagerBatch(
+                        planner_step_id=str(batch.planner_step_id or plan.current_step_id or ""),
+                        batch_reason="deterministic_empty_batch_fallback",
+                        requests=[fallback_request],
+                        continue_after=bool(batch.continue_after),
+                        expected_progress=(
+                            str(batch.expected_progress or "").strip()
+                            or "Execute deterministic fallback request for current planner step."
+                        ),
+                    )
+                    all_warnings.append(
+                        f"toolsmanager emitted empty request batch on pass {int(pass_index)}; using deterministic fallback request"
+                    )
+                else:
+                    all_warnings.append(
+                        f"toolsmanager emitted empty request batch on pass {int(pass_index)} and no deterministic fallback could be derived"
+                    )
 
             request_fingerprints: list[str] = []
             tool_steps_this_pass = 0
@@ -890,7 +1088,7 @@ class ToolsManagerOrchestrator:
                 terminal_reason = "pass_cap_reached"
                 break
 
-            plan, new_plan_warnings = self._plan(
+            plan, new_plan_warnings, _source = self._plan_with_source(
                 request=request,
                 flow_context=flow_context,
                 pass_index=pass_index,
@@ -902,6 +1100,14 @@ class ToolsManagerOrchestrator:
                 latest_answer=latest_answer,
             )
             all_warnings.extend(new_plan_warnings)
+
+        if not str(latest_answer or "").strip():
+            latest_answer = self._synthesize_terminal_answer(
+                terminal_reason=terminal_reason,
+                pass_logs=all_pass_logs,
+                planner_decisions=planner_decisions,
+                toolsmanager_requests_count=toolsmanager_requests_count,
+            )
 
         return AutoExecuteResult(
             answer=latest_answer,

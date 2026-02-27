@@ -368,6 +368,52 @@ class CodingMemoryService:
                     (flow_id, now, decision["decision"], decision["rationale"]),
                 )
 
+    def persist_preview_checklist(
+        self,
+        *,
+        flow_id: str,
+        user_request: str,
+        checklist: dict[str, Any],
+        source: str,
+        warning: str = "",
+    ) -> None:
+        """Persist a planner preview checklist so flow views match pre-execution UI."""
+        now = _utc_now()
+        warnings = [warning] if warning.strip() else []
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO coding_flow_turns (
+                    flow_id, created_at, user_request, effective_prompt, agent_answer,
+                    changed_files_json, warnings_json, static_findings_json, checklist_json, transitions_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    flow_id,
+                    now,
+                    user_request,
+                    f"preview_checklist_source={source}",
+                    "Preview checklist generated.",
+                    json.dumps([]),
+                    json.dumps(warnings),
+                    json.dumps([]),
+                    json.dumps(checklist or {}),
+                    json.dumps(
+                        [
+                            {
+                                "from_phase": "preview",
+                                "to_phase": "preview",
+                                "reason": f"prechecklist_source={source}",
+                            }
+                        ]
+                    ),
+                ),
+            )
+            conn.execute(
+                "UPDATE coding_flows SET updated_at = ?, status = 'active' WHERE flow_id = ?",
+                (now, flow_id),
+            )
+
     def build_flow_context(self, flow_id: str, repo_delta_paths: list[str]) -> str:
         summary = self.get_flow_summary(flow_id)
         if summary is None:
