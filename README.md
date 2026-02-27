@@ -149,6 +149,7 @@ Drop a `settings.toml` into your project root to pin extra options such as `inde
 | `search <query>` | Performs semantic similarity search against the local index and prints the top matches with file/line context. |
 | `ask <question>` | Retrieval-augmented generation: fetches relevant chunks, builds a prompt, calls the LLM, and returns an answer with citations. |
 | `chat` | Starts a REPL where you can ask multiple questions; the session retains context and can invoke tool-aware agents. |
+| `flow <path>` | Prints coding-flow memory summary (objective, checklist, open tasks, decisions, changed files); supports `--flow-id` and `--format json`. |
 | `profile` | Runs the indexing pipeline with `cProfile` and writes a performance report to `profile.txt`. |
 | `lint` | Executes the static analysis checks and prints a summary of warnings/errors. |
 | `dependency-graph` | Generates a dependency graph of the indexed project; use `--format dot|graphml|json`. |
@@ -170,6 +171,20 @@ All commands share common options:
 
 - The REPL session hosts *tool-aware agents* that call LangChain `StructuredTool`s for internet search, repository search, or GitHub search. Each tool is registered through `src/mana_analyzer/tools/__init__.py`, so new tooling becomes available to every agent automatically.
 - Background workers (`src/mana_analyzer/llm/tool_worker_process.py`) manage LLM calls and tool executions. They expose a lightweight payload protocol defined by the `WorkerInitPayload`, `ToolRunRequest`, and `ToolRunResponse` dataclasses, which also power the coding agent's patch submission workflow.
+
+### Tools manager orchestration (planner + execution)
+
+- `ToolsManagerOrchestrator` (`src/mana_analyzer/llm/tools_manager.py`) runs planner-driven multi-pass execution for coding sessions.
+- The **Head Tools Planner** prompt (`HEAD_TOOLS_PLANNER_PROMPT`) decides objective, steps, current step, and terminal decision (`continue|revise|finalize|stop`).
+- The **ToolsManager** prompt (`TOOLSMANAGER_PROMPT`) compiles those steps into 1..N worker-executable tool requests with optional per-request tool-policy overrides.
+- Auto-execute pass logs record planner decision, batch reason, request fingerprints, tool steps, warnings delta, and terminal reason for transparent debugging.
+
+### Tool-first mutation model and patch format
+
+- Coding execution is tool-first: inspect/search first, then edit, then verify. Primary mutation path is `apply_patch`; fallback is `write_file`.
+- Repository mutation tools: `apply_patch`, `write_file`.
+- Repository execution/inspection tools: `read_file`, `semantic_search`, `run_command`.
+- Patch format requirement for `apply_patch`: use git-unified diff (`diff --git`, `---`, `+++`, `@@` hunks). Non-git patch wrappers are intentionally rejected in tool policy and prompts.
 
 ### GitHub code search service
 
@@ -273,4 +288,3 @@ Contributions are welcome! Please follow these steps:
 `mana-analyzer` is released under the **MIT License**. See the `LICENSE` file for full details.
 
 ---
-

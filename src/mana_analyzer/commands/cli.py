@@ -1458,6 +1458,52 @@ def _looks_like_plan_only_answer(answer_text: str, payload: dict | None = None) 
     return ("plan:" in text and "summary" not in text and "next step" not in text)
 
 
+def _sanitize_full_auto_answer_text(
+    answer_text: str,
+    *,
+    changed_files_count: int = 0,
+    terminal_reason: str = "",
+) -> str:
+    text = str(answer_text or "").strip()
+    if not text:
+        reason = str(terminal_reason or "").strip()
+        if reason:
+            if any(token in reason for token in ("blocked", "error", "unavailable", "violation")):
+                return f"Status: blocked ({reason})."
+            return f"Status: executing ({reason})."
+        return "Status: executing."
+
+    lowered = text.lower()
+    confirmation_patterns = (
+        "if you want",
+        "reply \"yes",
+        "reply 'yes",
+        "say yes",
+        "type yes",
+        "let me know if you want",
+    )
+    if any(token in lowered for token in confirmation_patterns):
+        reason = str(terminal_reason or "").strip()
+        if changed_files_count > 0:
+            return "Status: completed."
+        if reason and any(token in reason for token in ("blocked", "error", "unavailable", "violation")):
+            return f"Status: blocked ({reason})."
+        if reason:
+            return f"Status: executing ({reason})."
+        return "Status: executing."
+    return text
+
+
+def _auto_select_ui_option(block: dict[str, Any]) -> dict[str, Any] | None:
+    options = block.get("options")
+    if not isinstance(options, list):
+        return None
+    normalized: list[dict[str, Any]] = [item for item in options if isinstance(item, dict)]
+    if not normalized:
+        return None
+    return normalized[0]
+
+
 def _render_auto_execute_pass_status(
     console: Console,
     *,
@@ -3149,6 +3195,16 @@ def chat(
         max=12,
         help="Maximum planner->toolsmanager execution passes per turn.",
     ),
+    execution_profile: str = typer.Option(
+        "balanced",
+        "--execution-profile",
+        help="Execution profile: full-auto, balanced, conservative.",
+    ),
+    full_auto: bool = typer.Option(
+        False,
+        "--full-auto",
+        help="Alias for --execution-profile full-auto.",
+    ),
     agent_max_steps: int = typer.Option(6, "--agent-max-steps"),
     agent_unlimited: bool = typer.Option(
         False,
@@ -3219,6 +3275,8 @@ def chat(
             "planning_max_questions": planning_max_questions,
             "auto_execute_plan": auto_execute_plan,
             "auto_execute_max_passes": auto_execute_max_passes,
+            "execution_profile": execution_profile,
+            "full_auto": full_auto,
             "agent_max_steps": agent_max_steps,
             "agent_unlimited": agent_unlimited,
             "agent_timeout_seconds": agent_timeout_seconds,
@@ -3234,6 +3292,17 @@ def chat(
         },
     )
     as_json = False
+    if full_auto:
+        execution_profile = "full-auto"
+    execution_profile = str(execution_profile or "balanced").strip().lower()
+    if execution_profile not in {"full-auto", "balanced", "conservative"}:
+        raise typer.BadParameter("--execution-profile must be one of: full-auto, balanced, conservative.")
+
+    if execution_profile == "full-auto":
+        auto_execute_plan = True
+        # Keep user override when they pass a non-default value.
+        if int(auto_execute_max_passes) == 4:
+            auto_execute_max_passes = 10
     planning_question_limit = max(1, min(planning_max_questions, 6))
     auto_execute_max_passes = max(1, min(int(auto_execute_max_passes), 12))
     chat_agent_max_steps = _resolve_agent_max_steps(
@@ -3339,6 +3408,7 @@ def chat(
             require_read_files=max(1, int(coding_require_read_files or settings.coding_require_read_files)),
             repo_only_internet_default=True,
             tool_worker_client=tool_worker_client,
+            full_auto_mode=(execution_profile == "full-auto"),
         )
 
     if coding_agent_instance is not None and auto_execute_plan and tool_worker_client is not None:
@@ -3576,6 +3646,7 @@ def chat(
                 f"[cyan]Auto-execute:[/cyan] {'enabled' if auto_execute_plan else 'disabled'} "
                 f"(max passes: {auto_execute_max_passes})"
             )
+            console.print(f"[cyan]Execution profile:[/cyan] {execution_profile}")
         if diagram_render_images:
             console.print(
                 f"[cyan]Diagram rendering:[/cyan] {diagram_format} -> {resolved_diagram_output_dir}"
@@ -3862,6 +3933,12 @@ def chat(
                 warnings_merged = _merge_warnings(warnings_merged, parsed_payload)
             auto_trace = _coerce_trace_items(payload_trace)
             changed_files = [str(item) for item in payload.get("changed_files", []) if str(item).strip()]
+            if execution_profile == "full-auto":
+                answer_text = _sanitize_full_auto_answer_text(
+                    answer_text,
+                    changed_files_count=len(changed_files),
+                    terminal_reason=str(payload.get("terminal_reason", "") or ""),
+                )
             turn_record = ChatTurnTelemetry(
                 turn_index=len(session_turns) + 1,
                 timestamp=_now_iso(),
@@ -3949,30 +4026,54 @@ def chat(
                 break
 
             if pending_ui_selection is not None:
-                selection_kind, selection_payload = _resolve_ui_selection_input(pending_ui_selection, question)
-                selection_id = str(pending_ui_selection.get("id", "selection") or "selection")
-
-                if selection_kind == "invalid":
-                    console.print("[yellow]Invalid selection. Choose by number, option id, or label.[/yellow]")
-                    _render_selection_block(console, pending_ui_selection)
-                    continue
-
-                if selection_kind == "free_text":
-                    raw_text = str((selection_payload or {}).get("text", "") or "").replace('"', '\\"')
-                    question = (
-                        f'User provided free-text response "{raw_text}" '
-                        f'for selection "{selection_id}". Continue accordingly.'
-                    )
-                    pending_ui_selection = None
+                if execution_profile == "full-auto":
+                    option = _auto_select_ui_option(pending_ui_selection)
+                    selection_id = str(pending_ui_selection.get("id", "selection") or "selection")
+                    if option is not None:
+                        option_id = str(option.get("id", "") or "").replace('"', '\\"')
+                        value = str(option.get("value", option_id) or "").replace('"', '\\"')
+                        question = (
+                            f'User selected "{option_id}" for selection "{selection_id}" '
+                            f'(value="{value}") in full-auto mode. Continue accordingly.'
+                        )
+                        logger.info(
+                            "Full-auto selection resolution",
+                            extra={"selection_id": selection_id, "option_id": option_id},
+                        )
+                        pending_ui_selection = None
+                    else:
+                        logger.info(
+                            "Full-auto selection dropped (no options)",
+                            extra={"selection_id": selection_id},
+                        )
+                        pending_ui_selection = None
+                if pending_ui_selection is None:
+                    pass
                 else:
-                    option = selection_payload or {}
-                    option_id = str(option.get("id", "") or "").replace('"', '\\"')
-                    value = str(option.get("value", option_id) or "").replace('"', '\\"')
-                    question = (
-                        f'User selected "{option_id}" for selection "{selection_id}" '
-                        f'(value="{value}"). Continue accordingly.'
-                    )
-                    pending_ui_selection = None
+                    selection_kind, selection_payload = _resolve_ui_selection_input(pending_ui_selection, question)
+                    selection_id = str(pending_ui_selection.get("id", "selection") or "selection")
+
+                    if selection_kind == "invalid":
+                        console.print("[yellow]Invalid selection. Choose by number, option id, or label.[/yellow]")
+                        _render_selection_block(console, pending_ui_selection)
+                        continue
+
+                    if selection_kind == "free_text":
+                        raw_text = str((selection_payload or {}).get("text", "") or "").replace('"', '\\"')
+                        question = (
+                            f'User provided free-text response "{raw_text}" '
+                            f'for selection "{selection_id}". Continue accordingly.'
+                        )
+                        pending_ui_selection = None
+                    else:
+                        option = selection_payload or {}
+                        option_id = str(option.get("id", "") or "").replace('"', '\\"')
+                        value = str(option.get("value", option_id) or "").replace('"', '\\"')
+                        question = (
+                            f'User selected "{option_id}" for selection "{selection_id}" '
+                            f'(value="{value}"). Continue accordingly.'
+                        )
+                        pending_ui_selection = None
 
             if coding_agent_instance is not None and question.startswith("/flow"):
                 parts = question.strip().split()
@@ -4019,11 +4120,19 @@ def chat(
                 )
                 continue
 
+            plan_trigger_request = _looks_like_plan_trigger_request(question)
+            force_auto_execute_edit = bool(
+                execution_profile == "full-auto"
+                and coding_agent_instance is not None
+                and auto_execute_plan
+                and _looks_like_edit_request(question)
+            )
+
             if (
                 coding_agent_instance is not None
                 and auto_execute_plan
                 and hasattr(coding_agent_instance, "generate_auto_execute")
-                and _looks_like_plan_trigger_request(question)
+                and (plan_trigger_request or force_auto_execute_edit)
             ):
                 pending_prechecklist = None
                 pending_prechecklist_source = ""
@@ -4148,7 +4257,7 @@ def chat(
                 coding_agent_instance is not None
                 and coding_memory
                 and _looks_like_edit_request(question)
-                and not _looks_like_plan_trigger_request(question)
+                and not plan_trigger_request
             ):
                 if pending_conflict_question is not None:
                     choice = question.strip().lower()
@@ -4162,12 +4271,18 @@ def chat(
                         continue
                     pending_conflict_question = None
                 elif active_flow_id and coding_agent_instance.is_conflicting_request(question, active_flow_id):
-                    pending_conflict_question = question
-                    console.print(
-                        "[yellow]This request appears to diverge from the active flow.[/yellow] "
-                        "Type [bold]continue[/bold] to keep current flow or [bold]new[/bold] to start a new flow."
-                    )
-                    continue
+                    if execution_profile == "full-auto":
+                        logger.info(
+                            "Full-auto flow conflict auto-continued",
+                            extra={"flow_id": active_flow_id, "question": question},
+                        )
+                    else:
+                        pending_conflict_question = question
+                        console.print(
+                            "[yellow]This request appears to diverge from the active flow.[/yellow] "
+                            "Type [bold]continue[/bold] to keep current flow or [bold]new[/bold] to start a new flow."
+                        )
+                        continue
 
             if (
                 coding_agent_instance is None
@@ -4188,7 +4303,7 @@ def chat(
             # ==========================================================
             if coding_agent_instance is not None:
                 cb = RichToolCallbackHandler(show_inputs=True)
-                execute_plan_now = bool(auto_execute_plan and _looks_like_plan_trigger_request(question))
+                execute_plan_now = bool(auto_execute_plan and (plan_trigger_request or force_auto_execute_edit))
 
                 try:
                     if dir_mode:
@@ -4305,6 +4420,16 @@ def chat(
                     if pending_prechecklist_warning and not str(result.get("prechecklist_warning", "")).strip():
                         result["prechecklist_warning"] = pending_prechecklist_warning
                 answer_text, parsed_payload = _extract_structured_answer(answer)
+                if execution_profile == "full-auto" and execute_plan_now:
+                    answer_text = _sanitize_full_auto_answer_text(
+                        answer_text,
+                        changed_files_count=len([str(item) for item in changed if str(item).strip()]),
+                        terminal_reason=(
+                            str((result or {}).get("auto_execute_terminal_reason", "") or "")
+                            if isinstance(result, dict)
+                            else ""
+                        ),
+                    )
                 payload_sources = []
                 payload_warnings = []
                 payload_trace = []

@@ -29,6 +29,7 @@ from mana_analyzer.llm.prompts import (
     CODING_AGENT_RECOGNITION_PROMPT,
     CODING_FLOW_MEMORY_PROMPT,
     CODING_FLOW_PLANNER_PROMPT,
+    FULL_AUTO_EXECUTION_PROMPT,
 )
 from mana_analyzer.llm.tool_worker_process import (
     ToolRunRequest,
@@ -50,7 +51,7 @@ Rules:
 - Keep internet search calls minimal; do not repeat near-identical search queries.
 - Prefer apply_patch (unified diff) for edits to existing files.
 - Use write_file only for new files or when explicitly asked to overwrite.
-- Only modify files under src/ and tests/ unless the user explicitly asks otherwise.
+- You may modify any file under the repository root when needed for the request.
 - After changes, aim for clean static checks; avoid unused imports and obvious style issues.
 - When you create new public functions/classes, add docstrings and type hints.
 
@@ -439,6 +440,7 @@ class CodingAgent:
         require_read_files: int = 2,
         repo_only_internet_default: bool = True,
         tool_worker_client: ToolWorkerClient | None = None,
+        full_auto_mode: bool = False,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url
@@ -456,6 +458,7 @@ class CodingAgent:
         self.require_read_files = max(1, int(require_read_files))
         self.repo_only_internet_default = bool(repo_only_internet_default)
         self.tool_worker_client = tool_worker_client
+        self.full_auto_mode = bool(full_auto_mode)
         self.tools_manager_orchestrator: ToolsManagerOrchestrator | None = None
 
         planner_kwargs = {
@@ -859,6 +862,8 @@ class CodingAgent:
         prompt = self.system_prompt
         if self._looks_like_edit_request(request):
             prompt = f"{prompt}\n\n{CODING_AGENT_RECOGNITION_PROMPT}"
+        if self.full_auto_mode:
+            prompt = f"{prompt}\n\n{FULL_AUTO_EXECUTION_PROMPT}"
         if flow_context:
             prompt = (
                 f"{prompt}\n\n{CODING_FLOW_MEMORY_PROMPT}\n\n"

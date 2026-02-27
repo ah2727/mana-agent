@@ -4,7 +4,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from mana_analyzer.analysis.models import AskResponse, AskResponseWithTrace, Finding, SearchHit
-from mana_analyzer.commands.cli import app
+from mana_analyzer.commands.cli import _sanitize_full_auto_answer_text, app
 
 runner = CliRunner()
 
@@ -1974,3 +1974,161 @@ def test_chat_selection_flow_works_in_normal_agent_tools_path(monkeypatch, tmp_p
     assert _SelectionAskService.calls[1] == (
         'User selected "two" for selection "normal_select" (value="two"). Continue accordingly.'
     )
+
+
+def test_sanitize_full_auto_answer_text_replaces_confirmation_prompts() -> None:
+    text = "If you want, I can continue with more edits. Reply yes to continue."
+    cleaned = _sanitize_full_auto_answer_text(text, changed_files_count=0, terminal_reason="pass_cap_reached")
+    assert cleaned.startswith("Status: executing")
+
+
+def test_chat_full_auto_profile_forces_auto_execute_for_edit_requests(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        auto_calls: list[dict[str, object]] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-fa-1"
+
+        def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate_auto_execute(self, *_args: object, **kwargs: object) -> dict:
+            _FakeCodingAgent.auto_calls.append(dict(kwargs))
+            return {
+                "answer": "done",
+                "changed_files": ["src/example.py"],
+                "warnings": [],
+                "diff": "diff --git a/src/example.py b/src/example.py\n",
+                "flow_id": self.active,
+                "plan": {"objective": "Implement request", "steps": []},
+                "progress": {"phase": "answer", "why": "complete"},
+                "checklist": {"done": 1, "pending": 0, "blocked": 0, "total": 1},
+                "actions_taken": [],
+                "next_step": "done",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "completed",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:  # pragma: no cover - should not be used
+            raise AssertionError("full-auto should route edit requests to generate_auto_execute")
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:  # pragma: no cover - should not be used
+            raise AssertionError("full-auto should route edit requests to generate_auto_execute")
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent", "--execution-profile", "full-auto"],
+        input="please patch src/example.py\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeCodingAgent.auto_calls
+    assert int(_FakeCodingAgent.auto_calls[0].get("pass_cap", 0) or 0) == 10
+    assert "Execution profile:" in result.stdout
+    assert "full-auto" in result.stdout
+
+
+def test_chat_full_auto_conflict_is_auto_continued(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        auto_calls = 0
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-conflict-1"
+
+        def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return True
+
+        def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:
+            _FakeCodingAgent.auto_calls += 1
+            return {
+                "answer": "done",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "Implement request", "steps": []},
+                "progress": {"phase": "answer", "why": "complete"},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "completed",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent", "--execution-profile", "full-auto"],
+        input="please modify src/example.py\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeCodingAgent.auto_calls == 1
+    assert "This request appears to diverge from the active flow." not in result.stdout

@@ -197,6 +197,17 @@ When using the apply_patch tool, you MUST provide a git-unified diff that `git a
 
 """.strip()
 
+FULL_AUTO_EXECUTION_PROMPT = """
+Full-auto execution mode is enabled.
+
+Rules:
+- Do not ask for per-step confirmation.
+- Do not output prompts such as "If you want, I can..." or "Reply yes to continue".
+- Continue executing until done, blocked, or pass budget is exhausted.
+- Ask the user only for true blockers: missing credentials/secrets, missing target identifiers/paths, or high-risk out-of-scope actions.
+- End each response with explicit status language: executing, blocked, or completed.
+""".strip()
+
 CODING_FLOW_MEMORY_PROMPT = """
 Coding flow memory (persisted project context):
 - Keep continuity with the current objective and previously locked constraints.
@@ -309,6 +320,7 @@ __all__ = [
     "PLANNING_SYSTEM_GUIDANCE",
     "PLANNING_QUESTION_SYSTEM_PROMPT",
     "CODING_AGENT_RECOGNITION_PROMPT",
+    "FULL_AUTO_EXECUTION_PROMPT",
     "CODING_FLOW_MEMORY_PROMPT",
     "CODING_FLOW_PLANNER_PROMPT",
     "HEAD_TOOLS_PLANNER_PROMPT",

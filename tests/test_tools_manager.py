@@ -281,3 +281,84 @@ def test_tools_manager_preview_plan_surfaces_deterministic_fallback_warning(tmp_
     preview = orchestrator.preview_plan(request="implement plan.", flow_context=None, pass_cap=4)
     assert preview.get("prechecklist_source") == "deterministic_fallback"
     assert "deterministic fallback checklist" in str(preview.get("prechecklist_warning", "")).lower()
+
+
+def test_tools_manager_retries_conversational_finalize_without_edits(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+
+    first_plan = ToolsPlan(
+        objective="Run",
+        steps=[],
+        decision="finalize",
+        decision_reason="If you want, I can continue with edits.",
+        stop_conditions=["done"],
+        finalize_action="Reply yes to continue.",
+    )
+    second_plan = ToolsPlan(
+        objective="Run",
+        steps=[],
+        decision="finalize",
+        decision_reason="Completed.",
+        stop_conditions=["done"],
+        finalize_action="Done.",
+    )
+    calls = {"count": 0}
+
+    def _plan_with_source(**_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return first_plan, [], "planner"
+        return second_plan, [], "planner"
+
+    monkeypatch.setattr(orchestrator, "_plan_with_source", _plan_with_source)
+    monkeypatch.setattr(
+        orchestrator,
+        "_deterministic_fallback_plan",
+        lambda **_kwargs: ToolsPlan(
+            objective="Run",
+            steps=[
+                {
+                    "id": "s1",
+                    "title": "Inspect files",
+                    "tool_intent": "inspect",
+                    "args_hint": "read_file",
+                    "success_signal": "context gathered",
+                    "fallback": "search",
+                    "status": "in_progress",
+                }
+            ],
+            current_step_id="s1",
+            decision="continue",
+            decision_reason="forced retry",
+            stop_conditions=["done"],
+            finalize_action="done",
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="retry",
+                requests=[{"question": "Inspect relevant files and continue execution."}],
+                continue_after=True,
+                expected_progress="retry progress",
+            ),
+            [],
+        ),
+    )
+
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=2,
+    )
+    assert result.toolsmanager_requests_count == 1
+    assert any("planner_finalize_conversational_without_edits" in str(item) for item in result.warnings)

@@ -762,6 +762,31 @@ class ToolsManagerOrchestrator:
         return ToolsManagerRequest(question="\n".join(lines))
 
     @staticmethod
+    def _looks_like_conversational_terminal(text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        patterns = (
+            "if you want",
+            "reply \"yes",
+            "reply 'yes",
+            "let me know if you want",
+            "if you want, i can",
+            "if you want i can",
+            "say yes",
+            "type yes",
+        )
+        return any(token in lowered for token in patterns)
+
+    @classmethod
+    def _is_blocked_terminal_plan(cls, plan: ToolsPlan) -> bool:
+        if str(plan.decision or "").strip().lower() == "stop":
+            return True
+        fields = [str(plan.decision_reason or ""), str(plan.finalize_action or "")]
+        lowered = " ".join(fields).lower()
+        return any(token in lowered for token in ("blocked", "missing credential", "permission denied", "unavailable"))
+
+    @staticmethod
     def _synthesize_terminal_answer(
         *,
         terminal_reason: str,
@@ -947,6 +972,32 @@ class ToolsManagerOrchestrator:
             planner_decisions.append(planner_row)
 
             if plan.decision in {"finalize", "stop"}:
+                if (
+                    plan.decision == "finalize"
+                    and not changed_files
+                    and not self._is_blocked_terminal_plan(plan)
+                    and (
+                        self._looks_like_conversational_terminal(plan.finalize_action)
+                        or self._looks_like_conversational_terminal(plan.decision_reason)
+                    )
+                    and pass_index < pass_cap
+                ):
+                    all_warnings.append(
+                        "planner_finalize_conversational_without_edits; forcing another execution pass"
+                    )
+                    plan = self._deterministic_fallback_plan(
+                        request=(
+                            f"{request}\n\n"
+                            "Full-auto continuation directive:\n"
+                            "- Do not ask for confirmation.\n"
+                            "- Continue with concrete file inspection/edits/verification.\n"
+                            "- Return blocked only for true blockers."
+                        ),
+                        flow_context=flow_context,
+                        previous_plan=plan,
+                        reason="conversational_terminal_retry",
+                    )
+                    continue
                 terminal_reason = "planner_finalize" if plan.decision == "finalize" else "planner_stop"
                 if not latest_answer:
                     latest_answer = str(plan.finalize_action or "").strip()
