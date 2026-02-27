@@ -181,6 +181,8 @@ class CodingAgent:
         raw = str(text or "").strip()
         if not raw:
             return None
+        if "\\n" in raw and "\n" not in raw:
+            raw = raw.replace("\\n", "\n")
         steps: list[str] = []
         objective = ""
         for line in raw.splitlines():
@@ -244,14 +246,77 @@ class CodingAgent:
         return None
 
     @staticmethod
+    def _strip_code_fence(text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw.startswith("```"):
+            return raw
+        lines = raw.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            return "\n".join(lines[1:-1]).strip()
+        return raw
+
+    @classmethod
+    def _collect_checklist_candidates(cls, raw_text: str) -> list[Any]:
+        pending: list[Any] = [raw_text]
+        candidates: list[Any] = []
+        seen_text: set[str] = set()
+        seen_ids: set[int] = set()
+
+        while pending:
+            item = pending.pop(0)
+            if isinstance(item, str):
+                text = item.strip()
+                if not text or text in seen_text:
+                    continue
+                seen_text.add(text)
+                candidates.append(text)
+
+                unwrapped = cls._strip_code_fence(text)
+                if unwrapped and unwrapped not in seen_text:
+                    pending.append(unwrapped)
+
+                obj_text = cls._extract_json_object_text(text)
+                if obj_text and obj_text not in seen_text:
+                    pending.append(obj_text)
+
+                parsed = cls._parse_json_or_literal(text)
+                if parsed is not None:
+                    pending.append(parsed)
+                continue
+
+            if isinstance(item, dict):
+                marker = id(item)
+                if marker in seen_ids:
+                    continue
+                seen_ids.add(marker)
+                candidates.append(item)
+
+                for key in ("answer", "content", "text", "message", "output", "payload", "data", "raw"):
+                    if key in item:
+                        pending.append(item.get(key))
+                for value in item.values():
+                    if isinstance(value, (dict, list)):
+                        pending.append(value)
+                    elif isinstance(value, str) and len(value) <= 20000:
+                        pending.append(value)
+                continue
+
+            if isinstance(item, list):
+                marker = id(item)
+                if marker in seen_ids:
+                    continue
+                seen_ids.add(marker)
+                candidates.append(item)
+                pending.extend(item)
+
+        return candidates
+
+    @staticmethod
     def _extract_json_object_text(text: str) -> str | None:
         raw = str(text or "").strip()
         if not raw:
             return None
-        if raw.startswith("```"):
-            lines = raw.splitlines()
-            if len(lines) >= 3 and lines[-1].strip() == "```":
-                raw = "\n".join(lines[1:-1]).strip()
+        raw = CodingAgent._strip_code_fence(raw)
         if raw.startswith("{") and raw.endswith("}"):
             return raw
         start = raw.find("{")
@@ -285,23 +350,31 @@ class CodingAgent:
     @classmethod
     def _parse_flow_checklist_json(cls, text: str, request: str = "") -> FlowChecklist:
         raw = str(text or "").strip()
-        parsed_root = cls._parse_json_or_literal(raw)
-        if parsed_root is not None:
-            checklist = cls._coerce_checklist_from_obj(parsed_root, request=request)
-            if checklist is not None:
-                return checklist
+        for candidate in cls._collect_checklist_candidates(raw):
+            if isinstance(candidate, (dict, list)):
+                try:
+                    checklist = cls._coerce_checklist_from_obj(candidate, request=request)
+                except (ValidationError, TypeError, ValueError):
+                    checklist = None
+                if checklist is not None:
+                    return checklist
+                continue
 
-        candidate = cls._extract_json_object_text(raw)
-        if candidate is not None:
+            if not isinstance(candidate, str):
+                continue
+
             parsed_candidate = cls._parse_json_or_literal(candidate)
             if parsed_candidate is not None:
-                checklist = cls._coerce_checklist_from_obj(parsed_candidate, request=request)
+                try:
+                    checklist = cls._coerce_checklist_from_obj(parsed_candidate, request=request)
+                except (ValidationError, TypeError, ValueError):
+                    checklist = None
                 if checklist is not None:
                     return checklist
 
-        text_checklist = cls._checklist_from_plan_text(raw, request=request)
-        if text_checklist is not None:
-            return text_checklist
+            text_checklist = cls._checklist_from_plan_text(candidate, request=request)
+            if text_checklist is not None:
+                return text_checklist
 
         raise json.JSONDecodeError("No checklist payload found", raw, 0)
 
@@ -356,7 +429,7 @@ class CodingAgent:
         repo_root: Path,
         ask_agent: AskAgentLike,
         base_url: str | None = None,
-        allowed_prefixes: Optional[Sequence[str]] = ("src/", "tests/"),
+        allowed_prefixes: Optional[Sequence[str]] = ("src/", "tests/", ""),
         system_prompt: str = CODING_SYSTEM_PROMPT,
         coding_memory_service: CodingMemoryService | None = None,
         coding_memory_enabled: bool = True,

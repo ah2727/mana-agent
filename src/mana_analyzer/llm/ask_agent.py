@@ -600,29 +600,13 @@ class AskAgent:
             query=question,
             k=k,
         )
-
+        presearch_warnings = list(warnings or [])
         if not sources:
-            # If your project has AskResponseWithTrace model, return it.
-            # Otherwise return a simple dict-like fallback.
-            try:
-                from mana_analyzer.analysis.models import AskResponseWithTrace  # type: ignore
-
-                return AskResponseWithTrace(
-                    answer="No relevant indexed code context found across indexes.",
-                    sources=[],
-                    source_groups=[],
-                    warnings=warnings or [],
-                    mode="agent-tools",
-                    trace=[],
-                )
-            except Exception:
-                return {
-                    "answer": "No relevant indexed code context found across indexes.",
-                    "sources": [],
-                    "warnings": warnings or [],
-                    "mode": "agent-tools",
-                    "trace": [],
-                }
+            # Do not short-circuit on empty retrieval: greenfield/bootstrap requests
+            # can still be satisfied via tool calls (run_command/write_file/apply_patch).
+            presearch_warnings.append(
+                "No indexed hits found across indexes; continuing with tool loop."
+            )
 
         # 2) Choose best index based on highest top-hit score per index bucket
         # We infer which index a hit belongs to by matching hit.file_path under index_dir.parent
@@ -659,6 +643,7 @@ class AskAgent:
             k=k,
             max_steps=max_steps,
             timeout_seconds=timeout_seconds,
+            index_dirs=resolved_indexes,
             callbacks=callbacks,
             tool_policy=tool_policy,
             **kwargs,
@@ -668,11 +653,30 @@ class AskAgent:
         # (works for AskResponseWithTrace dataclass-like objects)
         try:
             if hasattr(result, "sources"):
-                result.sources = sources
+                existing_sources = list(getattr(result, "sources", []) or [])
+                merged_sources = sorted(
+                    {
+                        (
+                            item.file_path,
+                            item.start_line,
+                            item.end_line,
+                            item.symbol_name,
+                        ): item
+                        for item in [*existing_sources, *list(sources)]
+                    }.values(),
+                    key=lambda item: (
+                        -float(getattr(item, "score", 0.0)),
+                        item.file_path,
+                        item.start_line,
+                        item.end_line,
+                        item.symbol_name,
+                    ),
+                )
+                result.sources = merged_sources
             if hasattr(result, "warnings"):
                 result.warnings = list(getattr(result, "warnings", []) or [])
-                if warnings:
-                    result.warnings.extend(warnings)
+                if presearch_warnings:
+                    result.warnings.extend(presearch_warnings)
             if hasattr(result, "mode") and getattr(result, "mode", None):
                 # keep existing mode
                 pass

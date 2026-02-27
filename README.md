@@ -8,15 +8,18 @@
 1. [Overview](#overview)
 2. [Features](#features)
 3. [Installation](#installation)
-4. [Quick‑Start Guide](#quick-start-guide)
-5. [Command‑Line Interface (CLI) Reference](#cli-reference)
-6. [Tooling & Integrations](#tooling--integrations)
-7. [Coding Flows & Debugging](#coding-flows--debugging)
-8. [Architecture Overview](#architecture-overview)
-9. [Development & Testing](#development--testing)
-10. [Contributing](#contributing)
-11. [License](#license)
-12. [Contact & Support](#contact--support)
+4. [Quick-Start Guide](#quick-start-guide)
+5. [Configuration & Environment Variables](#configuration--environment-variables)
+6. [Command-Line Interface (CLI) Reference](#command-line-interface-cli-reference)
+7. [CLI Workflows & Diagrams](#cli-workflows--diagrams)
+8. [Tooling & Integrations](#tooling--integrations)
+9. [FAQ & Troubleshooting](#faq--troubleshooting)
+10. [Coding Flows & Debugging](#coding-flows--debugging)
+11. [Architecture Overview](#architecture-overview)
+12. [Development & Testing](#development--testing)
+13. [Contributing](#contributing)
+14. [License](#license)
+15. [Contact & Support](#contact--support)
 
 ---
 
@@ -51,6 +54,21 @@ The project is deliberately modular: the CLI, core services, LLM wrappers, parse
 
 ---
 
+### Feature Spotlight
+
+#### Incremental indexing keeps every run fast
+Only changed or new files are re-embedded, which lets you refresh large repositories without reprocessing everything. The pipeline still walks the tree with language-aware chunkers and hands the resulting vectors to FAISS through the shared index service.
+
+#### Tool-aware agents keep reasoning grounded
+`AskAgent` and the coding agent integrate lan-chain tools so their answers always cite real files and line ranges. Logs contain tool traces, decisions, and warnings, giving you a transparent audit trail of every suggestion.
+
+#### Semantic search plus structured reporting
+FAISS-backed similarity search pairs with the static analyzer suite, dependency reports, and optional LLM describe operations so you get both precise hits and human-friendly summaries. Exportable Markdown and JSON reports make it easy to surface findings in CI or architecture reviews.
+
+#### Security, logging, and observability coverage
+Safety checks, `pip list --outdated`, and the `security-scan` command share the same orchestrator, so compliance is just another option flag. `LlmRunLogger` records chat turns under `.mana_llm_logs` so you can replay tool steps without rerunning a session.
+
+
 ## Installation
 
 ```bash
@@ -67,6 +85,11 @@ The package declares the following optional extras:
 - `dev` – testing, linting, and additional development tools.
 - `faiss-gpu` – GPU-accelerated FAISS (requires CUDA).
 - `security` – `safety` for vulnerability scanning.
+
+Contributor references:
+
+- Optional dependency compatibility/install matrix: [`docs/optional-deps.md`](docs/optional-deps.md)
+- Debugging notes (including chat-memory schema and flow rules): [`docs/debugging.md`](docs/debugging.md)
 
 Make sure you have an OpenAI-compatible API key available, e.g.:
 ```bash
@@ -97,6 +120,27 @@ All commands accept a `--verbose` flag for more detailed output and a `--config`
 
 ---
 
+## Configuration & Environment Variables
+
+`mana-analyzer` relies on `pydantic-settings`, so you can override values via shell exports, `settings.toml`, or a `.env` file. Key settings live in `src/mana_analyzer/config/settings.py` and expose sensible defaults that make OpenAI-compatible runs breeze.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | *required* | API key consumed by both chat and repair flows. |
+| `OPENAI_BASE_URL` | `None` | Optional custom endpoint for Azure, LangChain, or self-hosted models. |
+| `OPENAI_CHAT_MODEL` | `gpt-4.1-mini` | Default chat model for `ask` and `chat`. |
+| `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | Embedding model used by FAISS and search. |
+| `DEFAULT_TOP_K` | `8` | Search depth when `--k` is omitted. |
+| `CODING_FLOW_MAX_TURNS` | `5` | Max saved turns when `--coding-memory` is enabled. |
+| `CODING_FLOW_MAX_TASKS` | `20` | Max open tasks tracked in each flow. |
+| `CODING_PLAN_MAX_STEPS` | `8` | Default planning budget for the coding agent. |
+| `CODING_SEARCH_BUDGET` | `4` | Default semantic search budget per plan. |
+| `CODING_READ_BUDGET` | `6` | Default number of files the agent must inspect. |
+| `CODING_REQUIRE_READ_FILES` | `2` | Minimum required read files before edits. |
+
+Drop a `settings.toml` into your project root to pin extra options such as `index_dir`, logging detail, or tool-worker orchestration. Optional extras and compatibility guidance live in [`docs/optional-deps.md`](docs/optional-deps.md), which helps you evaluate GPU FAISS, security tooling, and other enhancers before rolling them into production.
+
+
 ## Command-Line Interface (CLI) Reference
 
 | Command | Description |
@@ -109,6 +153,9 @@ All commands accept a `--verbose` flag for more detailed output and a `--config`
 | `lint` | Executes the static analysis checks and prints a summary of warnings/errors. |
 | `dependency-graph` | Generates a dependency graph of the indexed project; use `--format dot|graphml|json`. |
 | `security-scan` | Runs `safety` against the project's dependencies and reports known vulnerabilities. |
+
+### `index` — build or refresh an index
+`mana-analyzer index` walks the requested path, uses language-aware chunkers, and writes vectors into the resolved index directory (default: `~/.cache/mana_analyzer`). Pass `--rebuild` to ignore timestamps and force a full re-embedding, `--ephemeral-index` to stage a temporary store that is deleted once the command completes, and `--json` to serialize the summary for automation.
 
 All commands share common options:
 - `--index-dir <dir>` – location of the FAISS index (default: `~/.cache/mana_analyzer`).
@@ -137,6 +184,10 @@ All commands share common options:
 When `chat` runs with `--coding-agent --coding-memory`, the coding agent persists flow state in
 `<project>/.mana_index/chat_memory.sqlite3` so follow-up turns can reuse objective/context/checklists.
 
+The flow summary surfaces key fields from `FlowSummary`, including
+`open_tasks`, `recent_decisions`, `last_changed_files`, `unresolved_static_findings`,
+`checklist`, `transitions`, and `last_blocked_reason`.
+
 Use the new command to inspect flow state outside chat:
 
 ```bash
@@ -158,6 +209,8 @@ Inside chat, `/flow` helpers are still available:
 
 Detailed flow schema, planner/fallback lifecycle, and debugging guidance:
 [`docs/coding-flows.md`](docs/coding-flows.md).
+That doc also includes troubleshooting examples for stale active flows and conflicting request heuristics.
+For broader CLI/runtime debugging workflows, see [`docs/debugging.md`](docs/debugging.md).
 
 ---
 
@@ -221,8 +274,3 @@ Contributions are welcome! Please follow these steps:
 
 ---
 
-## Contact & Support
-
-For bug reports or feature requests, please use the repository's issue tracker. For questions about usage, join the discussion channel (see CONTRIBUTING.md for preferred community links).
-
----

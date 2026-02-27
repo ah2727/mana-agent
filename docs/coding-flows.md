@@ -25,6 +25,17 @@ Flows are project-scoped and stored in:
 
 `FlowSummary` is an aggregated read model over the latest flow + recent tasks/decisions/turns.
 
+Common `FlowSummary` fields surfaced by `mana-analyzer flow --format json`:
+
+- `objective`
+- `open_tasks`
+- `recent_decisions`
+- `last_changed_files`
+- `unresolved_static_findings`
+- `checklist`
+- `transitions`
+- `last_blocked_reason`
+
 ## How to inspect flow context
 
 Top-level command:
@@ -68,6 +79,45 @@ The coding agent and tools manager cooperate in this sequence:
 5. Flow control:
    - `checkpoint_flow(...)` writes snapshots.
    - `reset_flow(...)` marks flow status reset.
+
+## Troubleshooting examples
+
+### Stale active flow keeps resurfacing old tasks
+
+Symptoms:
+
+- `mana-analyzer flow .` still shows outdated `open_tasks`
+- new requests appear to inherit old checklist context
+
+Checks:
+
+```bash
+mana-analyzer flow . --format json
+sqlite3 .mana_index/chat_memory.sqlite3 "select flow_id,status,updated_at from coding_flows order by updated_at desc limit 10;"
+```
+
+Actions:
+
+- run `/flow reset` in chat or start a new flow for a divergent request
+- verify no automation/test fixture is reusing the same `flow_id` unintentionally
+
+### New edit request is flagged as conflicting
+
+Symptoms:
+
+- chat prompts for `continue` vs `new` flow choice
+- request is considered off-track from current objective
+
+Why:
+
+- `CodingMemoryService.is_conflicting_request(...)` compares current objective words with request words and treats
+  low-overlap edit-intent requests as a track switch
+- explicit plan trigger requests (`implement plan`) are ignored by `_PLAN_TRIGGER_REQUEST_RE`
+
+Actions:
+
+- reply `continue` if request is same track but phrased differently
+- reply `new` if request intentionally starts a separate task stream
 
 ## Integration points
 

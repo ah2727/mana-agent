@@ -5,7 +5,7 @@ from pathlib import Path
 
 from langchain_core.tools import StructuredTool
 
-from mana_analyzer.analysis.models import SearchHit
+from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_analyzer.llm.ask_agent import AskAgent
 
 
@@ -127,6 +127,48 @@ def test_ask_agent_run_multi_uses_all_indexes(tmp_path: Path) -> None:
     result = agent.run_multi("Where?", [first, second], 3, max_steps=2, timeout_seconds=2)
     assert result.mode == "agent-tools"
     assert len(agent._resolved_indexes) == 2
+
+
+def test_ask_agent_run_multi_continues_when_presearch_has_no_hits(tmp_path: Path) -> None:
+    class _NoHitSearchService:
+        def search_multi(self, index_dirs: list[Path], query: str, k: int) -> tuple[list[SearchHit], list[str]]:
+            _ = (index_dirs, query, k)
+            return [], ["presearch warning"]
+
+    agent = _build_agent(tmp_path)
+    agent.search_service = _NoHitSearchService()
+    first = tmp_path / "a" / ".mana_index"
+    second = tmp_path / "b" / ".mana_index"
+    captured: dict[str, object] = {}
+
+    def _fake_run(**kwargs):
+        captured.update(kwargs)
+        return AskResponseWithTrace(
+            answer="Created project scaffold.",
+            sources=[],
+            warnings=["agent warning"],
+            mode="agent-tools",
+            trace=[
+                ToolInvocationTrace(
+                    tool_name="run_command",
+                    args_summary="cmd='mkdir src'",
+                    duration_ms=1.0,
+                    status="ok",
+                    output_preview='{"returncode": 0}',
+                )
+            ],
+        )
+
+    agent.run = _fake_run  # type: ignore[method-assign]
+
+    result = agent.run_multi("Create a NestJS project", [first, second], 3, max_steps=2, timeout_seconds=2)
+    assert result.answer == "Created project scaffold."
+    assert any("No indexed hits found across indexes; continuing with tool loop." in w for w in result.warnings)
+    assert "presearch warning" in result.warnings
+    assert "agent warning" in result.warnings
+    assert captured["question"] == "Create a NestJS project"
+    assert captured["index_dir"] == first.resolve()
+    assert captured["index_dirs"] == [first.resolve(), second.resolve()]
 
 
 def test_ask_agent_invokes_externally_registered_tool(tmp_path: Path) -> None:

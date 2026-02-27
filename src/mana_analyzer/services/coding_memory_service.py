@@ -1,7 +1,18 @@
+"""Persist and summarize coding-agent flow memory.
+
+This service stores per-project coding-flow state in
+``.mana_index/chat_memory.sqlite3`` and exposes helpers used by the coding agent
+to:
+
+- create/resume/reset active flows
+- persist turns, extracted tasks, and decisions
+- summarize recent context for follow-up turns
+- enforce heuristics around patch-loop retries and conflicting requests
+"""
+
 from __future__ import annotations
 
 import json
-import logging
 import re
 import sqlite3
 import uuid
@@ -10,18 +21,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
 _PLAN_TRIGGER_REQUEST_RE = re.compile(
     r"(?i)\b(?:implement|execute|run|apply|trigger)\s+(?:the\s+|last\s+|that\s+|current\s+)?plan\b"
 )
 
 
 def _utc_now() -> str:
+    """Return a stable UTC timestamp used across flow persistence rows."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 @dataclass(slots=True)
 class FlowSummary:
+    """Aggregated view of a persisted coding flow used by UI/prompt context."""
+
     flow_id: str
     objective: str
     updated_at: str
@@ -37,6 +50,8 @@ class FlowSummary:
 
 
 class CodingMemoryService:
+    """SQLite-backed persistence for coding-agent flow continuity."""
+
     def __init__(
         self,
         *,
@@ -44,6 +59,7 @@ class CodingMemoryService:
         max_turns: int = 5,
         max_tasks: int = 20,
     ) -> None:
+        """Initialize persistence under ``project_root/.mana_index``."""
         self.project_root = Path(project_root).resolve()
         self.max_turns = max(1, int(max_turns))
         self.max_tasks = max(1, int(max_tasks))
@@ -57,6 +73,7 @@ class CodingMemoryService:
         return conn
 
     def _ensure_schema(self) -> None:
+        """Create/upgrade tables needed for flow, turns, tasks, and decisions."""
         with self._connect() as conn:
             conn.executescript(
                 """
@@ -131,6 +148,7 @@ class CodingMemoryService:
 
     @staticmethod
     def _loads_list(value: str | None) -> list[str]:
+        """Parse a JSON list into non-empty string items."""
         if not value:
             return []
         try:
@@ -143,6 +161,7 @@ class CodingMemoryService:
 
     @staticmethod
     def _objective_from_request(request: str) -> str:
+        """Derive a concise objective string from a user request."""
         cleaned = " ".join((request or "").strip().split())
         if not cleaned:
             return "Coding task"
@@ -150,6 +169,7 @@ class CodingMemoryService:
 
     @staticmethod
     def _extract_constraints(request: str) -> list[str]:
+        """Extract likely constraint bullets from a request."""
         lines = [line.strip("- ").strip() for line in (request or "").splitlines()]
         constraints: list[str] = []
         signals = ("only ", "do not", "don't ", "without ", "scope ", "no ")
@@ -161,6 +181,7 @@ class CodingMemoryService:
 
     @staticmethod
     def _extract_acceptance(request: str) -> list[str]:
+        """Extract acceptance-style signals from a request."""
         lines = [line.strip("- ").strip() for line in (request or "").splitlines()]
         acceptance: list[str] = []
         signals = ("success", "done when", "accept", "should ")
@@ -172,6 +193,7 @@ class CodingMemoryService:
 
     @staticmethod
     def _extract_tasks(answer: str) -> tuple[list[str], list[str]]:
+        """Extract done/open checkbox tasks from a markdown-like answer."""
         done: list[str] = []
         open_tasks: list[str] = []
         for raw in (answer or "").splitlines():
@@ -184,6 +206,7 @@ class CodingMemoryService:
 
     @staticmethod
     def _extract_decisions(answer: str, warnings: list[str]) -> list[dict[str, str]]:
+        """Extract decision/rationale rows from answer text and warning heuristics."""
         rows: list[dict[str, str]] = []
         for raw in (answer or "").splitlines():
             line = raw.strip()
@@ -221,6 +244,7 @@ class CodingMemoryService:
         return deduped[:10]
 
     def get_active_flow_id(self) -> str | None:
+        """Return the most recently updated active flow for this project."""
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -237,6 +261,7 @@ class CodingMemoryService:
         return str(row["flow_id"])
 
     def ensure_flow(self, *, flow_id: str | None, request: str) -> str:
+        """Resume an existing flow or create a new active flow for a request."""
         existing = flow_id or self.get_active_flow_id()
         now = _utc_now()
         if existing:
@@ -275,6 +300,7 @@ class CodingMemoryService:
         return created
 
     def reset_flow(self, flow_id: str) -> None:
+        """Mark a flow as reset so it is no longer treated as active."""
         with self._connect() as conn:
             conn.execute(
                 "UPDATE coding_flows SET status = 'reset', updated_at = ? WHERE flow_id = ?",
@@ -282,6 +308,7 @@ class CodingMemoryService:
             )
 
     def has_prior_patch_failures(self, flow_id: str) -> bool:
+        """Check recent warnings for prior patch-loop failure signals."""
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -314,6 +341,7 @@ class CodingMemoryService:
         checklist: dict[str, Any] | None = None,
         transitions: list[dict[str, Any]] | None = None,
     ) -> None:
+        """Persist a completed turn and derived tasks/decisions."""
         now = _utc_now()
         with self._connect() as conn:
             conn.execute(
@@ -415,6 +443,7 @@ class CodingMemoryService:
             )
 
     def build_flow_context(self, flow_id: str, repo_delta_paths: list[str]) -> str:
+        """Build a prompt-ready textual summary of the current flow state."""
         summary = self.get_flow_summary(flow_id)
         if summary is None:
             return ""
@@ -462,6 +491,7 @@ class CodingMemoryService:
         return "\n".join(parts).strip()
 
     def checkpoint(self, flow_id: str, snapshot: dict[str, Any] | None = None) -> None:
+        """Persist a flow checkpoint snapshot for later inspection/debugging."""
         payload = snapshot or {}
         with self._connect() as conn:
             conn.execute(
@@ -473,6 +503,7 @@ class CodingMemoryService:
             )
 
     def get_flow_summary(self, flow_id: str) -> FlowSummary | None:
+        """Return aggregated flow state from recent turns/tasks/decisions."""
         with self._connect() as conn:
             flow_row = conn.execute(
                 """
@@ -583,6 +614,7 @@ class CodingMemoryService:
         )
 
     def list_recent_turns(self, flow_id: str) -> list[dict[str, Any]]:
+        """List recent turns with changed files and warnings."""
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -607,6 +639,7 @@ class CodingMemoryService:
         return list(reversed(result))
 
     def is_conflicting_request(self, flow_id: str, request: str) -> bool:
+        """Detect likely request divergence from the active objective."""
         summary = self.get_flow_summary(flow_id)
         if summary is None:
             return False

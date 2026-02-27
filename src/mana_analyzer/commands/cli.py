@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -110,13 +111,16 @@ class RichToolCallbackHandler(BaseCallbackHandler):
 
 
 def _make_log_formatter() -> logging.Formatter:
+    """Return the default formatter used by live chat log tails."""
     return logging.Formatter("%(levelname)s %(name)s: %(message)s")
 
 def _now_iso() -> str:
+    """Return local wall-clock timestamp in second precision for log metadata."""
     return datetime.now().isoformat(timespec="seconds")
 
 
 def _log_call(fn_name: str, **fields: object) -> None:
+    """Emit a structured debug log for function entry."""
     try:
         logger.debug("CALL %s", fn_name, extra={**fields, "ts": _now_iso()})
     except Exception:
@@ -124,6 +128,7 @@ def _log_call(fn_name: str, **fields: object) -> None:
 
 
 def _log_return(fn_name: str, **fields: object) -> None:
+    """Emit a structured debug log for function exit."""
     try:
         logger.debug("RETURN %s", fn_name, extra={**fields, "ts": _now_iso()})
     except Exception:
@@ -131,6 +136,7 @@ def _log_return(fn_name: str, **fields: object) -> None:
 
 
 def _log_exception(fn_name: str, exc: Exception, **fields: object) -> None:
+    """Emit a structured exception log, preserving original traceback."""
     try:
         logger.exception("EXCEPTION %s: %s", fn_name, exc, extra={**fields, "ts": _now_iso()})
     except Exception:
@@ -138,6 +144,7 @@ def _log_exception(fn_name: str, exc: Exception, **fields: object) -> None:
 
 
 def _register_tool_if_missing(agent: AskAgent, tool: object) -> None:
+    """Register a tool on an AskAgent by name if it is not already present."""
     name = str(getattr(tool, "name", "") or "").strip()
     if not name:
         return
@@ -154,6 +161,7 @@ def _resolve_agent_max_steps(
     min_steps: int = 1,
     cap: int | None = None,
 ) -> int:
+    """Resolve effective tool-step budget, including optional unlimited mode."""
     if agent_unlimited:
         return max(min_steps, UNLIMITED_AGENT_MAX_STEPS)
     effective = max(min_steps, int(agent_max_steps))
@@ -212,6 +220,7 @@ def _run_with_live_buffer(
 
 
 def _summary(text: str, limit: int = 260) -> str:
+    """Return one-line preview text capped at ``limit`` characters."""
     t = (text or "").strip().replace("\n", " ")
     return t if len(t) <= limit else (t[:limit].rstrip() + "…")
 
@@ -225,6 +234,7 @@ def _render_turn_summary(
     changed_files_count: int = 0,
     has_diff: bool = False,
 ) -> str:
+    """Build the markdown summary block shown for each chat turn."""
     answer_text = (answer or "").strip()
     preview = _summary(answer_text)
     truncated = len(preview) < len(answer_text)
@@ -246,6 +256,8 @@ def _render_turn_summary(
 
 @dataclass(slots=True)
 class ChatTurnTelemetry:
+    """Normalized telemetry payload persisted/rendered for a single chat turn."""
+
     turn_index: int
     timestamp: str
     question: str
@@ -261,6 +273,7 @@ class ChatTurnTelemetry:
 
 
 def _coerce_trace_items(items: list | None) -> list[dict[str, Any]]:
+    """Normalize trace rows from dict/object payloads into a stable dict schema."""
     normalized: list[dict[str, Any]] = []
     for item in list(items or []):
         if isinstance(item, dict):
@@ -285,6 +298,7 @@ def _coerce_trace_items(items: list | None) -> list[dict[str, Any]]:
 
 
 def _merge_warnings(warnings: list[str] | None, payload: dict | None) -> list[str]:
+    """Merge warning lists from caller and structured payload without duplicates."""
     merged = [str(item).strip() for item in list(warnings or []) if str(item).strip()]
     payload_warnings = payload.get("warnings", []) if isinstance(payload, dict) else []
     if isinstance(payload_warnings, list):
@@ -296,6 +310,7 @@ def _merge_warnings(warnings: list[str] | None, payload: dict | None) -> list[st
 
 
 def _decision_rows_from_raw(raw: Any, fallback_rationale: str) -> list[dict[str, str]]:
+    """Extract decision rows from list payloads containing dict/str entries."""
     rows: list[dict[str, str]] = []
     if isinstance(raw, list):
         for item in raw:
@@ -318,6 +333,7 @@ def _extract_decisions(
     payload: dict | None = None,
     result_payload: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    """Collect and dedupe decision rows from payloads, answer text, and warnings."""
     rows: list[dict[str, str]] = []
     if isinstance(payload, dict):
         rows.extend(_decision_rows_from_raw(payload.get("decisions"), "Provided in structured payload"))
@@ -352,6 +368,7 @@ def _extract_decisions(
 
 
 def _render_steps_section(console: Console, trace: list[dict[str, Any]]) -> None:
+    """Render tool-step trace table for the current turn."""
     console.print("\n[bold]Steps[/bold]")
     if not trace:
         console.print("- none")
@@ -377,6 +394,7 @@ def _render_steps_section(console: Console, trace: list[dict[str, Any]]) -> None
 
 
 def _render_decisions_section(console: Console, decisions: list[dict[str, str]]) -> None:
+    """Render parsed decision/rationale rows for the current turn."""
     console.print("\n[bold]Decisions[/bold]")
     if not decisions:
         console.print("- none")
@@ -391,6 +409,7 @@ def _render_decisions_section(console: Console, decisions: list[dict[str, str]])
 
 
 def _render_history_section(console: Console, turns: list[ChatTurnTelemetry]) -> None:
+    """Render compact session history for transparency/debugging."""
     console.print("\n[bold]History[/bold]")
     if not turns:
         console.print("- none")
@@ -422,6 +441,7 @@ def _render_turn_transparency(
     turn: ChatTurnTelemetry,
     history: list[ChatTurnTelemetry],
 ) -> None:
+    """Render summary, steps, decisions, and history blocks for one turn."""
     console.print(
         "\n"
         + _render_turn_summary(
@@ -460,7 +480,10 @@ def _log_chat_turn(
     prechecklist_source: str | None = None,
     prechecklist_steps_count: int = 0,
     prechecklist_warning: str | None = None,
+    multiline_input: bool | None = None,
+    multiline_terminator: str | None = None,
 ) -> None:
+    """Persist a structured chat turn log record through ``LlmRunLogger``."""
     if run_logger is None:
         return
     try:
@@ -496,6 +519,8 @@ def _log_chat_turn(
                 "prechecklist_source": str(prechecklist_source or ""),
                 "prechecklist_steps_count": int(prechecklist_steps_count),
                 "prechecklist_warning": str(prechecklist_warning or ""),
+                "multiline_input": bool(multiline_input) if multiline_input is not None else None,
+                "multiline_terminator": str(multiline_terminator or ""),
             }
         )
     except Exception:
@@ -503,6 +528,7 @@ def _log_chat_turn(
 
 
 def _extract_structured_answer(answer: str) -> tuple[str, dict | None]:
+    """Split plain-text answer from optional JSON wrapper payload."""
     raw = (answer or "").strip()
     if not raw:
         return "", None
@@ -927,6 +953,60 @@ def _resolve_ui_selection_input(block: dict[str, Any], user_input: str) -> tuple
         return "free_text", {"text": raw}
 
     return "invalid", None
+
+
+def _stdin_has_buffered_data(timeout_seconds: float) -> bool:
+    """Return True when stdin has immediate buffered bytes available."""
+    timeout = max(0.0, float(timeout_seconds))
+    try:
+        fileno = sys.stdin.fileno()
+    except Exception:
+        return False
+    try:
+        ready, _, _ = select.select([fileno], [], [], timeout)
+    except Exception:
+        return False
+    return bool(ready)
+
+
+def _read_chat_input(
+    console: Console,
+    *,
+    prompt: str,
+    multiline_enabled: bool,
+    multiline_terminator: str,
+) -> str:
+    """Read one chat question with optional multiline collection."""
+    first_line = input(prompt)
+    normalized_first_line = first_line.strip()
+    force_multiline = bool(multiline_enabled and normalized_first_line == "/paste")
+    try:
+        stdin_is_tty = bool(sys.stdin.isatty())
+    except Exception:
+        stdin_is_tty = False
+    auto_multiline = bool(
+        multiline_enabled
+        and not force_multiline
+        and stdin_is_tty
+        and _stdin_has_buffered_data(timeout_seconds=0.02)
+    )
+    if not (force_multiline or auto_multiline):
+        return normalized_first_line
+
+    console.print(
+        Panel(
+            f"Multiline input active.\nSubmit with `{multiline_terminator}` on its own line.",
+            title="Multiline Input",
+            border_style="blue",
+        )
+    )
+    lines: list[str] = [] if force_multiline else [first_line]
+    while True:
+        line = input("... ")
+        if line == multiline_terminator:
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def _render_answer_sections(
@@ -3026,6 +3106,16 @@ def chat(
         help="Use effectively unlimited agent tool steps (subject to timeout/resources).",
     ),
     agent_timeout_seconds: int = typer.Option(30, "--agent-timeout-seconds"),
+    multiline_input: bool = typer.Option(
+        True,
+        "--multiline-input/--no-multiline-input",
+        help="Enable multiline chat input (`/paste` trigger or buffered paste burst detection).",
+    ),
+    multiline_terminator: str = typer.Option(
+        ".end",
+        "--multiline-terminator",
+        help="Terminator line used to submit multiline input.",
+    ),
     diagram_render_images: bool = typer.Option(
         True,
         "--diagram-render-images/--no-diagram-render-images",
@@ -3082,6 +3172,8 @@ def chat(
             "agent_max_steps": agent_max_steps,
             "agent_unlimited": agent_unlimited,
             "agent_timeout_seconds": agent_timeout_seconds,
+            "multiline_input": multiline_input,
+            "multiline_terminator": multiline_terminator,
             "diagram_render_images": diagram_render_images,
             "diagram_output_dir": diagram_output_dir,
             "diagram_format": diagram_format,
@@ -3110,6 +3202,9 @@ def chat(
     if diagram_format not in {"svg", "png"}:
         raise typer.BadParameter("--diagram-format must be 'svg' or 'png'.")
     diagram_timeout_seconds = max(5, int(diagram_timeout_seconds))
+    multiline_terminator = str(multiline_terminator or ".end").strip()
+    if not multiline_terminator:
+        raise typer.BadParameter("--multiline-terminator must be a non-empty line token.")
     resolved_k = k or settings.default_top_k
 
     if dir_mode:
@@ -3779,11 +3874,18 @@ def chat(
                     else 0
                 ),
                 prechecklist_warning=str(payload.get("prechecklist_warning", "") or ""),
+                multiline_input=multiline_input,
+                multiline_terminator=multiline_terminator,
             )
 
         while True:
             try:
-                question = input("💬 » ").strip()
+                question = _read_chat_input(
+                    console,
+                    prompt="💬 » ",
+                    multiline_enabled=multiline_input,
+                    multiline_terminator=multiline_terminator,
+                )
             except (EOFError, KeyboardInterrupt):
                 console.print("\nExiting chat.")
                 logger.info("Chat session ended by user interrupt/EOF")
@@ -4294,6 +4396,8 @@ def chat(
                         if isinstance(result, dict)
                         else pending_prechecklist_warning
                     ),
+                    multiline_input=multiline_input,
+                    multiline_terminator=multiline_terminator,
                 )
                 pending_prechecklist = None
                 pending_prechecklist_source = ""
@@ -4480,6 +4584,8 @@ def chat(
                 planning_mode=planning_mode,
                 planning_question_source=planning_question_source,
                 planning_question_index=planning_questions_asked_count,
+                multiline_input=multiline_input,
+                multiline_terminator=multiline_terminator,
             )
             _render_answer_sections(
                 console,

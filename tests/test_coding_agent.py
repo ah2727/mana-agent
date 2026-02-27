@@ -454,6 +454,74 @@ def test_plan_checklist_parses_list_blocks_with_plan_text(tmp_path: Path, monkey
     assert warnings == []
 
 
+def test_plan_checklist_parses_wrapped_answer_markdown_payload_without_repair(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent._plan_checklist = CodingAgent._plan_checklist.__get__(agent, CodingAgent)  # type: ignore[method-assign]
+
+    class _WrappedAnswerPlanner:
+        def invoke(self, _messages):
+            wrapped = {
+                "answer": (
+                    "[{'id': 'rs_1', 'summary': [], 'type': 'reasoning'}, "
+                    "{'type': 'text', 'text': '**Execution Plan**\\n"
+                    "1. Inspect README.md\\n2. Update docs\\n3. Verify formatting'}]"
+                )
+            }
+            return type("_Msg", (), {"content": json.dumps(wrapped)})()
+
+    agent.planner_llm = _WrappedAnswerPlanner()
+    checklist, warnings = agent._plan_checklist("update README.md with new version")
+    assert checklist is not None
+    assert len(checklist.steps) >= 3
+    assert checklist.steps[0].title.startswith("Inspect README.md")
+    assert warnings == []
+
+
+def test_plan_checklist_parses_wrapped_content_markdown_fence_without_repair(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent._plan_checklist = CodingAgent._plan_checklist.__get__(agent, CodingAgent)  # type: ignore[method-assign]
+
+    class _WrappedContentPlanner:
+        def invoke(self, _messages):
+            wrapped = {
+                "content": (
+                    "```markdown\n"
+                    "**Execution Plan**\n"
+                    "1. Inspect README.md\n"
+                    "2. Apply targeted patch\n"
+                    "3. Verify with tests\n"
+                    "```"
+                )
+            }
+            return type("_Msg", (), {"content": json.dumps(wrapped)})()
+
+    agent.planner_llm = _WrappedContentPlanner()
+    checklist, warnings = agent._plan_checklist("update README.md with new version")
+    assert checklist is not None
+    assert len(checklist.steps) >= 3
+    assert checklist.steps[0].title.startswith("Inspect README.md")
+    assert warnings == []
+
+
+def test_parse_flow_checklist_json_uses_nested_answer_field() -> None:
+    wrapped = {
+        "answer": (
+            "[{'id': 'rs_1', 'summary': [], 'type': 'reasoning'}, "
+            "{'type': 'text', 'text': 'Execution Plan:\\n"
+            "1. Inspect src/example.py\\n2. Apply change\\n3. Verify output'}]"
+        )
+    }
+    checklist = CodingAgent._parse_flow_checklist_json(
+        json.dumps(wrapped),
+        request="update src/example.py",
+    )
+    assert checklist is not None
+    assert len(checklist.steps) >= 3
+    assert checklist.steps[0].title.startswith("Inspect src/example.py")
+
+
 def test_preview_execution_checklist_uses_planner_and_persists_to_flow_memory(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
