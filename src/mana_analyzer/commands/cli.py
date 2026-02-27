@@ -35,6 +35,7 @@ from mana_analyzer.llm.prompts import PLANNING_QUESTION_SYSTEM_PROMPT, PLANNING_
 from mana_analyzer.llm.coding_agent import CodingAgent
 from mana_analyzer.llm.run_logger import LlmRunLogger
 from mana_analyzer.llm.tool_worker_process import ToolWorkerClient, ToolWorkerProcessError
+from mana_analyzer.llm.tools_manager import ToolsManagerOrchestrator
 from mana_analyzer.parsers.multi_parser import MultiLanguageParser
 from mana_analyzer.services.analyze_service import AnalyzeService
 from mana_analyzer.services.ask_service import AskService
@@ -450,6 +451,12 @@ def _log_chat_turn(
     planning_mode: bool = False,
     planning_question_source: str | None = None,
     planning_question_index: int = 0,
+    auto_execute_plan: bool = False,
+    auto_execute_passes: int = 0,
+    auto_execute_terminal_reason: str | None = None,
+    toolsmanager_requests_count: int = 0,
+    auto_execute_pass_logs: list[dict[str, Any]] | None = None,
+    planner_decisions: list[dict[str, Any]] | None = None,
 ) -> None:
     if run_logger is None:
         return
@@ -477,6 +484,12 @@ def _log_chat_turn(
                 "planning_mode": bool(planning_mode),
                 "planning_question_source": str(planning_question_source or "none"),
                 "planning_question_index": int(planning_question_index),
+                "auto_execute_plan": bool(auto_execute_plan),
+                "auto_execute_passes": int(auto_execute_passes),
+                "auto_execute_terminal_reason": str(auto_execute_terminal_reason or ""),
+                "toolsmanager_requests_count": int(toolsmanager_requests_count),
+                "auto_execute_pass_logs": list(auto_execute_pass_logs or []),
+                "planner_decisions": list(planner_decisions or []),
             }
         )
     except Exception:
@@ -1134,6 +1147,60 @@ class LiveLogBuffer(logging.Handler):
 def _looks_like_edit_request(question: str) -> bool:
     lowered = (question or "").lower()
     return any(token in lowered for token in _EDIT_INTENT_TOKENS)
+
+
+def _looks_like_plan_trigger_request(question: str) -> bool:
+    text = (question or "").strip().lower()
+    if not text:
+        return False
+    return bool(re.search(r"\b(implement|execute|run|apply|trigger)\s+(the\s+|last\s+|that\s+|current\s+)?plan\b", text))
+
+
+def _looks_like_plan_only_answer(answer_text: str, payload: dict | None = None) -> bool:
+    text = (answer_text or "").strip().lower()
+    if not text:
+        return False
+    if isinstance(payload, dict):
+        ui_blocks = payload.get("ui_blocks")
+        if isinstance(ui_blocks, list):
+            for item in ui_blocks:
+                if isinstance(item, dict) and str(item.get("type", "")).strip().lower() == "plan":
+                    return True
+    if text.startswith("plan:"):
+        return True
+    if text.startswith("execution plan:"):
+        return True
+    return ("plan:" in text and "summary" not in text and "next step" not in text)
+
+
+def _render_auto_execute_pass_status(
+    console: Console,
+    *,
+    objective: str,
+    pass_index: int,
+    pass_cap: int,
+    planner_step_id: str = "",
+    planner_step_title: str = "",
+    planner_decision: str = "",
+    planner_decision_reason: str = "",
+    batch_reason: str = "",
+    expected_progress: str,
+) -> None:
+    console.print("\n[bold cyan]Planner Decision[/bold cyan]")
+    console.print(f"- objective: {objective or '-'}")
+    console.print(f"- pass: {pass_index}/{pass_cap}")
+    if planner_step_id or planner_step_title:
+        step = planner_step_id or "-"
+        if planner_step_title:
+            step = f"{step} ({planner_step_title})" if planner_step_id else planner_step_title
+        console.print(f"- step: {step}")
+    if planner_decision:
+        console.print(f"- decision: {planner_decision}")
+    if planner_decision_reason:
+        console.print(f"- reason: {planner_decision_reason}")
+    if batch_reason:
+        console.print(f"- batch reason: {batch_reason}")
+    console.print(f"- expected progress: {expected_progress or '-'}")
 
 
 def _planning_questions(max_questions: int) -> list[str]:
@@ -2710,6 +2777,18 @@ def chat(
         "--planning-max-questions",
         help="Maximum planning clarification questions to ask (1-6).",
     ),
+    auto_execute_plan: bool = typer.Option(
+        True,
+        "--auto-execute-plan/--no-auto-execute-plan",
+        help="Automatically execute plan-producing turns in agent-tools mode.",
+    ),
+    auto_execute_max_passes: int = typer.Option(
+        4,
+        "--auto-execute-max-passes",
+        min=1,
+        max=12,
+        help="Maximum planner->toolsmanager execution passes per turn.",
+    ),
     agent_max_steps: int = typer.Option(6, "--agent-max-steps"),
     agent_unlimited: bool = typer.Option(
         False,
@@ -2768,6 +2847,8 @@ def chat(
             "coding_require_read_files": coding_require_read_files,
             "planning_mode": planning_mode,
             "planning_max_questions": planning_max_questions,
+            "auto_execute_plan": auto_execute_plan,
+            "auto_execute_max_passes": auto_execute_max_passes,
             "agent_max_steps": agent_max_steps,
             "agent_unlimited": agent_unlimited,
             "agent_timeout_seconds": agent_timeout_seconds,
@@ -2782,6 +2863,7 @@ def chat(
     )
     as_json = False
     planning_question_limit = max(1, min(planning_max_questions, 6))
+    auto_execute_max_passes = max(1, min(int(auto_execute_max_passes), 12))
     chat_agent_max_steps = _resolve_agent_max_steps(
         agent_max_steps,
         agent_unlimited=agent_unlimited,
@@ -2842,6 +2924,8 @@ def chat(
     coding_agent_instance: CodingAgent | None = None
     coding_memory_service: CodingMemoryService | None = None
     tool_worker_client: ToolWorkerClient | None = None
+    tools_manager_orchestrator: ToolsManagerOrchestrator | None = None
+    effective_model = model or settings.openai_chat_model
     if coding_agent:
         if not agent_tools:
             raise typer.BadParameter("--coding-agent requires --agent-tools (needs tool loop).")
@@ -2854,7 +2938,6 @@ def chat(
                 max_tasks=settings.coding_flow_max_tasks,
             )
         if tool_worker_process:
-            effective_model = model or settings.openai_chat_model
             tool_worker_client = ToolWorkerClient(
                 api_key=settings.openai_api_key,
                 model=effective_model,
@@ -2882,6 +2965,16 @@ def chat(
             repo_only_internet_default=True,
             tool_worker_client=tool_worker_client,
         )
+
+    if coding_agent_instance is not None and auto_execute_plan and tool_worker_client is not None:
+        tools_manager_orchestrator = ToolsManagerOrchestrator(
+            api_key=settings.openai_api_key,
+            model=effective_model,
+            base_url=settings.openai_base_url,
+            worker_client=tool_worker_client,
+            repo_root=root,
+        )
+        coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
 
     tmp_root: tempfile.TemporaryDirectory | None = None
     tmp_base: Path | None = None
@@ -3090,6 +3183,10 @@ def chat(
                 f"[bold cyan]Planning mode enabled:[/bold cyan] "
                 f"up to {planning_question_limit} clarification question(s) before each plan answer."
             )
+            if not agent_tools:
+                console.print(
+                    "[yellow]Planning mode auto-execute requires --agent-tools; this session will remain plan-only.[/yellow]"
+                )
         if coding_agent:
             console.print("[bold red]Coding agent enabled:[/bold red] this session can modify any files under the repository root.")
             if coding_memory:
@@ -3098,17 +3195,16 @@ def chat(
                     console.print(f"[cyan]Flow memory active:[/cyan] {msg_flow}")
                 else:
                     console.print("[cyan]Flow memory active:[/cyan] new flow will be created on first coding request.")
+        if agent_tools:
+            console.print(
+                f"[cyan]Plan auto-execute:[/cyan] {'enabled' if auto_execute_plan else 'disabled'} "
+                f"(max passes: {auto_execute_max_passes})"
+            )
         if diagram_render_images:
             console.print(
                 f"[cyan]Diagram rendering:[/cyan] {diagram_format} -> {resolved_diagram_output_dir}"
             )
-        if planning_mode and coding_agent_instance is not None:
-            console.print("[yellow]Planning mode is read-only; coding-agent edits are disabled in this session.[/yellow]")
-            coding_agent_instance = None
-            if tool_worker_client is not None:
-                tool_worker_client.stop()
-                tool_worker_client = None
-        if coding_agent_instance is not None and tool_worker_client is not None:
+        if tool_worker_client is not None and (coding_agent_instance is not None or tools_manager_orchestrator is not None):
             try:
                 tool_worker_client.start()
                 tool_worker_client.health()
@@ -3119,9 +3215,10 @@ def chat(
             except Exception as exc:
                 _log_exception("tool_worker_client.start", exc)
                 console.print(
-                    "[yellow]Tool worker failed to initialize. Coding-agent edits are disabled for this session.[/yellow]"
+                    "[yellow]Tool worker failed to initialize. Auto-execute and coding-agent paths are disabled for this session.[/yellow]"
                 )
                 coding_agent_instance = None
+                tools_manager_orchestrator = None
 
         planning_request: str | None = None
         planning_answers: list[str] = []
@@ -3132,6 +3229,263 @@ def chat(
         pending_conflict_question: str | None = None
         pending_ui_selection: dict[str, Any] | None = None
         session_turns: list[ChatTurnTelemetry] = []
+
+        def _base_auto_execute_tool_policy(user_question: str) -> dict[str, Any]:
+            if coding_agent_instance is not None:
+                return coding_agent_instance._tool_policy_for_request(user_question)  # type: ignore[attr-defined]
+            block_internet = not bool(re.search(r"(?i)\\b(latest|internet|online|web|news|search web)\\b", user_question))
+            return {
+                "allowed_tools": [
+                    "semantic_search",
+                    "read_file",
+                    "run_command",
+                    "apply_patch",
+                    "write_file",
+                    "search_internet",
+                ],
+                "search_budget": max(1, int(coding_search_budget or settings.coding_search_budget)),
+                "read_budget": max(1, int(coding_read_budget or settings.coding_read_budget)),
+                "require_read_files": max(1, int(coding_require_read_files or settings.coding_require_read_files)),
+                "block_internet": block_internet,
+                "search_repeat_limit": 1,
+                "max_semantic_k": 50,
+            }
+
+        def _ensure_tools_manager_orchestrator() -> ToolsManagerOrchestrator | None:
+            nonlocal tool_worker_client
+            nonlocal tools_manager_orchestrator
+            if not (agent_tools and auto_execute_plan and tool_worker_process):
+                return None
+            if tools_manager_orchestrator is not None:
+                return tools_manager_orchestrator
+            if tool_worker_client is None:
+                tool_worker_client = ToolWorkerClient(
+                    api_key=settings.openai_api_key,
+                    model=model or settings.openai_chat_model,
+                    base_url=settings.openai_base_url,
+                    embed_model=settings.openai_embed_model,
+                    repo_root=root,
+                    project_root=root,
+                    allowed_prefixes=None,
+                    tools_only_strict=tool_worker_strict,
+                )
+            try:
+                tool_worker_client.start()
+                tool_worker_client.health()
+            except Exception as exc:
+                _log_exception("tool_worker_client.start", exc)
+                return None
+            tools_manager_orchestrator = ToolsManagerOrchestrator(
+                api_key=settings.openai_api_key,
+                model=model or settings.openai_chat_model,
+                base_url=settings.openai_base_url,
+                worker_client=tool_worker_client,
+                repo_root=root,
+            )
+            if coding_agent_instance is not None:
+                coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
+            return tools_manager_orchestrator
+
+        def _run_auto_execute_pipeline(user_question: str) -> tuple[dict[str, Any], str]:
+            if not agent_tools or not auto_execute_plan:
+                return {}, ""
+            orchestrator = _ensure_tools_manager_orchestrator()
+            if orchestrator is None:
+                return {
+                    "answer": "Auto-execute requested but tools manager worker is unavailable.",
+                    "warnings": ["auto_execute_worker_unavailable"],
+                    "trace": [],
+                    "sources": [],
+                    "changed_files": [],
+                    "plan": None,
+                    "passes": 0,
+                    "terminal_reason": "worker_unavailable",
+                    "toolsmanager_requests_count": 0,
+                    "pass_logs": [],
+                    "planner_decisions": [],
+                }, ""
+            if dir_mode:
+                if not dir_mode_index_dirs:
+                    return {
+                        "answer": "Auto-execute unavailable: no dir-mode indexes resolved.",
+                        "warnings": ["auto_execute_missing_index_dirs"],
+                        "trace": [],
+                        "sources": [],
+                        "changed_files": [],
+                        "plan": None,
+                        "passes": 0,
+                        "terminal_reason": "missing_indexes",
+                        "toolsmanager_requests_count": 0,
+                        "pass_logs": [],
+                        "planner_decisions": [],
+                    }, ""
+                target_index_dir: Path | None = None
+                target_index_dirs: list[Path] | None = list(dir_mode_index_dirs)
+            else:
+                target_index_dir = resolved_index_dir
+                target_index_dirs = None
+
+            flow_context_text: str | None = None
+            if coding_agent_instance is not None and active_flow_id:
+                try:
+                    summary = coding_agent_instance.flow_summary(active_flow_id)
+                except Exception:
+                    summary = None
+                if isinstance(summary, dict):
+                    lines: list[str] = []
+                    objective = str(summary.get("objective", "") or "").strip()
+                    if objective:
+                        lines.append(f"Current objective: {objective}")
+                    checklist = summary.get("checklist")
+                    if isinstance(checklist, dict):
+                        steps = checklist.get("steps") if isinstance(checklist.get("steps"), list) else []
+                        if steps:
+                            lines.append("Current checklist:")
+                            for step in steps[:20]:
+                                if not isinstance(step, dict):
+                                    continue
+                                status = str(step.get("status", "pending") or "pending")
+                                title = str(step.get("title", "step") or "step")
+                                lines.append(f"- [{status}] {title}")
+                    if lines:
+                        flow_context_text = "\n".join(lines)
+
+            console.print(
+                f"[cyan]Auto-executing plan:[/cyan] max passes {auto_execute_max_passes} (same turn, no extra confirmation)."
+            )
+
+            def _call(_callbacks: list[BaseCallbackHandler]):
+                return orchestrator.run(
+                    request=user_question,
+                    flow_context=flow_context_text,
+                    index_dir=target_index_dir,
+                    index_dirs=target_index_dirs,
+                    k=resolved_k,
+                    max_steps=chat_agent_max_steps,
+                    timeout_seconds=agent_timeout_seconds,
+                    tool_policy=_base_auto_execute_tool_policy(user_question),
+                    pass_cap=auto_execute_max_passes,
+                    on_event=CodingAgent._log_worker_event,
+                )
+
+            result_obj, debug_tail = _run_with_live_buffer(
+                console,
+                spinner_text="Auto-executing…",
+                fn=_call,
+                callbacks=[],
+            )
+            if hasattr(result_obj, "model_dump"):
+                payload = result_obj.model_dump()
+            elif isinstance(result_obj, dict):
+                payload = dict(result_obj)
+            else:
+                payload = {"answer": str(result_obj)}
+            plan_payload = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+            objective = str(plan_payload.get("objective", "")).strip()
+            for item in payload.get("pass_logs", []) if isinstance(payload.get("pass_logs"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                _render_auto_execute_pass_status(
+                    console,
+                    objective=objective,
+                    pass_index=int(item.get("pass_index", 0) or 0),
+                    pass_cap=auto_execute_max_passes,
+                    planner_step_id=str(item.get("planner_step_id", "") or ""),
+                    planner_step_title=str(item.get("planner_step_title", "") or ""),
+                    planner_decision=str(item.get("planner_decision", "") or ""),
+                    planner_decision_reason=str(item.get("planner_decision_reason", "") or ""),
+                    batch_reason=str(item.get("batch_reason", "") or ""),
+                    expected_progress=str(item.get("expected_progress", "") or ""),
+                )
+            return payload, debug_tail
+
+        def _emit_auto_execute_terminal(
+            *,
+            user_question: str,
+            payload: dict[str, Any],
+            debug_tail: str,
+        ) -> None:
+            nonlocal pending_ui_selection
+            answer_raw = str(payload.get("answer", "") or "")
+            answer_text, parsed_payload = _extract_structured_answer(answer_raw)
+            payload_sources = payload.get("sources", []) if isinstance(payload.get("sources"), list) else []
+            payload_trace = payload.get("trace", []) if isinstance(payload.get("trace"), list) else []
+            payload_warnings = payload.get("warnings", []) if isinstance(payload.get("warnings"), list) else []
+            ui_blocks = _effective_ui_blocks(answer_text, parsed_payload if isinstance(parsed_payload, dict) else None)
+            rendered_dynamic = _render_dynamic_blocks(
+                console,
+                ui_blocks,
+                diagram_render_images=diagram_render_images,
+                diagram_output_dir=resolved_diagram_output_dir,
+                diagram_format=diagram_format,
+                diagram_open_artifact=diagram_open,
+                diagram_timeout_seconds=diagram_timeout_seconds,
+                project_root=root,
+            )
+            selection_block = _pending_ui_selection_from_blocks(ui_blocks)
+            if selection_block is not None:
+                pending_ui_selection = selection_block
+
+            warnings_merged = [str(item).strip() for item in payload_warnings if str(item).strip()]
+            if isinstance(parsed_payload, dict):
+                warnings_merged = _merge_warnings(warnings_merged, parsed_payload)
+            auto_trace = _coerce_trace_items(payload_trace)
+            changed_files = [str(item) for item in payload.get("changed_files", []) if str(item).strip()]
+            turn_record = ChatTurnTelemetry(
+                turn_index=len(session_turns) + 1,
+                timestamp=_now_iso(),
+                question=user_question,
+                answer_text=answer_text,
+                sources=payload_sources if isinstance(payload_sources, list) else [],
+                warnings=warnings_merged,
+                trace=auto_trace,
+                tool_steps_total=len(auto_trace),
+                decisions=_extract_decisions(
+                    answer_text=answer_text,
+                    warnings=warnings_merged,
+                    payload=parsed_payload if isinstance(parsed_payload, dict) else None,
+                ),
+                changed_files=changed_files,
+                has_diff=bool(changed_files),
+                coding_state={
+                    "plan": payload.get("plan"),
+                    "progress": {
+                        "phase": "answer",
+                        "why": payload.get("terminal_reason", ""),
+                    },
+                    "checklist": None,
+                    "next_step": payload.get("terminal_reason", ""),
+                    "flow_id": active_flow_id,
+                },
+            )
+            session_turns.append(turn_record)
+            _ = rendered_dynamic
+            console.print("\n[bold]Answer[/bold]")
+            console.print(Markdown(answer_text) if answer_text else "[dim](no answer text)[/dim]")
+            if warnings_merged:
+                warning_lines = "\n".join(f"- {w}" for w in warnings_merged[:12])
+                console.print(Panel(warning_lines, title="Warnings", border_style="yellow"))
+            if debug_tail:
+                console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
+            _log_chat_turn(
+                run_logger,
+                turn=turn_record,
+                mode="tools-manager-auto-exec",
+                dir_mode=dir_mode,
+                coding_agent=bool(coding_agent_instance is not None),
+                flow_id=active_flow_id,
+                render_mode=str(payload.get("render_mode", "default") or "default"),
+                fallback_reason=str(payload.get("fallback_reason", "") or ""),
+                planning_mode=planning_mode,
+                planning_question_source=planning_question_source,
+                planning_question_index=planning_questions_asked_count,
+                auto_execute_plan=True,
+                auto_execute_passes=int(payload.get("passes", 0) or 0),
+                auto_execute_terminal_reason=str(payload.get("terminal_reason", "") or ""),
+                toolsmanager_requests_count=int(payload.get("toolsmanager_requests_count", 0) or 0),
+                auto_execute_pass_logs=payload.get("pass_logs", []) if isinstance(payload.get("pass_logs"), list) else [],
+                planner_decisions=payload.get("planner_decisions", []) if isinstance(payload.get("planner_decisions"), list) else [],
+            )
 
         while True:
             try:
@@ -3249,6 +3603,26 @@ def chat(
                 )
                 continue
 
+            if coding_agent_instance is not None and _looks_like_plan_trigger_request(question):
+                target_flow = active_flow_id or coding_agent_instance.get_active_flow_id()
+                if isinstance(target_flow, str) and target_flow.strip():
+                    active_flow_id = target_flow.strip()
+                    summary = coding_agent_instance.flow_summary(active_flow_id)
+                    checklist = summary.get("checklist") if isinstance(summary, dict) else None
+                    if isinstance(checklist, dict):
+                        console.print("[cyan]Executing active flow plan...[/cyan]")
+                        objective = str(checklist.get("objective", "")).strip()
+                        if objective:
+                            console.print(f"[bold]Plan objective:[/bold] {objective}")
+                        steps = checklist.get("steps") if isinstance(checklist.get("steps"), list) else []
+                        if steps:
+                            console.print("[bold]Checklist[/bold]")
+                            for step in steps[:12]:
+                                if isinstance(step, dict):
+                                    status = str(step.get("status", "pending"))
+                                    title = str(step.get("title", "step"))
+                                    console.print(f"- [{status}] {title}")
+
             if planning_mode:
                 if planning_request is None:
                     planning_request = question
@@ -3320,11 +3694,23 @@ def chat(
                 planning_request = None
                 planning_answers = []
                 planning_questions = []
+                if agent_tools and auto_execute_plan:
+                    auto_payload, auto_debug_tail = _run_auto_execute_pipeline(question)
+                    _emit_auto_execute_terminal(
+                        user_question=question,
+                        payload=auto_payload,
+                        debug_tail=auto_debug_tail,
+                    )
+                    continue
                 console.print("[cyan]Generating decision-complete plan...[/cyan]")
 
             logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
 
-            if _looks_like_edit_request(question) and coding_agent_instance is None:
+            if (
+                _looks_like_edit_request(question)
+                and coding_agent_instance is None
+                and not (agent_tools and auto_execute_plan and tool_worker_process)
+            ):
                 console.print(
                     "[yellow]This chat session is read-only for file edits.[/yellow] "
                     "Re-run with [bold]--agent-tools --coding-agent[/bold] to allow write_file/apply_patch."
@@ -3335,6 +3721,7 @@ def chat(
                 coding_agent_instance is not None
                 and coding_memory
                 and _looks_like_edit_request(question)
+                and not _looks_like_plan_trigger_request(question)
             ):
                 if pending_conflict_question is not None:
                     choice = question.strip().lower()
@@ -3355,11 +3742,26 @@ def chat(
                     )
                     continue
 
+            if (
+                coding_agent_instance is None
+                and agent_tools
+                and auto_execute_plan
+                and _looks_like_plan_trigger_request(question)
+            ):
+                auto_payload, auto_debug_tail = _run_auto_execute_pipeline(question)
+                _emit_auto_execute_terminal(
+                    user_question=question,
+                    payload=auto_payload,
+                    debug_tail=auto_debug_tail,
+                )
+                continue
+
             # ==========================================================
             # ✅ CODING AGENT PATH (classic + dir-mode supported)
             # ==========================================================
             if coding_agent_instance is not None:
                 cb = RichToolCallbackHandler(show_inputs=True)
+                execute_plan_now = bool(auto_execute_plan and _looks_like_plan_trigger_request(question))
 
                 try:
                     if dir_mode:
@@ -3369,6 +3771,17 @@ def chat(
                             continue
 
                         def _call(callbacks: list[BaseCallbackHandler]):
+                            if execute_plan_now and hasattr(coding_agent_instance, "generate_auto_execute"):
+                                return coding_agent_instance.generate_auto_execute(
+                                    question,
+                                    index_dirs=index_dirs,
+                                    k=resolved_k,
+                                    max_steps=coding_agent_max_steps,
+                                    timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
+                                    pass_cap=auto_execute_max_passes,
+                                    callbacks=callbacks,
+                                    flow_id=active_flow_id,
+                                )
                             return coding_agent_instance.generate_dir_mode(
                                 question,
                                 index_dirs=index_dirs,
@@ -3382,6 +3795,17 @@ def chat(
                         assert resolved_index_dir is not None
 
                         def _call(callbacks: list[BaseCallbackHandler]):
+                            if execute_plan_now and hasattr(coding_agent_instance, "generate_auto_execute"):
+                                return coding_agent_instance.generate_auto_execute(
+                                    question,
+                                    index_dir=resolved_index_dir,
+                                    k=resolved_k,
+                                    max_steps=coding_agent_max_steps,
+                                    timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
+                                    pass_cap=auto_execute_max_passes,
+                                    callbacks=callbacks,
+                                    flow_id=active_flow_id,
+                                )
                             return coding_agent_instance.generate(
                                 question,
                                 index_dir=resolved_index_dir,
@@ -3426,6 +3850,25 @@ def chat(
                 result_flow_id = (result or {}).get("flow_id")
                 if isinstance(result_flow_id, str) and result_flow_id.strip():
                     active_flow_id = result_flow_id.strip()
+                if execute_plan_now and isinstance(result, dict):
+                    plan_payload = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+                    objective = str(plan_payload.get("objective", "")).strip()
+                    pass_logs = result.get("pass_logs") if isinstance(result.get("pass_logs"), list) else []
+                    for item in pass_logs:
+                        if not isinstance(item, dict):
+                            continue
+                        _render_auto_execute_pass_status(
+                            console,
+                            objective=objective,
+                            pass_index=int(item.get("pass_index", 0) or 0),
+                            pass_cap=auto_execute_max_passes,
+                            planner_step_id=str(item.get("planner_step_id", "") or ""),
+                            planner_step_title=str(item.get("planner_step_title", "") or ""),
+                            planner_decision=str(item.get("planner_decision", "") or ""),
+                            planner_decision_reason=str(item.get("planner_decision_reason", "") or ""),
+                            batch_reason=str(item.get("batch_reason", "") or ""),
+                            expected_progress=str(item.get("expected_progress", "") or ""),
+                        )
                 answer_text, parsed_payload = _extract_structured_answer(answer)
                 payload_sources = []
                 payload_warnings = []
@@ -3476,8 +3919,9 @@ def chat(
                     else ""
                 )
                 answer_only_fallback = render_mode == "answer_only" and fallback_reason == "tools_only_violation"
+                answer_only_auto_execute = bool(execute_plan_now)
                 edit_completed = bool(changed) or bool(diff.strip())
-                answer_only_no_edit = (not answer_only_fallback) and (not edit_completed)
+                answer_only_no_edit = (not answer_only_fallback) and (not edit_completed) and (not answer_only_auto_execute)
 
                 rendered_dynamic: dict[str, bool] = {}
                 if not answer_only_fallback:
@@ -3520,7 +3964,7 @@ def chat(
                     },
                 )
                 session_turns.append(turn_record)
-                if answer_only_fallback or answer_only_no_edit:
+                if answer_only_fallback or answer_only_no_edit or answer_only_auto_execute:
                     console.print("\n[bold]Answer[/bold]")
                     if answer_text:
                         console.print(Markdown(answer_text))
@@ -3544,8 +3988,14 @@ def chat(
                     planning_mode=planning_mode,
                     planning_question_source=planning_question_source,
                     planning_question_index=planning_questions_asked_count,
+                    auto_execute_plan=execute_plan_now,
+                    auto_execute_passes=int((result or {}).get("auto_execute_passes", 0) or 0) if isinstance(result, dict) else 0,
+                    auto_execute_terminal_reason=str((result or {}).get("auto_execute_terminal_reason", "") or "") if isinstance(result, dict) else "",
+                    toolsmanager_requests_count=int((result or {}).get("toolsmanager_requests_count", 0) or 0) if isinstance(result, dict) else 0,
+                    auto_execute_pass_logs=(result or {}).get("pass_logs", []) if isinstance(result, dict) else [],
+                    planner_decisions=(result or {}).get("planner_decisions", []) if isinstance(result, dict) else [],
                 )
-                if not (answer_only_fallback or answer_only_no_edit):
+                if not (answer_only_fallback or answer_only_no_edit or answer_only_auto_execute):
                     _render_coding_sections(
                         console,
                         result if isinstance(result, dict) else {},
@@ -3660,6 +4110,17 @@ def chat(
             warns = getattr(response, "warnings", []) or []
             trace = getattr(response, "trace", None) or []
             answer_text, parsed_payload = _extract_structured_answer(answer)
+            if agent_tools and auto_execute_plan and _looks_like_plan_only_answer(
+                answer_text,
+                parsed_payload if isinstance(parsed_payload, dict) else None,
+            ):
+                auto_payload, auto_debug_tail = _run_auto_execute_pipeline(question)
+                _emit_auto_execute_terminal(
+                    user_question=question,
+                    payload=auto_payload,
+                    debug_tail=auto_debug_tail,
+                )
+                continue
             ui_blocks = _effective_ui_blocks(
                 answer_text,
                 parsed_payload if isinstance(parsed_payload, dict) else None,

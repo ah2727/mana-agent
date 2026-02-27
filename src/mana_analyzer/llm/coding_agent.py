@@ -35,6 +35,7 @@ from mana_analyzer.llm.tool_worker_process import (
     ToolWorkerClient,
     ToolWorkerProcessError,
 )
+from mana_analyzer.llm.tools_manager import ToolsManagerOrchestrator
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.tools import build_apply_patch_tool, build_write_file_tool
 
@@ -152,6 +153,10 @@ class CodingAgent:
     _EXPLICIT_FILE_RE = re.compile(r"(?i)\b([A-Za-z0-9_\-./]+\.[A-Za-z0-9_]+)\b")
     _AMBIGUOUS_FOLLOWUP_RE = re.compile(
         r"(?i)^\s*(yes|yep|ok|okay|sure|continue|go|proceed|begin|start|do it|done|next)\s*[/!.]?\s*$"
+    )
+    _PLAN_TRIGGER_RE = re.compile(
+        r"(?i)^\s*(?:please\s+)?(?:implement|execute|run|apply|trigger)\s+"
+        r"(?:the\s+|last\s+|that\s+|current\s+)?plan\s*[/!.]?\s*$"
     )
 
     # Fallback policy: if apply_patch is attempted >= this many times and no changes appear, force write_file fallback.
@@ -378,6 +383,7 @@ class CodingAgent:
         self.require_read_files = max(1, int(require_read_files))
         self.repo_only_internet_default = bool(repo_only_internet_default)
         self.tool_worker_client = tool_worker_client
+        self.tools_manager_orchestrator: ToolsManagerOrchestrator | None = None
 
         planner_kwargs = {
             "api_key": api_key,
@@ -394,6 +400,193 @@ class CodingAgent:
             ]
         )
 
+    def set_tools_manager_orchestrator(self, orchestrator: ToolsManagerOrchestrator | None) -> None:
+        self.tools_manager_orchestrator = orchestrator
+
+    def generate_auto_execute(
+        self,
+        request: str,
+        *,
+        index_dir: str | Path | None = None,
+        index_dirs: Sequence[str | Path] | None = None,
+        k: int | None = None,
+        max_steps: int = 200,
+        timeout_seconds: int = 600,
+        pass_cap: int = 4,
+        flow_context: str | None = None,
+        flow_id: str | None = None,
+        callbacks: Sequence[Any] | None = None,
+    ) -> dict[str, Any]:
+        if self.tools_manager_orchestrator is None:
+            return {
+                "status": "warning",
+                "answer": "Auto-execute orchestrator is unavailable for this session.",
+                "changed_files": [],
+                "diff": "",
+                "warnings": ["auto_execute_orchestrator_unavailable"],
+                "flow_id": flow_id,
+                "plan": None,
+                "progress": {"phase": "blocked", "why": "auto_execute_orchestrator_unavailable"},
+                "checklist": {"done": 0, "pending": 0, "blocked": 1, "total": 0},
+                "actions_taken_total": 0,
+                "actions_taken_truncated": False,
+                "actions_taken": [],
+                "next_step": "Initialize tool worker and tools manager orchestrator, then retry.",
+                "static_analysis": {"finding_count": 0, "findings": []},
+                "auto_execute_passes": 0,
+                "auto_execute_terminal_reason": "orchestrator_unavailable",
+                "toolsmanager_requests_count": 0,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        before = self._git_status_paths()
+        warnings: list[str] = []
+        active_flow_id = flow_id
+        effective_flow_context = flow_context
+        if self.coding_memory_enabled and self.coding_memory_service is not None:
+            try:
+                active_flow_id = self.coding_memory_service.ensure_flow(flow_id=flow_id, request=request)
+                self._current_flow_id = active_flow_id
+                if effective_flow_context is None:
+                    effective_flow_context = self.coding_memory_service.build_flow_context(
+                        active_flow_id,
+                        sorted(before),
+                    )
+            except Exception as exc:
+                warnings.append(f"coding memory setup failed: {exc}")
+
+        tool_policy = self._tool_policy_for_request(request)
+        try:
+            _ = callbacks
+            orchestrated = self.tools_manager_orchestrator.run(
+                request=request,
+                flow_context=effective_flow_context,
+                index_dir=index_dir,
+                index_dirs=index_dirs,
+                k=int(k if k is not None else 8),
+                max_steps=int(max_steps),
+                timeout_seconds=int(timeout_seconds),
+                tool_policy=tool_policy,
+                pass_cap=max(1, int(pass_cap)),
+                on_event=self._log_worker_event,
+            )
+        except ToolWorkerProcessError as exc:
+            warnings.append(f"toolsmanager worker failure: {exc.code}: {exc}")
+            return {
+                "status": "warning",
+                "answer": "Auto-execute failed due to worker process error.",
+                "changed_files": [],
+                "diff": "",
+                "warnings": warnings,
+                "flow_id": active_flow_id,
+                "plan": None,
+                "progress": {"phase": "blocked", "why": "tool_worker_error"},
+                "checklist": {"done": 0, "pending": 0, "blocked": 1, "total": 0},
+                "actions_taken_total": 0,
+                "actions_taken_truncated": False,
+                "actions_taken": [],
+                "next_step": "Retry with a more specific tool-executable request.",
+                "static_analysis": {"finding_count": 0, "findings": []},
+                "auto_execute_passes": 0,
+                "auto_execute_terminal_reason": "tool_worker_error",
+                "toolsmanager_requests_count": 0,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        changed_files = sorted(self._git_status_paths().difference(before))
+        changed_for_result = sorted({*changed_files, *list(orchestrated.changed_files)})
+        findings = self._run_static_analysis([p for p in changed_for_result if p.endswith(".py")])
+        diff = self._git_diff(changed_for_result)
+        warnings.extend([str(item).strip() for item in orchestrated.warnings if str(item).strip()])
+        checklist_total = len((orchestrated.plan or {}).get("steps", []) if isinstance(orchestrated.plan, dict) else [])
+        checklist_done = checklist_total if changed_for_result else 0
+
+        planner_decisions = (
+            list(orchestrated.planner_decisions)
+            if isinstance(orchestrated.planner_decisions, list)
+            else []
+        )
+
+        if (
+            self.coding_memory_enabled
+            and self.coding_memory_service is not None
+            and active_flow_id is not None
+        ):
+            try:
+                transitions: list[dict[str, Any]] = []
+                for item in planner_decisions:
+                    if not isinstance(item, dict):
+                        continue
+                    transitions.append(
+                        {
+                            "from_phase": f"pass_{int(item.get('pass_index', 0) or 0)}",
+                            "to_phase": str(item.get("decision", "continue") or "continue"),
+                            "reason": str(item.get("decision_reason", "") or "").strip()
+                            or "planner decision",
+                        }
+                    )
+                transitions.append(
+                    {
+                        "from_phase": "auto_execute",
+                        "to_phase": "answer",
+                        "reason": f"auto_execute_terminal_reason={orchestrated.terminal_reason}",
+                    }
+                )
+                self.coding_memory_service.record_turn(
+                    flow_id=active_flow_id,
+                    user_request=request,
+                    effective_prompt=self._effective_system_prompt_for(request, flow_context=effective_flow_context),
+                    agent_answer=str(orchestrated.answer or ""),
+                    changed_files=changed_for_result,
+                    warnings=warnings,
+                    static_findings=[_as_jsonable(f) for f in findings],
+                    checklist=orchestrated.plan or {},
+                    transitions=transitions,
+                )
+            except Exception as exc:
+                warnings.append(f"coding memory turn persistence failed: {exc}")
+
+        status = "ok" if not findings else "warning"
+        return {
+            "status": status,
+            "answer": str(orchestrated.answer or ""),
+            "changed_files": changed_for_result,
+            "diff": diff,
+            "warnings": warnings,
+            "flow_id": active_flow_id,
+            "plan": orchestrated.plan,
+            "progress": {
+                "phase": "answer",
+                "why": f"auto_execute_terminal_reason={orchestrated.terminal_reason}",
+                "budgets": {
+                    "search_budget": self.search_budget,
+                    "read_budget": self.read_budget,
+                    "required_read_files": int(tool_policy.get("require_read_files", self.require_read_files) or self.require_read_files),
+                },
+            },
+            "checklist": {
+                "done": checklist_done,
+                "pending": max(0, checklist_total - checklist_done),
+                "blocked": 0,
+                "total": checklist_total,
+            },
+            "actions_taken_total": len(orchestrated.trace),
+            "actions_taken_truncated": len(orchestrated.trace) > 20,
+            "actions_taken": orchestrated.trace[:20],
+            "next_step": orchestrated.terminal_reason or "Completed.",
+            "static_analysis": {
+                "finding_count": len(findings),
+                "findings": [_as_jsonable(f) for f in findings],
+            },
+            "auto_execute_passes": orchestrated.passes,
+            "auto_execute_terminal_reason": orchestrated.terminal_reason,
+            "toolsmanager_requests_count": orchestrated.toolsmanager_requests_count,
+            "pass_logs": orchestrated.pass_logs,
+            "planner_decisions": planner_decisions,
+        }
+
     def _looks_like_edit_request(self, request: str) -> bool:
         lowered = request.lower()
         return any(token in lowered for token in self._EDIT_INTENT_TOKENS)
@@ -407,6 +600,8 @@ class CodingAgent:
         text = (request or "").strip()
         if not text:
             return False
+        if cls._PLAN_TRIGGER_RE.match(text):
+            return True
         if cls._AMBIGUOUS_FOLLOWUP_RE.match(text):
             return True
         # Keep very short acknowledgements as ambiguous unless they include file/symbol hints.
@@ -414,6 +609,10 @@ class CodingAgent:
             lowered = text.lower()
             return lowered in {"yes", "yes.", "ok", "ok.", "begin", "begin.", "go", "go.", "continue", "continue."}
         return False
+
+    @classmethod
+    def _is_plan_trigger_followup(cls, request: str) -> bool:
+        return bool(cls._PLAN_TRIGGER_RE.match((request or "").strip()))
 
     @staticmethod
     def _extract_objective_from_flow_context(flow_context: str | None) -> str:
@@ -426,12 +625,43 @@ class CodingAgent:
                 return text.split(":", 1)[1].strip()
         return ""
 
+    @staticmethod
+    def _extract_pending_steps_from_flow_context(flow_context: str | None) -> list[str]:
+        context = (flow_context or "").strip()
+        if not context:
+            return []
+        pending: list[str] = []
+        for line in context.splitlines():
+            text = line.strip()
+            match = re.match(r"^- \[(pending|in_progress)\]\s+(.+)$", text, flags=re.IGNORECASE)
+            if match:
+                title = match.group(2).strip()
+                if title:
+                    pending.append(title[:220])
+        return pending[:8]
+
     def _rewrite_ambiguous_followup(self, request: str, flow_context: str | None) -> str:
         if not self._is_ambiguous_followup(request):
             return request
         objective = self._extract_objective_from_flow_context(flow_context)
         if not objective:
             return request
+        if self._is_plan_trigger_followup(request):
+            pending_steps = self._extract_pending_steps_from_flow_context(flow_context)
+            pending_block = ""
+            if pending_steps:
+                lines = "\n".join(f"- {item}" for item in pending_steps)
+                pending_block = f"\nPending checklist steps:\n{lines}\n"
+            return (
+                "Execute the active flow checklist now.\n"
+                f"Original follow-up: {request.strip()}\n"
+                f"Current objective: {objective}\n"
+                f"{pending_block}"
+                "Rules:\n"
+                "- Do not return only a new high-level plan.\n"
+                "- Start executing pending checklist steps with tool calls.\n"
+                "- Apply concrete edits and verification steps when required."
+            )
         return (
             "Continue the active coding flow.\n"
             f"Original follow-up: {request.strip()}\n"

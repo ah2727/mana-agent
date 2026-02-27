@@ -672,6 +672,186 @@ def test_chat_coding_agent_uses_worker_lifecycle_once(monkeypatch, tmp_path: Pat
     assert _FakeWorkerClient.stop_calls == 1
 
 
+def test_chat_plan_trigger_shows_checklist_and_skips_conflict_prompt(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return True
+
+        def flow_summary(self, flow_id: str | None = None):
+            _ = flow_id
+            return {
+                "flow_id": self.active,
+                "objective": "Do TODO.md section 1 and 2",
+                "checklist": {
+                    "objective": "Do TODO.md section 1 and 2",
+                    "steps": [
+                        {"status": "in_progress", "title": "Document public API"},
+                        {"status": "pending", "title": "Add missing type hints"},
+                    ],
+                },
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return {
+                "answer": "ok",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+            }
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate(*_args, **_kwargs)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="implement plan.\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Executing active flow plan..." in result.stdout
+    assert "Document public API" in result.stdout
+    assert "Add missing type hints" in result.stdout
+    assert "This request appears to diverge from the active flow." not in result.stdout
+
+
+def test_chat_planning_mode_auto_executes_after_clarifications(monkeypatch, tmp_path: Path) -> None:
+    class _PlanningLlm:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            return type("_Msg", (), {"content": f"Clarification question {self.calls}?"})()
+
+    class _AskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+            self.qna_chain = type("_Qna", (), {"llm": _PlanningLlm()})()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeAutoResult:
+        def model_dump(self) -> dict:
+            return {
+                "answer": "auto execution complete",
+                "sources": [],
+                "trace": [],
+                "warnings": [],
+                "changed_files": [],
+                "plan": {"objective": "Implement plan", "steps": [{"id": "s1", "title": "Inspect"}]},
+                "passes": 1,
+                "terminal_reason": "manager_stop",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [
+                    {
+                        "pass_index": 1,
+                        "requests_count": 1,
+                        "request_fingerprints": ["abc123"],
+                        "tool_steps": 0,
+                        "warnings_delta": 0,
+                        "expected_progress": "inspection complete",
+                    }
+                ],
+            }
+
+    class _FakeOrchestrator:
+        calls: list[str] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            _FakeOrchestrator.calls = []
+
+        def run(self, **kwargs: object):
+            _FakeOrchestrator.calls.append(str(kwargs.get("request", "")))
+            return _FakeAutoResult()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolsManagerOrchestrator", _FakeOrchestrator)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--planning-mode"],
+        input="plan auth module\nanswer one\nanswer two\nanswer three\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Auto-executing plan" in result.stdout
+    assert "Auto-Execute" in result.stdout
+    assert "Generating decision-complete plan..." not in result.stdout
+    assert _FakeOrchestrator.calls
+
+
+def test_chat_planning_mode_no_auto_execute_keeps_plan_only_behavior(monkeypatch, tmp_path: Path) -> None:
+    class _PlanningLlm:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            return type("_Msg", (), {"content": f"Clarification question {self.calls}?"})()
+
+    class _AskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+            self.qna_chain = type("_Qna", (), {"llm": _PlanningLlm()})()
+
+        def ask_with_tools(
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponseWithTrace:
+            _ = (index_dir, question, k, max_steps, timeout_seconds)
+            return AskResponseWithTrace(
+                answer="Plan:\\n1. inspect\\n2. edit\\n3. verify",
+                sources=[],
+                mode="agent-tools",
+                trace=[],
+                warnings=[],
+            )
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--planning-mode", "--no-auto-execute-plan"],
+        input="plan auth module\nanswer one\nanswer two\nanswer three\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Generating decision-complete plan..." in result.stdout
+    assert "Auto-executing plan" not in result.stdout
+
+
 def test_flow_checklist_cli_view_renders_codex_sections(monkeypatch, tmp_path: Path) -> None:
     class _FakeAskService(FakeAskService):
         def __init__(self) -> None:

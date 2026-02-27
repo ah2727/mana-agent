@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -10,6 +11,9 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_PLAN_TRIGGER_REQUEST_RE = re.compile(
+    r"(?i)\b(?:implement|execute|run|apply|trigger)\s+(?:the\s+|last\s+|that\s+|current\s+)?plan\b"
+)
 
 
 def _utc_now() -> str:
@@ -559,6 +563,8 @@ class CodingMemoryService:
     def is_conflicting_request(self, flow_id: str, request: str) -> bool:
         summary = self.get_flow_summary(flow_id)
         if summary is None:
+            return False
+        if _PLAN_TRIGGER_REQUEST_RE.search(request or ""):
             return False
         objective_words = {w for w in summary.objective.lower().split() if len(w) > 3}
         request_words = {w for w in (request or "").lower().split() if len(w) > 3}

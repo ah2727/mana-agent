@@ -5,6 +5,7 @@ from pathlib import Path
 
 from mana_analyzer.llm.coding_agent import CodingAgent, FlowChecklist, FlowStep
 from mana_analyzer.llm.tool_worker_process import ToolWorkerProcessError
+from mana_analyzer.llm.tools_manager import AutoExecuteResult
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 
 
@@ -213,6 +214,44 @@ def test_dir_mode_rewrites_ambiguous_followup_with_flow_context(tmp_path: Path, 
     assert any("followup_request_rewritten_from_flow_context" in str(item) for item in warnings)
 
 
+def test_plan_trigger_followup_rewrites_to_execute_checklist(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    first = agent.generate(
+        "Update docs and type hints in TODO.md",
+        index_dir=tmp_path / ".mana_index",
+        k=4,
+    )
+    flow_id = str(first.get("flow_id") or "")
+    second = agent.generate(
+        "implement plan.",
+        index_dir=tmp_path / ".mana_index",
+        k=4,
+        flow_id=flow_id,
+    )
+
+    fake = agent.ask_agent
+    assert isinstance(fake, _FakeAskAgent)
+    assert len(fake.calls) >= 2
+    followup_question = str(fake.calls[1]["question"])
+    assert "Execute the active flow checklist now." in followup_question
+    assert "Current objective:" in followup_question
+    warnings = second.get("warnings") or []
+    assert any("followup_request_rewritten_from_flow_context" in str(item) for item in warnings)
+
+
+def test_plan_trigger_followup_not_classified_as_conflict(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    first = agent.generate(
+        "Refactor coding agent flow prompts and docs",
+        index_dir=tmp_path / ".mana_index",
+        k=4,
+    )
+    flow_id = str(first.get("flow_id") or "")
+    assert agent.is_conflicting_request("implement plan.", flow_id) is False
+
+
 def test_coding_agent_handles_tools_only_worker_violation(tmp_path: Path, monkeypatch) -> None:
     class _FailingWorker:
         def run_tools(self, _request):
@@ -293,6 +332,72 @@ def test_plan_checklist_falls_back_when_planner_json_is_invalid(tmp_path: Path, 
     assert checklist is not None
     assert checklist.steps
     assert any("planner parse failed" in str(item) for item in warnings)
+
+
+def test_generate_auto_execute_delegates_to_tools_manager_orchestrator(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+
+    class _Orchestrator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, **_kwargs):
+            self.calls += 1
+            return AutoExecuteResult(
+                answer="auto-complete",
+                trace=[{"tool_name": "read_file", "status": "ok", "duration_ms": 1.0, "args_summary": "x"}],
+                warnings=[],
+                changed_files=[],
+                plan={"objective": "Implement request", "steps": []},
+                passes=1,
+                terminal_reason="manager_stop",
+                toolsmanager_requests_count=1,
+                pass_logs=[{"pass_index": 1, "requests_count": 1}],
+            )
+
+    orchestrator = _Orchestrator()
+    agent.set_tools_manager_orchestrator(orchestrator)
+    result = agent.generate_auto_execute(
+        "Implement planner",
+        index_dir=tmp_path / ".mana_index",
+        k=4,
+        pass_cap=3,
+    )
+    assert orchestrator.calls == 1
+    assert result["answer"] == "auto-complete"
+    assert result["auto_execute_passes"] == 1
+    assert result["auto_execute_terminal_reason"] == "manager_stop"
+
+
+def test_generate_auto_execute_preserves_flow_id_continuity(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+
+    class _Orchestrator:
+        def run(self, **_kwargs):
+            return AutoExecuteResult(
+                answer="auto",
+                trace=[],
+                warnings=[],
+                changed_files=[],
+                plan={"objective": "Implement request", "steps": []},
+                passes=1,
+                terminal_reason="manager_stop",
+                toolsmanager_requests_count=1,
+                pass_logs=[{"pass_index": 1, "requests_count": 1}],
+            )
+
+    agent.set_tools_manager_orchestrator(_Orchestrator())
+    first = agent.generate_auto_execute("Implement A", index_dir=tmp_path / ".mana_index", k=4)
+    second = agent.generate_auto_execute(
+        "Continue A",
+        index_dir=tmp_path / ".mana_index",
+        k=4,
+        flow_id=first["flow_id"],
+    )
+    assert isinstance(first.get("flow_id"), str)
+    assert second.get("flow_id") == first.get("flow_id")
 
 
 def test_plan_checklist_parses_python_literal_payload_without_repair(tmp_path: Path, monkeypatch) -> None:
