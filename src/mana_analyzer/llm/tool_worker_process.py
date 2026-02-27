@@ -114,6 +114,9 @@ class ToolWorkerClient:
         )
         self._proc: subprocess.Popen[str] | None = None
 
+    def init_payload_dict(self) -> dict[str, Any]:
+        return self._init_payload.model_dump()
+
     def start(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
@@ -252,6 +255,102 @@ class ToolWorkerClient:
             return reply.payload
 
 
+def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
+    embeddings = OpenAIEmbeddings(
+        api_key=payload.api_key,
+        model=payload.embed_model,
+        base_url=payload.base_url,
+    )
+    search_service = SearchService(store=FaissStore(embeddings))
+    ask_agent = AskAgent(
+        api_key=payload.api_key,
+        model=payload.model,
+        base_url=payload.base_url,
+        search_service=search_service,
+        project_root=Path(payload.project_root),
+    )
+    ask_agent.tools.extend(
+        [
+            build_write_file_tool(
+                repo_root=Path(payload.repo_root),
+                allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+            ),
+            build_apply_patch_tool(
+                repo_root=Path(payload.repo_root),
+                allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+            ),
+            build_search_internet_tool(),
+        ]
+    )
+    return ask_agent
+
+
+def _run_tool_request(
+    *,
+    ask_agent: AskAgent,
+    req: ToolRunRequest,
+    tools_only_strict_default: bool,
+    callbacks: list[BaseCallbackHandler] | None = None,
+) -> ToolRunResponse:
+    if req.index_dirs:
+        result = ask_agent.run_multi(
+            question=req.question,
+            index_dirs=[Path(p) for p in req.index_dirs],
+            k=req.k,
+            max_steps=req.max_steps,
+            timeout_seconds=req.timeout_seconds,
+            system_prompt=req.system_prompt,
+            tool_policy=req.tool_policy,
+            callbacks=callbacks,
+        )
+    else:
+        if not req.index_dir:
+            raise ValueError("index_dir or index_dirs must be provided")
+        result = ask_agent.run(
+            question=req.question,
+            index_dir=Path(req.index_dir),
+            k=req.k,
+            max_steps=req.max_steps,
+            timeout_seconds=req.timeout_seconds,
+            system_prompt=req.system_prompt,
+            tool_policy=req.tool_policy,
+            callbacks=callbacks,
+        )
+    trace_rows = [item.to_dict() for item in getattr(result, "trace", [])]
+    ok_tools = len([row for row in trace_rows if str(row.get("status", "")).lower().strip() == "ok"])
+    strict_required = bool(tools_only_strict_default)
+    if req.tools_only_strict_override is not None:
+        strict_required = bool(req.tools_only_strict_override)
+    if strict_required and ok_tools <= 0:
+        raise ToolWorkerProcessError(
+            code="tools_only_violation",
+            message="tools-only mode requires at least one successful tool call",
+            retriable=False,
+            details={"trace_count": len(trace_rows)},
+        )
+    return ToolRunResponse(
+        answer=str(getattr(result, "answer", "")),
+        sources=[item.to_dict() for item in getattr(result, "sources", [])],
+        mode=str(getattr(result, "mode", "agent-tools")),
+        trace=trace_rows,
+        warnings=[str(item) for item in getattr(result, "warnings", [])],
+    )
+
+
+def run_tool_request_once(
+    *,
+    init_payload: WorkerInitPayload,
+    request: ToolRunRequest,
+) -> ToolRunResponse:
+    ask_agent = _build_worker_ask_agent(init_payload)
+    return _run_tool_request(
+        ask_agent=ask_agent,
+        req=request,
+        tools_only_strict_default=bool(init_payload.tools_only_strict),
+        callbacks=None,
+    )
+
+
 class _WorkerToolEventCallback(BaseCallbackHandler):
     """Emit per-tool events from worker process back to parent client."""
 
@@ -345,33 +444,7 @@ class _ToolWorkerServer:
     def _handle_init(self, env: WorkerEnvelope) -> None:
         try:
             payload = WorkerInitPayload.model_validate(env.payload)
-            embeddings = OpenAIEmbeddings(
-                api_key=payload.api_key,
-                model=payload.embed_model,
-                base_url=payload.base_url,
-            )
-            search_service = SearchService(store=FaissStore(embeddings))
-            ask_agent = AskAgent(
-                api_key=payload.api_key,
-                model=payload.model,
-                base_url=payload.base_url,
-                search_service=search_service,
-                project_root=Path(payload.project_root),
-            )
-            ask_agent.tools.extend(
-                [
-                    build_write_file_tool(
-                        repo_root=Path(payload.repo_root),
-                        allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
-                    ),
-                    build_apply_patch_tool(
-                        repo_root=Path(payload.repo_root),
-                        allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
-                    ),
-                    build_search_internet_tool(),
-                ]
-            )
-            self._ask_agent = ask_agent
+            self._ask_agent = _build_worker_ask_agent(payload)
             self._tools_only_strict = bool(payload.tools_only_strict)
             self._emit(
                 WorkerReply(
@@ -411,57 +484,26 @@ class _ToolWorkerServer:
         try:
             req = ToolRunRequest.model_validate(env.payload)
             tool_event_cb = _WorkerToolEventCallback(request_id=env.request_id, emit_reply=self._emit)
-            if req.index_dirs:
-                result = self._ask_agent.run_multi(
-                    question=req.question,
-                    index_dirs=[Path(p) for p in req.index_dirs],
-                    k=req.k,
-                    max_steps=req.max_steps,
-                    timeout_seconds=req.timeout_seconds,
-                    system_prompt=req.system_prompt,
-                    tool_policy=req.tool_policy,
-                    callbacks=[tool_event_cb],
-                )
-            else:
-                if not req.index_dir:
-                    raise ValueError("index_dir or index_dirs must be provided")
-                result = self._ask_agent.run(
-                    question=req.question,
-                    index_dir=Path(req.index_dir),
-                    k=req.k,
-                    max_steps=req.max_steps,
-                    timeout_seconds=req.timeout_seconds,
-                    system_prompt=req.system_prompt,
-                    tool_policy=req.tool_policy,
-                    callbacks=[tool_event_cb],
-                )
-            trace_rows = [item.to_dict() for item in getattr(result, "trace", [])]
-            ok_tools = len([row for row in trace_rows if str(row.get("status", "")).lower().strip() == "ok"])
-            strict_required = self._tools_only_strict
-            if req.tools_only_strict_override is not None:
-                strict_required = bool(req.tools_only_strict_override)
-            if strict_required and ok_tools <= 0:
-                self._emit(
-                    WorkerReply(
-                        type="error",
-                        request_id=env.request_id,
-                        payload=WorkerError(
-                            code="tools_only_violation",
-                            message="tools-only mode requires at least one successful tool call",
-                            retriable=False,
-                            details={"trace_count": len(trace_rows)},
-                        ).model_dump(),
-                    )
-                )
-                return
-            response = ToolRunResponse(
-                answer=str(getattr(result, "answer", "")),
-                sources=[item.to_dict() for item in getattr(result, "sources", [])],
-                mode=str(getattr(result, "mode", "agent-tools")),
-                trace=trace_rows,
-                warnings=[str(item) for item in getattr(result, "warnings", [])],
+            response = _run_tool_request(
+                ask_agent=self._ask_agent,
+                req=req,
+                tools_only_strict_default=self._tools_only_strict,
+                callbacks=[tool_event_cb],
             )
             self._emit(WorkerReply(type="ok", request_id=env.request_id, payload=response.model_dump()))
+        except ToolWorkerProcessError as exc:
+            self._emit(
+                WorkerReply(
+                    type="error",
+                    request_id=env.request_id,
+                    payload=WorkerError(
+                        code=exc.code,
+                        message=str(exc),
+                        retriable=bool(exc.retriable),
+                        details=exc.details,
+                    ).model_dump(),
+                )
+            )
         except Exception as exc:
             self._emit(
                 WorkerReply(

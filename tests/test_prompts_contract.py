@@ -31,3 +31,20 @@ def test_prompt_import_smoke_for_dependent_modules() -> None:
         "mana_analyzer.services.search_service",
     ]:
         import_module(module_name)
+
+
+def test_toolsmanager_prompt_mentions_parallel_independence_and_ordering() -> None:
+    text = str(getattr(prompts, "TOOLSMANAGER_PROMPT", "") or "").lower()
+    assert "independent" in text
+    assert "parallel" in text
+    assert "input order" in text or "original input order" in text
+
+
+def test_coding_prompts_enforce_noop_retry_flow() -> None:
+    system_text = str(getattr(prompts, "SYSTEM_PROMPT", "") or "").lower()
+    recog_text = str(getattr(prompts, "CODING_AGENT_RECOGNITION_PROMPT", "") or "").lower()
+    assert "no-op" in system_text
+    assert "files changed" in system_text or "file-change evidence" in system_text
+    assert "do not finalize on no-op" in system_text
+    assert "no-op" in recog_text
+    assert "apply_patch" in recog_text and "write_file" in recog_text

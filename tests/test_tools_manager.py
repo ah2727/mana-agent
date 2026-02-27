@@ -9,6 +9,7 @@ from mana_analyzer.llm.tools_manager import (
     ToolsManagerOrchestrator,
     ToolsPlan,
 )
+from mana_analyzer.llm.tools_executor import BatchExecutionResult
 
 
 class _NoopWorker:
@@ -362,3 +363,206 @@ def test_tools_manager_retries_conversational_finalize_without_edits(tmp_path: P
     )
     assert result.toolsmanager_requests_count == 1
     assert any("planner_finalize_conversational_without_edits" in str(item) for item in result.warnings)
+
+
+def test_tools_manager_merges_batch_results_in_input_order(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+
+    continue_plan = ToolsPlan(
+        objective="Run",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Inspect",
+                "tool_intent": "inspect",
+                "args_hint": "",
+                "success_signal": "",
+                "fallback": "",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    finalize_plan = ToolsPlan(
+        objective="Run",
+        steps=[],
+        decision="finalize",
+        decision_reason="done",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+
+    calls = {"n": 0}
+
+    def _plan_with_source(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return continue_plan, [], "planner"
+        return finalize_plan, [], "planner"
+
+    monkeypatch.setattr(orchestrator, "_plan_with_source", _plan_with_source)
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="parallel",
+                requests=[{"question": "q0"}, {"question": "q1"}],
+                continue_after=True,
+                expected_progress="inspect",
+            ),
+            [],
+        ),
+    )
+
+    class _OutOfOrderExecutor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, requests, on_event)
+            return [
+                BatchExecutionResult(
+                    request_index=1,
+                    ok=True,
+                    response={
+                        "answer": "second",
+                        "sources": [],
+                        "mode": "agent-tools",
+                        "trace": [{"tool_name": "read_file", "status": "ok", "idx": 1}],
+                        "warnings": [],
+                    },
+                    backend="redis",
+                ),
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response={
+                        "answer": "first",
+                        "sources": [],
+                        "mode": "agent-tools",
+                        "trace": [{"tool_name": "semantic_search", "status": "ok", "idx": 0}],
+                        "warnings": [],
+                    },
+                    backend="redis",
+                ),
+            ]
+
+    orchestrator.executor = _OutOfOrderExecutor()
+
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=2,
+    )
+    assert result.toolsmanager_requests_count == 2
+    assert result.execution_requests_ok == 2
+    assert result.execution_requests_failed == 0
+    assert len(result.trace) == 2
+    assert result.trace[0].get("idx") == 0
+    assert result.trace[1].get("idx") == 1
+
+
+def test_tools_manager_mixed_batch_failures_are_warnings_not_crash(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+
+    continue_plan = ToolsPlan(
+        objective="Run",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Inspect",
+                "tool_intent": "inspect",
+                "args_hint": "",
+                "success_signal": "",
+                "fallback": "",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    finalize_plan = ToolsPlan(
+        objective="Run",
+        steps=[],
+        decision="finalize",
+        decision_reason="done",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+
+    calls = {"n": 0}
+
+    def _plan_with_source(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return continue_plan, [], "planner"
+        return finalize_plan, [], "planner"
+
+    monkeypatch.setattr(orchestrator, "_plan_with_source", _plan_with_source)
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="parallel",
+                requests=[{"question": "q0"}, {"question": "q1"}],
+                continue_after=True,
+                expected_progress="inspect",
+            ),
+            [],
+        ),
+    )
+
+    class _MixedExecutor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, requests, on_event)
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=False,
+                    error_code="job_timeout",
+                    error_message="timed out",
+                    backend="redis",
+                ),
+                BatchExecutionResult(
+                    request_index=1,
+                    ok=True,
+                    response={
+                        "answer": "ok",
+                        "sources": [],
+                        "mode": "agent-tools",
+                        "trace": [{"tool_name": "read_file", "status": "ok"}],
+                        "warnings": [],
+                    },
+                    backend="redis",
+                ),
+            ]
+
+    orchestrator.executor = _MixedExecutor()
+
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=2,
+    )
+    assert result.toolsmanager_requests_count == 2
+    assert result.execution_requests_ok == 1
+    assert result.execution_requests_failed == 1
+    assert any("job_timeout" in str(item) for item in result.warnings)

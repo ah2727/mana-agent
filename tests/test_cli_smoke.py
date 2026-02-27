@@ -946,6 +946,88 @@ def test_chat_plan_trigger_auto_execute_without_coding_agent_hides_progress(monk
     assert "auto execution complete" in result.stdout
 
 
+def test_chat_redis_backend_falls_back_to_local_executor_when_unavailable(monkeypatch, tmp_path: Path) -> None:
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+        def init_payload_dict(self) -> dict:
+            return {
+                "api_key": "x",
+                "model": "fake-model",
+                "project_root": str(tmp_path),
+                "repo_root": str(tmp_path),
+                "tools_only_strict": True,
+            }
+
+    class _FakeAutoResult:
+        def model_dump(self) -> dict:
+            return {
+                "answer": "auto execution complete",
+                "sources": [],
+                "trace": [],
+                "warnings": [],
+                "changed_files": [],
+                "plan": {"objective": "Implement plan", "steps": [{"id": "s1", "title": "Inspect"}]},
+                "passes": 1,
+                "terminal_reason": "manager_stop",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+    class _FakeOrchestrator:
+        init_kwargs: dict[str, object] = {}
+
+        def __init__(self, **kwargs: object) -> None:
+            _FakeOrchestrator.init_kwargs = dict(kwargs)
+
+        def preview_plan(self, **_kwargs: object) -> dict:
+            return {
+                "prechecklist": {
+                    "objective": "Implement plan",
+                    "source": "planner",
+                    "steps": [{"id": "s1", "status": "in_progress", "title": "Inspect files"}],
+                },
+                "prechecklist_source": "planner",
+                "prechecklist_warning": "",
+                "warnings": [],
+            }
+
+        def run(self, **_kwargs: object):
+            return _FakeAutoResult()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolsManagerOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(
+        "mana_analyzer.commands.cli.RedisRQToolsExecutor",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("redis unavailable")),
+    )
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--tool-exec-backend", "redis"],
+        input="implement plan.\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "auto execution complete" in result.stdout
+    assert _FakeOrchestrator.init_kwargs
+    execution_config = _FakeOrchestrator.init_kwargs.get("execution_config")
+    assert str(getattr(execution_config, "backend", "")) == "redis"
+    assert _FakeOrchestrator.init_kwargs.get("executor").__class__.__name__ == "LocalToolsExecutor"
+
+
 def test_chat_planning_mode_auto_executes_after_clarifications(monkeypatch, tmp_path: Path) -> None:
     class _PlanningLlm:
         def __init__(self) -> None:

@@ -178,6 +178,29 @@ All commands share common options:
 - The **Head Tools Planner** prompt (`HEAD_TOOLS_PLANNER_PROMPT`) decides objective, steps, current step, and terminal decision (`continue|revise|finalize|stop`).
 - The **ToolsManager** prompt (`TOOLSMANAGER_PROMPT`) compiles those steps into 1..N worker-executable tool requests with optional per-request tool-policy overrides.
 - Auto-execute pass logs record planner decision, batch reason, request fingerprints, tool steps, warnings delta, and terminal reason for transparent debugging.
+- Runtime execution backend is configurable:
+  - `local` (default): executes per-pass requests through the existing worker client path.
+  - `redis` (opt-in): enqueues per-pass requests to Redis/RQ workers for concurrent multi-process execution.
+- Redis runtime state keys are ephemeral and expire automatically (default 24h TTL); historical `.mana_llm_logs` JSONL files are not backfilled into Redis.
+
+Redis backend prerequisites (system-managed service):
+
+```bash
+# Start at least one Redis/RQ worker in a separate shell
+rq worker mana-tools --url redis://127.0.0.1:6379/0
+
+# Run chat with Redis execution enabled
+mana-analyzer chat \
+  --agent-tools \
+  --coding-agent \
+  --tool-exec-backend redis \
+  --redis-url redis://127.0.0.1:6379/0 \
+  --redis-queue-name mana-tools \
+  --toolsmanager-parallel-requests 3 \
+  --redis-ttl-seconds 86400
+```
+
+If Redis/RQ is unavailable at runtime, the CLI falls back to the local executor and emits a warning.
 
 ### Tool-first mutation model and patch format
 

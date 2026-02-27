@@ -5,6 +5,8 @@ import hashlib
 import json
 import re
 import subprocess
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Literal, Sequence, TypeVar
 
@@ -13,7 +15,13 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from mana_analyzer.llm.prompts import HEAD_TOOLS_PLANNER_PROMPT, TOOLSMANAGER_PROMPT
-from mana_analyzer.llm.tool_worker_process import ToolRunRequest, ToolWorkerClient, ToolWorkerProcessError
+from mana_analyzer.llm.tool_worker_process import ToolRunRequest, ToolRunResponse, ToolWorkerClient
+from mana_analyzer.llm.tools_executor import (
+    BatchToolRequest,
+    LocalToolsExecutor,
+    ToolsExecutionConfig,
+    ToolsExecutor,
+)
 
 
 PlanDecision = Literal["continue", "revise", "finalize", "stop"]
@@ -70,6 +78,11 @@ class AutoExecuteResult(BaseModel):
     prechecklist: dict[str, Any] | None = None
     prechecklist_source: str = ""
     prechecklist_warning: str = ""
+    execution_backend: str = "local"
+    execution_run_id: str = ""
+    execution_duration_ms: float = 0.0
+    execution_requests_ok: int = 0
+    execution_requests_failed: int = 0
 
 
 class ToolsManagerOrchestrator:
@@ -83,6 +96,8 @@ class ToolsManagerOrchestrator:
         worker_client: ToolWorkerClient,
         repo_root: Path,
         base_url: str | None = None,
+        execution_config: ToolsExecutionConfig | None = None,
+        executor: ToolsExecutor | None = None,
     ) -> None:
         llm_kwargs: dict[str, Any] = {
             "api_key": api_key,
@@ -93,6 +108,8 @@ class ToolsManagerOrchestrator:
         self.llm = ChatOpenAI(**llm_kwargs)
         self.worker_client = worker_client
         self.repo_root = repo_root.resolve()
+        self.execution_config = execution_config or ToolsExecutionConfig()
+        self.executor = executor or LocalToolsExecutor(worker_client=worker_client)
 
     @staticmethod
     def _strip_code_fence(raw: str) -> str:
@@ -949,6 +966,11 @@ class ToolsManagerOrchestrator:
         toolsmanager_requests_count = 0
         latest_answer = ""
         stalled_passes = 0
+        execution_run_id = uuid.uuid4().hex
+        execution_started = time.perf_counter()
+        execution_requests_ok = 0
+        execution_requests_failed = 0
+        execution_backend = str(getattr(getattr(self, "execution_config", None), "backend", "local") or "local")
 
         plan, plan_warnings, _source = self._plan_with_source(
             request=request,
@@ -1066,8 +1088,9 @@ class ToolsManagerOrchestrator:
             tool_steps_this_pass = 0
             warnings_before = len(all_warnings)
             executed_requests = 0
+            batch_requests: list[BatchToolRequest] = []
 
-            for item in batch.requests:
+            for request_index, item in enumerate(batch.requests):
                 merged_policy = self._merge_policy(tool_policy, item.tool_policy_override)
                 clipped_timeout = self._clip_timeout(item.timeout_seconds, session_timeout=timeout_seconds)
                 question = str(item.question or "").strip()
@@ -1075,22 +1098,66 @@ class ToolsManagerOrchestrator:
                     continue
                 request_fingerprints.append(self._fingerprint_request(question, merged_policy, clipped_timeout))
                 toolsmanager_requests_count += 1
-                tool_request = ToolRunRequest(
-                    question=question,
-                    index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
-                    index_dirs=[str(Path(p).resolve()) for p in (index_dirs or []) if str(p).strip()] or None,
-                    k=int(k),
-                    max_steps=int(max_steps),
-                    timeout_seconds=clipped_timeout,
-                    tool_policy=merged_policy,
-                    system_prompt=None,
+                batch_requests.append(
+                    BatchToolRequest(
+                        request_index=request_index,
+                        request=ToolRunRequest(
+                            question=question,
+                            index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
+                            index_dirs=[str(Path(p).resolve()) for p in (index_dirs or []) if str(p).strip()] or None,
+                            k=int(k),
+                            max_steps=int(max_steps),
+                            timeout_seconds=clipped_timeout,
+                            tool_policy=merged_policy,
+                            system_prompt=None,
+                        ),
+                    )
                 )
+
+            executor_failed = False
+            try:
+                executor = getattr(self, "executor", LocalToolsExecutor(worker_client=self.worker_client))
+                batch_results = executor.run_batch(
+                    run_id=execution_run_id,
+                    requests=batch_requests,
+                    on_event=on_event,
+                )
+            except Exception as exc:  # pragma: no cover - executor guardrail
+                batch_results = []
+                executor_failed = True
+                all_warnings.append(f"toolsmanager executor error: job_failed: {exc}")
+                execution_requests_failed += len(batch_requests)
+
+            if not executor_failed:
+                seen_indexes = {int(item.request_index) for item in batch_results}
+                for req in batch_requests:
+                    if int(req.request_index) not in seen_indexes:
+                        execution_requests_failed += 1
+                        all_warnings.append(
+                            f"toolsmanager executor error: result_decode_failed: missing result for request index {int(req.request_index)}"
+                        )
+
+            for item in sorted(batch_results, key=lambda row: int(row.request_index)):
+                if not item.ok:
+                    execution_requests_failed += 1
+                    code = str(item.error_code or "job_failed")
+                    detail = str(item.error_message or "request failed")
+                    all_warnings.append(f"toolsmanager executor error: {code}: {detail}")
+                    continue
+                if not isinstance(item.response, dict):
+                    execution_requests_failed += 1
+                    all_warnings.append(
+                        "toolsmanager executor error: result_decode_failed: response payload missing"
+                    )
+                    continue
                 try:
-                    response = self.worker_client.run_tools(tool_request, on_event=on_event)
-                except ToolWorkerProcessError as exc:
-                    all_warnings.append(f"toolsmanager worker error: {exc.code}: {exc}")
+                    response = ToolRunResponse.model_validate(item.response)
+                except Exception as exc:
+                    execution_requests_failed += 1
+                    all_warnings.append(f"toolsmanager executor error: result_decode_failed: {exc}")
                     continue
 
+                execution_requests_ok += 1
                 executed_requests += 1
                 if response.answer:
                     latest_answer = str(response.answer)
@@ -1123,6 +1190,7 @@ class ToolsManagerOrchestrator:
                     "tool_steps": tool_steps_this_pass,
                     "warnings_delta": warnings_delta,
                     "continue_after": bool(batch.continue_after),
+                    "execution_backend": execution_backend,
                 }
             )
 
@@ -1172,6 +1240,11 @@ class ToolsManagerOrchestrator:
             toolsmanager_requests_count=toolsmanager_requests_count,
             pass_logs=all_pass_logs,
             planner_decisions=planner_decisions,
+            execution_backend=execution_backend,
+            execution_run_id=execution_run_id,
+            execution_duration_ms=round((time.perf_counter() - execution_started) * 1000.0, 3),
+            execution_requests_ok=execution_requests_ok,
+            execution_requests_failed=execution_requests_failed,
         )
 
 

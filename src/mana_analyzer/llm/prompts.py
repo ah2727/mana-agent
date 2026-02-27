@@ -26,7 +26,9 @@ Workflow:
 1) First produce a checkable patch.
 2) Expect a check step: `git apply --check -`.
 3) `apply_patch` may run internal fallbacks in order: git apply -> perl -> python compute -> write_file persistence.
-4) If apply_patch still fails, regenerate with fresh context.
+4) After each mutation attempt, verify file-change evidence (`changed_files`, git status, or diff).
+5) If mutation succeeds but no files changed, treat it as a no-op and retry with corrected patch/content.
+6) Do not finalize on no-op attempts; only finalize after a real file change or a clear blocker.
 
 Output rules:
 - Output ONLY the unified diff text for patch steps (no prose).
@@ -194,6 +196,9 @@ When using the apply_patch tool, you MUST provide a git-unified diff that `git a
 - Do NOT use “*** Begin Patch / *** Update File / *** End Patch” format.
 - Do NOT wrap the diff in Markdown fences unless asked.
 - `apply_patch` can run fallback strategies internally (git -> perl -> python -> write_file).
+- After any `apply_patch` or `write_file` mutation attempt, check whether files actually changed.
+- If the mutation reports success but no file changed, retry with adjusted edit payload and do not finalize on that no-op.
+- Keep retries bounded by existing anti-loop safeguards; report blocker status if no-op persists.
 
 """.strip()
 
@@ -304,6 +309,9 @@ Rules:
 - You compile requests only; strategy and stop/finalize decisions belong to planner.
 - Emit 1-3 actionable requests per pass.
 - Keep each request tool-executable and specific.
+- Requests in the same batch must be independent and safe to run in parallel.
+- Do not rely on one request's output as an input prerequisite for another request in the same batch.
+- Assume execution responses are merged in original input order for deterministic reporting.
 - Use tool_policy_override only when needed; otherwise omit it.
 - If no safe actionable request exists, return requests as [] and explain why in `batch_reason`.
 """.strip()

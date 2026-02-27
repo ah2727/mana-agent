@@ -5,6 +5,8 @@ from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from mana_analyzer.llm import tool_worker_process as twp
 
 
@@ -349,3 +351,46 @@ def test_tool_worker_server_emits_tool_events(monkeypatch) -> None:
     assert "tool_start" in event_names
     assert "tool_end" in event_names
     assert emitted[-1].type == "ok"
+
+
+def test_run_tool_request_once_enforces_tools_only_policy(monkeypatch) -> None:
+    class _FakeAskAgent:
+        def run(self, **_kwargs):
+            return SimpleNamespace(answer="no tools", sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    monkeypatch.setattr(twp, "_build_worker_ask_agent", lambda _payload: _FakeAskAgent())
+    init_payload = twp.WorkerInitPayload(
+        api_key="x",
+        model="m",
+        project_root="/tmp",
+        repo_root="/tmp",
+        tools_only_strict=True,
+    )
+    req = twp.ToolRunRequest(question="q", index_dir="/tmp/.mana_index")
+
+    with pytest.raises(twp.ToolWorkerProcessError) as excinfo:
+        twp.run_tool_request_once(init_payload=init_payload, request=req)
+    assert excinfo.value.code == "tools_only_violation"
+
+
+def test_run_tool_request_once_respects_tools_only_override(monkeypatch) -> None:
+    class _FakeAskAgent:
+        def run(self, **_kwargs):
+            return SimpleNamespace(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    monkeypatch.setattr(twp, "_build_worker_ask_agent", lambda _payload: _FakeAskAgent())
+    init_payload = twp.WorkerInitPayload(
+        api_key="x",
+        model="m",
+        project_root="/tmp",
+        repo_root="/tmp",
+        tools_only_strict=True,
+    )
+    req = twp.ToolRunRequest(
+        question="q",
+        index_dir="/tmp/.mana_index",
+        tools_only_strict_override=False,
+    )
+
+    response = twp.run_tool_request_once(init_payload=init_payload, request=req)
+    assert response.answer == "ok"

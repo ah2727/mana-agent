@@ -38,6 +38,11 @@ from mana_analyzer.llm.coding_agent import CodingAgent
 from mana_analyzer.llm.run_logger import LlmRunLogger
 from mana_analyzer.llm.tool_worker_process import ToolWorkerClient, ToolWorkerProcessError
 from mana_analyzer.llm.tools_manager import ToolsManagerOrchestrator
+from mana_analyzer.llm.tools_executor import (
+    LocalToolsExecutor,
+    RedisRQToolsExecutor,
+    ToolsExecutionConfig,
+)
 from mana_analyzer.parsers.multi_parser import MultiLanguageParser
 from mana_analyzer.services.analyze_service import AnalyzeService
 from mana_analyzer.services.ask_service import AskService
@@ -481,6 +486,11 @@ def _log_chat_turn(
     prechecklist_source: str | None = None,
     prechecklist_steps_count: int = 0,
     prechecklist_warning: str | None = None,
+    tool_execution_backend: str = "",
+    tool_execution_run_id: str = "",
+    tool_execution_duration_ms: float = 0.0,
+    tool_execution_requests_ok: int = 0,
+    tool_execution_requests_failed: int = 0,
     multiline_input: bool | None = None,
     multiline_terminator: str | None = None,
 ) -> None:
@@ -520,6 +530,11 @@ def _log_chat_turn(
                 "prechecklist_source": str(prechecklist_source or ""),
                 "prechecklist_steps_count": int(prechecklist_steps_count),
                 "prechecklist_warning": str(prechecklist_warning or ""),
+                "tool_execution_backend": str(tool_execution_backend or ""),
+                "tool_execution_run_id": str(tool_execution_run_id or ""),
+                "tool_execution_duration_ms": float(tool_execution_duration_ms or 0.0),
+                "tool_execution_requests_ok": int(tool_execution_requests_ok or 0),
+                "tool_execution_requests_failed": int(tool_execution_requests_failed or 0),
                 "multiline_input": bool(multiline_input) if multiline_input is not None else None,
                 "multiline_terminator": str(multiline_terminator or ""),
             }
@@ -3143,6 +3158,33 @@ def chat(
         "--tool-worker-strict/--no-tool-worker-strict",
         help="Require at least one successful tool call in worker mode.",
     ),
+    tool_exec_backend: str = typer.Option(
+        "local",
+        "--tool-exec-backend",
+        help="ToolsManager executor backend: local or redis.",
+    ),
+    redis_url: str | None = typer.Option(
+        None,
+        "--redis-url",
+        help="Redis URL for --tool-exec-backend redis.",
+    ),
+    toolsmanager_parallel_requests: int = typer.Option(
+        3,
+        "--toolsmanager-parallel-requests",
+        min=1,
+        help="Maximum concurrent per-pass ToolsManager requests.",
+    ),
+    redis_queue_name: str = typer.Option(
+        "mana-tools",
+        "--redis-queue-name",
+        help="Redis queue name used by ToolsManager redis backend.",
+    ),
+    redis_ttl_seconds: int = typer.Option(
+        86_400,
+        "--redis-ttl-seconds",
+        min=60,
+        help="Redis TTL for ToolsManager runtime status/event keys.",
+    ),
     coding_memory: bool = typer.Option(
         True,
         "--coding-memory/--no-coding-memory",
@@ -3265,6 +3307,11 @@ def chat(
             "coding_agent": coding_agent,
             "tool_worker_process": tool_worker_process,
             "tool_worker_strict": tool_worker_strict,
+            "tool_exec_backend": tool_exec_backend,
+            "redis_url": redis_url,
+            "toolsmanager_parallel_requests": toolsmanager_parallel_requests,
+            "redis_queue_name": redis_queue_name,
+            "redis_ttl_seconds": redis_ttl_seconds,
             "coding_memory": coding_memory,
             "flow_id": flow_id,
             "coding_plan_max_steps": coding_plan_max_steps,
@@ -3317,6 +3364,38 @@ def chat(
         cap=200,
     )
     settings = Settings()
+    resolved_tool_exec_backend = str(
+        (tool_exec_backend or getattr(settings, "tool_exec_backend", "local")) or "local"
+    ).strip().lower()
+    if resolved_tool_exec_backend not in {"local", "redis"}:
+        raise typer.BadParameter("--tool-exec-backend must be 'local' or 'redis'.")
+    resolved_redis_url = str(
+        (redis_url or getattr(settings, "redis_url", "redis://127.0.0.1:6379/0"))
+        or "redis://127.0.0.1:6379/0"
+    ).strip()
+    resolved_parallel_requests = max(
+        1,
+        int(
+            toolsmanager_parallel_requests
+            or getattr(settings, "toolsmanager_parallel_requests", 3)
+            or 3
+        ),
+    )
+    resolved_redis_queue_name = str(
+        (redis_queue_name or getattr(settings, "redis_queue_name", "mana-tools")) or "mana-tools"
+    ).strip() or "mana-tools"
+    resolved_redis_ttl_seconds = max(
+        60,
+        int(redis_ttl_seconds or getattr(settings, "redis_ttl_seconds", 86_400) or 86_400),
+    )
+    tools_execution_config = ToolsExecutionConfig(
+        backend=resolved_tool_exec_backend,
+        redis_url=resolved_redis_url,
+        queue_name=resolved_redis_queue_name,
+        parallel_requests=resolved_parallel_requests,
+        ttl_seconds=resolved_redis_ttl_seconds,
+    )
+    tools_execution_boot_warnings: list[str] = []
     diagram_format = str(diagram_format or "svg").strip().lower()
     if diagram_format not in {"svg", "png"}:
         raise typer.BadParameter("--diagram-format must be 'svg' or 'png'.")
@@ -3369,7 +3448,23 @@ def chat(
     coding_memory_service: CodingMemoryService | None = None
     tool_worker_client: ToolWorkerClient | None = None
     tools_manager_orchestrator: ToolsManagerOrchestrator | None = None
+    tools_executor_instance: LocalToolsExecutor | RedisRQToolsExecutor | None = None
     effective_model = model or settings.openai_chat_model
+
+    def _build_tools_executor(worker_client: ToolWorkerClient):
+        if tools_execution_config.backend != "redis":
+            return LocalToolsExecutor(worker_client=worker_client)
+        try:
+            return RedisRQToolsExecutor(
+                worker_init_payload=worker_client.init_payload_dict(),
+                config=tools_execution_config,
+            )
+        except Exception as exc:
+            warning = f"redis executor unavailable; falling back to local backend: {exc}"
+            logger.warning(warning)
+            tools_execution_boot_warnings.append(warning)
+            return LocalToolsExecutor(worker_client=worker_client)
+
     if coding_agent:
         if not agent_tools:
             raise typer.BadParameter("--coding-agent requires --agent-tools (needs tool loop).")
@@ -3412,12 +3507,15 @@ def chat(
         )
 
     if coding_agent_instance is not None and auto_execute_plan and tool_worker_client is not None:
+        tools_executor_instance = _build_tools_executor(tool_worker_client)
         tools_manager_orchestrator = ToolsManagerOrchestrator(
             api_key=settings.openai_api_key,
             model=effective_model,
             base_url=settings.openai_base_url,
             worker_client=tool_worker_client,
             repo_root=root,
+            execution_config=tools_execution_config,
+            executor=tools_executor_instance,
         )
         if hasattr(coding_agent_instance, "set_tools_manager_orchestrator"):
             coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
@@ -3657,7 +3755,9 @@ def chat(
                 tool_worker_client.health()
                 console.print(
                     "[cyan]Tool worker subprocess active:[/cyan] "
-                    f"tools-only strict={tool_worker_strict}"
+                    f"tools-only strict={tool_worker_strict}; "
+                    f"exec-backend={tools_execution_config.backend}; "
+                    f"parallel={tools_execution_config.parallel_requests}"
                 )
             except Exception as exc:
                 _log_exception("tool_worker_client.start", exc)
@@ -3704,6 +3804,7 @@ def chat(
         def _ensure_tools_manager_orchestrator() -> ToolsManagerOrchestrator | None:
             nonlocal tool_worker_client
             nonlocal tools_manager_orchestrator
+            nonlocal tools_executor_instance
             if not (agent_tools and auto_execute_plan and tool_worker_process):
                 return None
             if tools_manager_orchestrator is not None:
@@ -3725,12 +3826,16 @@ def chat(
             except Exception as exc:
                 _log_exception("tool_worker_client.start", exc)
                 return None
+            if tools_executor_instance is None:
+                tools_executor_instance = _build_tools_executor(tool_worker_client)
             tools_manager_orchestrator = ToolsManagerOrchestrator(
                 api_key=settings.openai_api_key,
                 model=model or settings.openai_chat_model,
                 base_url=settings.openai_base_url,
                 worker_client=tool_worker_client,
                 repo_root=root,
+                execution_config=tools_execution_config,
+                executor=tools_executor_instance,
             )
             if coding_agent_instance is not None and hasattr(coding_agent_instance, "set_tools_manager_orchestrator"):
                 coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
@@ -3747,7 +3852,10 @@ def chat(
             if orchestrator is None:
                 return {
                     "answer": "Auto-execute requested but tools manager worker is unavailable.",
-                    "warnings": ["auto_execute_worker_unavailable"],
+                    "warnings": [
+                        "auto_execute_worker_unavailable",
+                        *[str(item).strip() for item in tools_execution_boot_warnings if str(item).strip()],
+                    ],
                     "trace": [],
                     "sources": [],
                     "changed_files": [],
@@ -3765,7 +3873,10 @@ def chat(
                 if not dir_mode_index_dirs:
                     return {
                         "answer": "Auto-execute unavailable: no dir-mode indexes resolved.",
-                        "warnings": ["auto_execute_missing_index_dirs"],
+                        "warnings": [
+                            "auto_execute_missing_index_dirs",
+                            *[str(item).strip() for item in tools_execution_boot_warnings if str(item).strip()],
+                        ],
                         "trace": [],
                         "sources": [],
                         "changed_files": [],
@@ -3878,6 +3989,13 @@ def chat(
                 payload = dict(result_obj)
             else:
                 payload = {"answer": str(result_obj)}
+            merged_executor_warnings = [str(item).strip() for item in tools_execution_boot_warnings if str(item).strip()]
+            existing_payload_warnings = (
+                [str(item).strip() for item in payload.get("warnings", []) if str(item).strip()]
+                if isinstance(payload.get("warnings"), list)
+                else []
+            )
+            payload["warnings"] = [*existing_payload_warnings, *merged_executor_warnings]
             payload["prechecklist"] = preview_checklist
             payload["prechecklist_source"] = str(preview_payload.get("prechecklist_source", "") or "")
             payload["prechecklist_warning"] = preview_warning
@@ -4001,6 +4119,11 @@ def chat(
                     else 0
                 ),
                 prechecklist_warning=str(payload.get("prechecklist_warning", "") or ""),
+                tool_execution_backend=str(payload.get("execution_backend", "") or ""),
+                tool_execution_run_id=str(payload.get("execution_run_id", "") or ""),
+                tool_execution_duration_ms=float(payload.get("execution_duration_ms", 0.0) or 0.0),
+                tool_execution_requests_ok=int(payload.get("execution_requests_ok", 0) or 0),
+                tool_execution_requests_failed=int(payload.get("execution_requests_failed", 0) or 0),
                 multiline_input=multiline_input,
                 multiline_terminator=multiline_terminator,
             )
@@ -4570,6 +4693,31 @@ def chat(
                         str((result or {}).get("prechecklist_warning", "") or "")
                         if isinstance(result, dict)
                         else pending_prechecklist_warning
+                    ),
+                    tool_execution_backend=(
+                        str((result or {}).get("tool_execution_backend", "") or "")
+                        if isinstance(result, dict)
+                        else ""
+                    ),
+                    tool_execution_run_id=(
+                        str((result or {}).get("tool_execution_run_id", "") or "")
+                        if isinstance(result, dict)
+                        else ""
+                    ),
+                    tool_execution_duration_ms=(
+                        float((result or {}).get("tool_execution_duration_ms", 0.0) or 0.0)
+                        if isinstance(result, dict)
+                        else 0.0
+                    ),
+                    tool_execution_requests_ok=(
+                        int((result or {}).get("tool_execution_requests_ok", 0) or 0)
+                        if isinstance(result, dict)
+                        else 0
+                    ),
+                    tool_execution_requests_failed=(
+                        int((result or {}).get("tool_execution_requests_failed", 0) or 0)
+                        if isinstance(result, dict)
+                        else 0
                     ),
                     multiline_input=multiline_input,
                     multiline_terminator=multiline_terminator,

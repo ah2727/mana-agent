@@ -20,7 +20,9 @@ dependencies = [
   "faiss-cpu",
   "safety",
   "langchain-openai",
-  "langchain-community"
+  "langchain-community",
+  "redis",
+  "rq"
 ]
 
 [project.optional-dependencies]

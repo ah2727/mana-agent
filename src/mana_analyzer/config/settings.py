@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     coding_search_budget: int = Field(default=4, alias="CODING_SEARCH_BUDGET")
     coding_read_budget: int = Field(default=6, alias="CODING_READ_BUDGET")
     coding_require_read_files: int = Field(default=2, alias="CODING_REQUIRE_READ_FILES")
+    tool_exec_backend: str = Field(default="local", alias="TOOL_EXEC_BACKEND")
+    redis_url: str = Field(default="redis://127.0.0.1:6379/0", alias="REDIS_URL")
+    toolsmanager_parallel_requests: int = Field(default=3, alias="TOOLSMANAGER_PARALLEL_REQUESTS")
+    redis_queue_name: str = Field(default="mana-tools", alias="REDIS_QUEUE_NAME")
+    redis_ttl_seconds: int = Field(default=86_400, alias="REDIS_TTL_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -77,10 +77,13 @@ Workflow:
    - perl fallback applier
    - python fallback compute
    - write_file persistence
-4) If apply_patch still fails twice OR patch attempts produce no repo changes, STOP patch-only loops and use explicit write_file fallback:
+4) After each mutation attempt (apply_patch/write_file), verify file-change evidence (changed_files, git status, or diff).
+5) If mutation reports success but files did not change, treat as no-op and retry with corrected patch/full content.
+6) If apply_patch still fails twice OR repeated mutation attempts produce no repo changes, STOP patch-only loops and use explicit write_file fallback:
    - read_file the target
    - generate full updated file content
    - write_file in chunks with part_index, then finalize=true
+7) Keep retries bounded by anti-loop policy; if no-op persists after bounded retries, return blocked status with concrete reason.
 
 """
 
@@ -611,6 +614,11 @@ class CodingAgent:
                 "toolsmanager_requests_count": 0,
                 "pass_logs": [],
                 "planner_decisions": [],
+                "tool_execution_backend": "",
+                "tool_execution_run_id": "",
+                "tool_execution_duration_ms": 0.0,
+                "tool_execution_requests_ok": 0,
+                "tool_execution_requests_failed": 0,
                 "prechecklist": prechecklist,
                 "prechecklist_source": prechecklist_source,
                 "prechecklist_warning": prechecklist_warning,
@@ -676,6 +684,11 @@ class CodingAgent:
                 "toolsmanager_requests_count": 0,
                 "pass_logs": [],
                 "planner_decisions": [],
+                "tool_execution_backend": "",
+                "tool_execution_run_id": "",
+                "tool_execution_duration_ms": 0.0,
+                "tool_execution_requests_ok": 0,
+                "tool_execution_requests_failed": 0,
                 "prechecklist": prechecklist,
                 "prechecklist_source": prechecklist_source,
                 "prechecklist_warning": prechecklist_warning,
@@ -771,6 +784,11 @@ class CodingAgent:
             "toolsmanager_requests_count": orchestrated.toolsmanager_requests_count,
             "pass_logs": orchestrated.pass_logs,
             "planner_decisions": planner_decisions,
+            "tool_execution_backend": orchestrated.execution_backend,
+            "tool_execution_run_id": orchestrated.execution_run_id,
+            "tool_execution_duration_ms": orchestrated.execution_duration_ms,
+            "tool_execution_requests_ok": orchestrated.execution_requests_ok,
+            "tool_execution_requests_failed": orchestrated.execution_requests_failed,
             "prechecklist": prechecklist,
             "prechecklist_source": prechecklist_source,
             "prechecklist_warning": prechecklist_warning,
