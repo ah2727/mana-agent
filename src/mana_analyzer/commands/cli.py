@@ -3,17 +3,25 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
+import shutil
+import subprocess
 import sys
 import warnings
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import hashlib
+from typing import Any
 
 import typer
 from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_core.messages import HumanMessage, SystemMessage
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.syntax import Syntax
 from rich.table import Table
 
 from mana_analyzer.analysis.checks import PythonStaticAnalyzer
@@ -23,8 +31,9 @@ from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.llm.analyze_chain import AnalyzeChain
 from mana_analyzer.llm.qna_chain import QnAChain
 from mana_analyzer.llm.repo_chain import RepositoryMultiChain
-from mana_analyzer.llm.prompts import PLANNING_SYSTEM_GUIDANCE
-from mana_analyzer.llm.coding_agent import CodingAgent  # ✅ NEW
+from mana_analyzer.llm.prompts import PLANNING_QUESTION_SYSTEM_PROMPT, PLANNING_SYSTEM_GUIDANCE
+from mana_analyzer.llm.coding_agent import CodingAgent
+from mana_analyzer.llm.run_logger import LlmRunLogger
 from mana_analyzer.llm.tool_worker_process import ToolWorkerClient, ToolWorkerProcessError
 from mana_analyzer.parsers.multi_parser import MultiLanguageParser
 from mana_analyzer.services.analyze_service import AnalyzeService
@@ -234,6 +243,246 @@ def _render_turn_summary(
     return "\n".join(lines)
 
 
+@dataclass(slots=True)
+class ChatTurnTelemetry:
+    turn_index: int
+    timestamp: str
+    question: str
+    answer_text: str
+    sources: list[Any] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    trace: list[dict[str, Any]] = field(default_factory=list)
+    tool_steps_total: int | None = None
+    decisions: list[dict[str, str]] = field(default_factory=list)
+    changed_files: list[str] = field(default_factory=list)
+    has_diff: bool = False
+    coding_state: dict[str, Any] = field(default_factory=dict)
+
+
+def _coerce_trace_items(items: list | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in list(items or []):
+        if isinstance(item, dict):
+            tool = str(item.get("tool_name", "")).strip()
+            status = str(item.get("status", "")).strip()
+            args_summary = str(item.get("args_summary", "")).strip()
+            duration = item.get("duration_ms", "")
+        else:
+            tool = str(getattr(item, "tool_name", "")).strip()
+            status = str(getattr(item, "status", "")).strip()
+            args_summary = str(getattr(item, "args_summary", "")).strip()
+            duration = getattr(item, "duration_ms", "")
+        normalized.append(
+            {
+                "tool_name": tool or "-",
+                "status": status or "-",
+                "args_summary": args_summary or "-",
+                "duration_ms": duration,
+            }
+        )
+    return normalized
+
+
+def _merge_warnings(warnings: list[str] | None, payload: dict | None) -> list[str]:
+    merged = [str(item).strip() for item in list(warnings or []) if str(item).strip()]
+    payload_warnings = payload.get("warnings", []) if isinstance(payload, dict) else []
+    if isinstance(payload_warnings, list):
+        for item in payload_warnings:
+            text = str(item).strip()
+            if text and text not in merged:
+                merged.append(text)
+    return merged
+
+
+def _decision_rows_from_raw(raw: Any, fallback_rationale: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                decision = str(item.get("decision", "") or item.get("title", "")).strip()
+                rationale = str(item.get("rationale", "") or item.get("reason", "")).strip()
+                if decision:
+                    rows.append({"decision": decision[:200], "rationale": (rationale or fallback_rationale)[:220]})
+            else:
+                decision = str(item).strip()
+                if decision:
+                    rows.append({"decision": decision[:200], "rationale": fallback_rationale[:220]})
+    return rows
+
+
+def _extract_decisions(
+    *,
+    answer_text: str,
+    warnings: list[str],
+    payload: dict | None = None,
+    result_payload: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if isinstance(payload, dict):
+        rows.extend(_decision_rows_from_raw(payload.get("decisions"), "Provided in structured payload"))
+        rows.extend(_decision_rows_from_raw(payload.get("recent_decisions"), "Provided in structured payload"))
+    if isinstance(result_payload, dict):
+        rows.extend(_decision_rows_from_raw(result_payload.get("decisions"), "Provided in coding result"))
+        rows.extend(_decision_rows_from_raw(result_payload.get("recent_decisions"), "Provided in coding result"))
+
+    for raw_line in (answer_text or "").splitlines():
+        line = raw_line.strip()
+        if line.lower().startswith("decision:"):
+            decision = line.split(":", 1)[1].strip()
+            if decision:
+                rows.append({"decision": decision[:200], "rationale": "Provided in assistant answer"})
+
+    for warning in warnings:
+        lowered = warning.lower()
+        if "write_file fallback" in lowered:
+            rows.append({"decision": "Use write_file fallback", "rationale": warning[:220]})
+        elif "patch-only loop" in lowered or "patch-style retry" in lowered:
+            rows.append({"decision": "Stop patch-only retries", "rationale": warning[:220]})
+
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        key = (row["decision"], row["rationale"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped[:20]
+
+
+def _render_steps_section(console: Console, trace: list[dict[str, Any]]) -> None:
+    console.print("\n[bold]Steps[/bold]")
+    if not trace:
+        console.print("- none")
+        return
+    trace_table = Table(title="Steps", show_lines=False)
+    trace_table.add_column("Tool")
+    trace_table.add_column("Status")
+    trace_table.add_column("Duration (ms)", justify="right")
+    trace_table.add_column("Args", overflow="fold")
+    for item in trace:
+        duration = item.get("duration_ms", "")
+        if isinstance(duration, (int, float)):
+            duration_text = f"{float(duration):.1f}"
+        else:
+            duration_text = str(duration or "-")
+        trace_table.add_row(
+            str(item.get("tool_name", "-") or "-"),
+            str(item.get("status", "-") or "-"),
+            duration_text,
+            str(item.get("args_summary", "-") or "-"),
+        )
+    console.print(trace_table)
+
+
+def _render_decisions_section(console: Console, decisions: list[dict[str, str]]) -> None:
+    console.print("\n[bold]Decisions[/bold]")
+    if not decisions:
+        console.print("- none")
+        return
+    for item in decisions:
+        decision = str(item.get("decision", "")).strip()
+        rationale = str(item.get("rationale", "")).strip()
+        if decision and rationale:
+            console.print(f"- {decision} ({rationale})")
+        elif decision:
+            console.print(f"- {decision}")
+
+
+def _render_history_section(console: Console, turns: list[ChatTurnTelemetry]) -> None:
+    console.print("\n[bold]History[/bold]")
+    if not turns:
+        console.print("- none")
+        return
+    history_table = Table(title="Session History", show_lines=False)
+    history_table.add_column("Turn", justify="right")
+    history_table.add_column("Time")
+    history_table.add_column("Question", overflow="fold")
+    history_table.add_column("Answer Preview", overflow="fold")
+    history_table.add_column("Steps", justify="right")
+    history_table.add_column("Warnings", justify="right")
+    history_table.add_column("Decisions", justify="right")
+    for turn in turns:
+        history_table.add_row(
+            str(turn.turn_index),
+            turn.timestamp,
+            _summary(turn.question, limit=100),
+            _summary(turn.answer_text, limit=120),
+            str(len(turn.trace)),
+            str(len(turn.warnings)),
+            str(len(turn.decisions)),
+        )
+    console.print(history_table)
+
+
+def _render_turn_transparency(
+    console: Console,
+    *,
+    turn: ChatTurnTelemetry,
+    history: list[ChatTurnTelemetry],
+) -> None:
+    console.print(
+        "\n"
+        + _render_turn_summary(
+            answer=turn.answer_text,
+            sources_count=len(turn.sources),
+            warnings_count=len(turn.warnings),
+            tool_steps=turn.tool_steps_total if isinstance(turn.tool_steps_total, int) else len(turn.trace),
+            changed_files_count=len(turn.changed_files),
+            has_diff=turn.has_diff,
+        )
+    )
+    _render_steps_section(console, turn.trace)
+    _render_decisions_section(console, turn.decisions)
+    _render_history_section(console, history)
+
+
+def _log_chat_turn(
+    run_logger: LlmRunLogger | None,
+    *,
+    turn: ChatTurnTelemetry,
+    mode: str,
+    dir_mode: bool,
+    coding_agent: bool,
+    flow_id: str | None = None,
+    render_mode: str | None = None,
+    fallback_reason: str | None = None,
+    planning_mode: bool = False,
+    planning_question_source: str | None = None,
+    planning_question_index: int = 0,
+) -> None:
+    if run_logger is None:
+        return
+    try:
+        run_logger.log(
+            {
+                "flow": "chat",
+                "mode": mode,
+                "dir_mode": bool(dir_mode),
+                "coding_agent": bool(coding_agent),
+                "flow_id": flow_id,
+                "turn_index": int(turn.turn_index),
+                "question": turn.question,
+                "answer": turn.answer_text,
+                "answer_chars": len(turn.answer_text or ""),
+                "sources_count": len(turn.sources or []),
+                "warnings_count": len(turn.warnings or []),
+                "tool_steps": turn.tool_steps_total if isinstance(turn.tool_steps_total, int) else len(turn.trace or []),
+                "trace": list(turn.trace or []),
+                "decisions": list(turn.decisions or []),
+                "changed_files": list(turn.changed_files or []),
+                "has_diff": bool(turn.has_diff),
+                "render_mode": str(render_mode or "default"),
+                "fallback_reason": str(fallback_reason or ""),
+                "planning_mode": bool(planning_mode),
+                "planning_question_source": str(planning_question_source or "none"),
+                "planning_question_index": int(planning_question_index),
+            }
+        )
+    except Exception:
+        logger.debug("Failed to write chat run log", exc_info=True)
+
+
 def _extract_structured_answer(answer: str) -> tuple[str, dict | None]:
     raw = (answer or "").strip()
     if not raw:
@@ -261,6 +510,406 @@ def _extract_structured_answer(answer: str) -> tuple[str, dict | None]:
     return raw, None
 
 
+def _normalize_ui_option(item: dict[str, Any], index: int) -> dict[str, Any] | None:
+    label = str(item.get("label", "") or "").strip()
+    if not label:
+        return None
+    raw_id = str(item.get("id", "") or "").strip()
+    option_id = raw_id or f"option_{index + 1}"
+    description = str(item.get("description", "") or "").strip()
+    value = item.get("value", option_id)
+    return {
+        "id": option_id,
+        "label": label,
+        "value": value,
+        "description": description,
+    }
+
+
+def _normalize_ui_block(block: dict[str, Any]) -> dict[str, Any] | None:
+    block_type = str(block.get("type", "") or "").strip().lower()
+    if block_type == "plan":
+        title = str(block.get("title", "") or "").strip() or "Plan"
+        objective = str(block.get("objective", "") or "").strip()
+        raw_steps = block.get("steps")
+        steps: list[dict[str, Any]] = []
+        if isinstance(raw_steps, list):
+            for item in raw_steps:
+                if not isinstance(item, dict):
+                    continue
+                step_title = str(item.get("title", "") or "").strip()
+                if not step_title:
+                    continue
+                status = str(item.get("status", "pending") or "pending").strip().lower()
+                if status not in {"pending", "in_progress", "done", "blocked"}:
+                    status = "pending"
+                detail = str(item.get("detail", "") or "").strip()
+                steps.append({"status": status, "title": step_title, "detail": detail})
+        return {
+            "type": "plan",
+            "title": title,
+            "objective": objective,
+            "steps": steps,
+        }
+
+    if block_type == "diagram":
+        title = str(block.get("title", "") or "").strip() or "Diagram"
+        fmt = str(block.get("format", "text") or "text").strip().lower()
+        if fmt not in {"mermaid", "text"}:
+            fmt = "text"
+        content = str(block.get("content", "") or "").strip()
+        if not content:
+            return None
+        return {
+            "type": "diagram",
+            "title": title,
+            "format": fmt,
+            "content": content,
+        }
+
+    if block_type in {"selection", "continue"}:
+        prompt = str(block.get("prompt", "") or "").strip()
+        if not prompt:
+            return None
+        raw_id = str(block.get("id", "") or "").strip()
+        selection_id = raw_id or ("continue_selection" if block_type == "continue" else "")
+        if not selection_id:
+            return None
+        raw_options = block.get("options")
+        if not isinstance(raw_options, list):
+            return None
+        options: list[dict[str, Any]] = []
+        for idx, item in enumerate(raw_options):
+            if not isinstance(item, dict):
+                continue
+            normalized = _normalize_ui_option(item, idx)
+            if normalized is not None:
+                options.append(normalized)
+        if not options:
+            return None
+        title = str(block.get("title", "") or "").strip()
+        if not title:
+            title = "Continue" if block_type == "continue" else "Selection"
+        return {
+            "type": block_type,
+            "id": selection_id,
+            "title": title,
+            "prompt": prompt,
+            "options": options,
+            "allow_free_text": bool(block.get("allow_free_text", False)),
+        }
+
+    return None
+
+
+def _extract_ui_blocks(payload: dict | None) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    raw_blocks = payload.get("ui_blocks")
+    if not isinstance(raw_blocks, list):
+        return []
+    blocks: list[dict[str, Any]] = []
+    for item in raw_blocks:
+        if not isinstance(item, dict):
+            continue
+        normalized = _normalize_ui_block(item)
+        if normalized is not None:
+            blocks.append(normalized)
+    return blocks
+
+
+def _infer_ui_blocks_from_answer_text(answer_text: str) -> list[dict[str, Any]]:
+    text = str(answer_text or "")
+    if not text:
+        return []
+    blocks: list[dict[str, Any]] = []
+    for match in re.finditer(r"```mermaid\s*(.*?)```", text, re.IGNORECASE | re.DOTALL):
+        content = str(match.group(1) or "").strip()
+        if not content:
+            continue
+        blocks.append(
+            {
+                "type": "diagram",
+                "title": "Diagram",
+                "format": "mermaid",
+                "content": content,
+            }
+        )
+    return blocks
+
+
+def _effective_ui_blocks(answer_text: str, payload: dict | None) -> list[dict[str, Any]]:
+    blocks = _extract_ui_blocks(payload if isinstance(payload, dict) else None)
+    if blocks:
+        return blocks
+    return _infer_ui_blocks_from_answer_text(answer_text)
+
+
+def _render_plan_block(console: Console, block: dict[str, Any]) -> None:
+    console.print(f"\n[bold]{block.get('title', 'Plan')}[/bold]")
+    objective = str(block.get("objective", "") or "").strip()
+    if objective:
+        console.print(f"- objective: {objective}")
+    steps = block.get("steps")
+    if isinstance(steps, list):
+        for item in steps:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status", "pending") or "pending")
+            title = str(item.get("title", "") or "step")
+            detail = str(item.get("detail", "") or "").strip()
+            console.print(f"- [{status}] {title}")
+            if detail:
+                console.print(f"  {detail}")
+
+
+def _slugify_filename(text: str, fallback: str = "diagram") -> str:
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(text or "")).strip("-_.").lower()
+    return slug or fallback
+
+
+def _detect_mermaid_cli(project_root: Path | None = None) -> list[str] | None:
+    mmdc = shutil.which("mmdc")
+    if mmdc:
+        return [mmdc]
+    local_candidates = [Path.cwd() / "node_modules" / ".bin" / "mmdc"]
+    if project_root is not None:
+        local_candidates.append(project_root / "node_modules" / ".bin" / "mmdc")
+    for candidate in local_candidates:
+        if candidate.exists() and candidate.is_file():
+            return [str(candidate.resolve())]
+    return None
+
+
+def _render_mermaid_artifact(
+    content: str,
+    *,
+    output_dir: Path,
+    title: str,
+    image_format: str,
+    timeout_seconds: int,
+    project_root: Path | None = None,
+) -> tuple[Path | None, str | None]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cli_cmd = _detect_mermaid_cli(project_root=project_root)
+    if not cli_cmd:
+        return (
+            None,
+            "Mermaid CLI not found. Install `@mermaid-js/mermaid-cli` and ensure `mmdc` is on PATH.",
+        )
+
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stem = _slugify_filename(title, fallback="diagram")
+    src_path = output_dir / f"{stem}-{stamp}-{digest}.mmd"
+    out_path = output_dir / f"{stem}-{stamp}-{digest}.{image_format}"
+
+    try:
+        src_path.write_text(content, encoding="utf-8")
+    except Exception as exc:
+        return None, f"Failed to write Mermaid source file: {exc}"
+
+    cmd = [
+        *cli_cmd,
+        "-i",
+        str(src_path),
+        "-o",
+        str(out_path),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=max(5, int(timeout_seconds)),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"Mermaid render timed out after {timeout_seconds}s."
+    except Exception as exc:
+        return None, f"Mermaid render failed to execute: {exc}"
+    finally:
+        try:
+            src_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if proc.returncode != 0:
+        stderr = str(proc.stderr or "").strip()
+        stdout = str(proc.stdout or "").strip()
+        detail = stderr or stdout or f"exit code {proc.returncode}"
+        return None, f"Mermaid render failed: {detail}"
+    if not out_path.exists():
+        return None, f"Mermaid render reported success but output file is missing: {out_path}"
+
+    return out_path.resolve(), None
+
+
+def _open_artifact_with_default_app(path: Path) -> str | None:
+    resolved = path.resolve()
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(resolved)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return None
+        if os.name == "nt":
+            os.startfile(str(resolved))  # type: ignore[attr-defined]
+            return None
+        opener = shutil.which("xdg-open")
+        if opener:
+            subprocess.Popen([opener, str(resolved)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return None
+        return "No supported opener found (tried `open` and `xdg-open`)."
+    except Exception as exc:
+        return f"Failed to open artifact: {exc}"
+
+
+def _render_diagram_block(
+    console: Console,
+    block: dict[str, Any],
+    *,
+    render_images: bool = False,
+    output_dir: Path | None = None,
+    image_format: str = "svg",
+    open_artifact: bool = False,
+    timeout_seconds: int = 25,
+    project_root: Path | None = None,
+) -> None:
+    title = str(block.get("title", "Diagram") or "Diagram")
+    fmt = str(block.get("format", "text") or "text").lower()
+    content = str(block.get("content", "") or "")
+    lexer = "mermaid" if fmt == "mermaid" else "text"
+    syntax = Syntax(content, lexer, word_wrap=True)
+    console.print(Panel(syntax, title=title, border_style="cyan"))
+    if fmt != "mermaid" or not render_images:
+        return
+
+    effective_dir = output_dir or (project_root or Path.cwd()).resolve() / ".mana_diagrams"
+    artifact_path, error = _render_mermaid_artifact(
+        content,
+        output_dir=effective_dir,
+        title=title,
+        image_format=image_format,
+        timeout_seconds=timeout_seconds,
+        project_root=project_root,
+    )
+    if artifact_path is not None:
+        note = f"Rendered `{image_format}` diagram: {artifact_path}"
+        if open_artifact:
+            open_error = _open_artifact_with_default_app(artifact_path)
+            if open_error:
+                note += f"\nOpen failed: {open_error}"
+            else:
+                note += "\nOpened in default app."
+        console.print(Panel(note, title="Diagram Artifact", border_style="green"))
+        return
+    if error:
+        console.print(Panel(error, title="Diagram Render Fallback", border_style="yellow"))
+
+
+def _render_selection_block(console: Console, block: dict[str, Any]) -> None:
+    title = str(block.get("title", "Selection") or "Selection")
+    prompt = str(block.get("prompt", "") or "").strip()
+    options = block.get("options")
+    if not isinstance(options, list):
+        return
+    lines: list[str] = [prompt, ""]
+    for idx, item in enumerate(options, start=1):
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", "") or "").strip() or f"Option {idx}"
+        option_id = str(item.get("id", "") or "").strip()
+        description = str(item.get("description", "") or "").strip()
+        suffix = f" ({option_id})" if option_id else ""
+        lines.append(f"{idx}. {label}{suffix}")
+        if description:
+            lines.append(f"   {description}")
+    if bool(block.get("allow_free_text", False)):
+        lines.append("")
+        lines.append("Or type free text.")
+    console.print(Panel("\n".join(lines), title=title, border_style="blue"))
+
+
+def _render_dynamic_blocks(
+    console: Console,
+    ui_blocks: list[dict[str, Any]],
+    *,
+    diagram_render_images: bool = False,
+    diagram_output_dir: Path | None = None,
+    diagram_format: str = "svg",
+    diagram_open_artifact: bool = False,
+    diagram_timeout_seconds: int = 25,
+    project_root: Path | None = None,
+) -> dict[str, bool]:
+    rendered: dict[str, bool] = {}
+    for block in ui_blocks:
+        block_type = str(block.get("type", "") or "")
+        if block_type == "plan":
+            _render_plan_block(console, block)
+            rendered["plan"] = True
+            continue
+        if block_type == "diagram":
+            _render_diagram_block(
+                console,
+                block,
+                render_images=diagram_render_images,
+                output_dir=diagram_output_dir,
+                image_format=diagram_format,
+                open_artifact=diagram_open_artifact,
+                timeout_seconds=diagram_timeout_seconds,
+                project_root=project_root,
+            )
+            rendered["diagram"] = True
+            continue
+        if block_type in {"selection", "continue"}:
+            _render_selection_block(console, block)
+            rendered[block_type] = True
+            continue
+    return rendered
+
+
+def _pending_ui_selection_from_blocks(ui_blocks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for block in ui_blocks:
+        block_type = str(block.get("type", "") or "")
+        if block_type in {"selection", "continue"}:
+            return block
+    return None
+
+
+def _normalize_choice_token(text: str) -> str:
+    token = str(text or "").strip().lower()
+    token = re.sub(r"\s+", " ", token)
+    token = re.sub(r"[^a-z0-9 _-]", "", token)
+    return token
+
+
+def _resolve_ui_selection_input(block: dict[str, Any], user_input: str) -> tuple[str, dict[str, Any] | None]:
+    options = block.get("options")
+    if not isinstance(options, list) or not options:
+        return "invalid", None
+
+    raw = str(user_input or "").strip()
+    if raw.isdigit():
+        index = int(raw) - 1
+        if 0 <= index < len(options):
+            choice = options[index]
+            if isinstance(choice, dict):
+                return "option", choice
+
+    token = _normalize_choice_token(raw)
+    for item in options:
+        if not isinstance(item, dict):
+            continue
+        option_id = _normalize_choice_token(str(item.get("id", "") or ""))
+        label = _normalize_choice_token(str(item.get("label", "") or ""))
+        if token and (token == option_id or token == label):
+            return "option", item
+
+    if bool(block.get("allow_free_text", False)) and raw:
+        return "free_text", {"text": raw}
+
+    return "invalid", None
+
+
 def _render_answer_sections(
     console: Console,
     *,
@@ -269,6 +918,8 @@ def _render_answer_sections(
     sources: list | None = None,
     warnings: list[str] | None = None,
     trace: list | None = None,
+    show_warnings: bool = True,
+    show_trace: bool = True,
 ) -> None:
     answer_text, payload = _extract_structured_answer(answer)
 
@@ -328,11 +979,11 @@ def _render_answer_sections(
 
         console.print(table)
 
-    if merged_warnings:
+    if show_warnings and merged_warnings:
         warning_lines = "\n".join(f"- {w}" for w in merged_warnings[:12])
         console.print(Panel(warning_lines, title="Warnings", border_style="yellow"))
 
-    if merged_trace:
+    if show_trace and merged_trace:
         trace_table = Table(title="Tool Trace", show_lines=False)
         trace_table.add_column("Tool")
         trace_table.add_column("Status")
@@ -357,7 +1008,14 @@ def _render_answer_sections(
         console.print(trace_table)
 
 
-def _render_coding_sections(console: Console, result: dict[str, Any]) -> None:
+def _render_coding_sections(
+    console: Console,
+    result: dict[str, Any],
+    *,
+    rendered_dynamic: dict[str, bool] | None = None,
+    show_actions: bool = True,
+    show_warnings: bool = True,
+) -> None:
     plan = result.get("plan")
     progress = result.get("progress") or {}
     checklist = result.get("checklist") or {}
@@ -370,7 +1028,8 @@ def _render_coding_sections(console: Console, result: dict[str, Any]) -> None:
     next_step = str(result.get("next_step", "") or "").strip()
     warnings = result.get("warnings") or []
 
-    if isinstance(plan, dict):
+    plan_already_rendered = bool((rendered_dynamic or {}).get("plan", False))
+    if isinstance(plan, dict) and not plan_already_rendered:
         console.print("\n[bold]Plan[/bold]")
         objective = str(plan.get("objective", "")).strip()
         if objective:
@@ -401,7 +1060,7 @@ def _render_coding_sections(console: Console, result: dict[str, Any]) -> None:
             f"blocked: {checklist.get('blocked', 0)} | total: {checklist.get('total', 0)}"
         )
 
-    if actions:
+    if show_actions and actions:
         if actions_truncated and actions_total > len(actions):
             console.print(f"- actions shown: {len(actions)}/{actions_total}")
         trace_table = Table(title="Actions Taken", show_lines=False)
@@ -431,7 +1090,7 @@ def _render_coding_sections(console: Console, result: dict[str, Any]) -> None:
         console.print("\n[bold]Verification[/bold]")
         console.print(f"- finding_count: {static_analysis.get('finding_count', 0)}")
 
-    if warnings:
+    if show_warnings and warnings:
         warning_lines = "\n".join(f"- {w}" for w in warnings[:12])
         console.print(Panel(warning_lines, title="Warnings", border_style="yellow"))
 
@@ -500,8 +1159,74 @@ def _build_planning_question(user_request: str, asked_count: int, max_questions:
     )
 
 
-def _build_planning_instruction(user_request: str, answers: list[str], max_questions: int) -> str:
-    prompts = _planning_questions(max_questions)
+def _normalize_planning_question_text(text: str, fallback: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return fallback
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            raw = "\n".join(lines[1:-1]).strip()
+    lines = [line.strip("-* ").strip() for line in raw.splitlines() if line.strip()]
+    candidate = lines[0] if lines else raw
+    candidate = re.sub(r"^planning question\s*\d+\s*[:.-]\s*", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"^\d+\s*[\).\:-]\s*", "", candidate)
+    candidate = candidate.strip().strip('"').strip("'")
+    if not candidate:
+        return fallback
+    if len(candidate) > 220:
+        candidate = candidate[:220].rstrip()
+    if not candidate.endswith("?"):
+        candidate = candidate.rstrip(".!") + "?"
+    return candidate
+
+
+def _generate_planning_question_llm(
+    *,
+    ask_service: AskService,
+    planning_request: str,
+    prior_questions: list[str],
+    prior_answers: list[str],
+    asked_count: int,
+    max_questions: int,
+) -> str:
+    fallback = _planning_questions(max_questions)[min(asked_count, max_questions - 1)]
+    qna_chain = getattr(ask_service, "qna_chain", None)
+    llm = getattr(qna_chain, "llm", None)
+    if llm is None or not hasattr(llm, "invoke"):
+        raise RuntimeError("planning question LLM unavailable")
+
+    qa_lines: list[str] = []
+    for idx, (question, answer) in enumerate(zip(prior_questions, prior_answers), start=1):
+        qa_lines.append(f"- Q{idx}: {question}")
+        qa_lines.append(f"  A{idx}: {answer}")
+    qa_block = "\n".join(qa_lines) if qa_lines else "- none yet"
+
+    human_prompt = (
+        f"User planning request:\n{planning_request}\n\n"
+        f"Current question index: {asked_count + 1}/{max_questions}\n\n"
+        f"Previously asked planning questions:\n"
+        + ("\n".join(f"- {q}" for q in prior_questions) if prior_questions else "- none")
+        + "\n\n"
+        f"Clarification answers so far:\n{qa_block}\n\n"
+        "Return exactly one best next clarification question."
+    )
+    response = llm.invoke(
+        [
+            SystemMessage(content=PLANNING_QUESTION_SYSTEM_PROMPT),
+            HumanMessage(content=human_prompt),
+        ]
+    )
+    return _normalize_planning_question_text(str(getattr(response, "content", "") or ""), fallback)
+
+
+def _build_planning_instruction(
+    user_request: str,
+    answers: list[str],
+    max_questions: int,
+    questions: list[str] | None = None,
+) -> str:
+    prompts = list(questions or _planning_questions(max_questions))
     qa_lines: list[str] = []
     for idx, answer in enumerate(answers):
         question = prompts[min(idx, len(prompts) - 1)]
@@ -1992,6 +2717,31 @@ def chat(
         help="Use effectively unlimited agent tool steps (subject to timeout/resources).",
     ),
     agent_timeout_seconds: int = typer.Option(30, "--agent-timeout-seconds"),
+    diagram_render_images: bool = typer.Option(
+        True,
+        "--diagram-render-images/--no-diagram-render-images",
+        help="Render Mermaid diagram blocks to SVG/PNG artifacts when possible.",
+    ),
+    diagram_output_dir: str | None = typer.Option(
+        None,
+        "--diagram-output-dir",
+        help="Directory for rendered diagram artifacts (default: <root>/.mana_diagrams).",
+    ),
+    diagram_format: str = typer.Option(
+        "svg",
+        "--diagram-format",
+        help="Diagram artifact format: svg or png.",
+    ),
+    diagram_open: bool = typer.Option(
+        False,
+        "--diagram-open/--no-diagram-open",
+        help="Open rendered diagram artifacts with the system default app.",
+    ),
+    diagram_timeout_seconds: int = typer.Option(
+        25,
+        "--diagram-timeout-seconds",
+        help="Timeout in seconds for Mermaid artifact rendering.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
 ) -> None:
     output_file = _resolve_output_file()
@@ -2021,6 +2771,11 @@ def chat(
             "agent_max_steps": agent_max_steps,
             "agent_unlimited": agent_unlimited,
             "agent_timeout_seconds": agent_timeout_seconds,
+            "diagram_render_images": diagram_render_images,
+            "diagram_output_dir": diagram_output_dir,
+            "diagram_format": diagram_format,
+            "diagram_open": diagram_open,
+            "diagram_timeout_seconds": diagram_timeout_seconds,
             "as_json": as_json,
             "ephemeral_index": ephemeral_index,
         },
@@ -2039,6 +2794,10 @@ def chat(
         cap=200,
     )
     settings = Settings()
+    diagram_format = str(diagram_format or "svg").strip().lower()
+    if diagram_format not in {"svg", "png"}:
+        raise typer.BadParameter("--diagram-format must be 'svg' or 'png'.")
+    diagram_timeout_seconds = max(5, int(diagram_timeout_seconds))
     resolved_k = k or settings.default_top_k
 
     if dir_mode:
@@ -2049,6 +2808,18 @@ def chat(
         root = root.parent
 
     logger.debug("Resolved chat root", extra={"root": str(root)})
+    run_logger = LlmRunLogger(
+        log_file=(
+            root
+            / ".mana_llm_logs"
+            / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{(root.name or 'project')}-runs.jsonl"
+        )
+    )
+    resolved_diagram_output_dir = (
+        Path(diagram_output_dir).expanduser().resolve()
+        if diagram_output_dir
+        else (root / ".mana_diagrams").resolve()
+    )
 
     ask_service = _build_ask_service_compat(settings, model_override=model, project_root=root)
 
@@ -2327,6 +3098,10 @@ def chat(
                     console.print(f"[cyan]Flow memory active:[/cyan] {msg_flow}")
                 else:
                     console.print("[cyan]Flow memory active:[/cyan] new flow will be created on first coding request.")
+        if diagram_render_images:
+            console.print(
+                f"[cyan]Diagram rendering:[/cyan] {diagram_format} -> {resolved_diagram_output_dir}"
+            )
         if planning_mode and coding_agent_instance is not None:
             console.print("[yellow]Planning mode is read-only; coding-agent edits are disabled in this session.[/yellow]")
             coding_agent_instance = None
@@ -2350,8 +3125,13 @@ def chat(
 
         planning_request: str | None = None
         planning_answers: list[str] = []
+        planning_questions: list[str] = []
+        planning_question_source: str = "none"
+        planning_questions_asked_count: int = 0
         active_flow_id: str | None = flow_id
         pending_conflict_question: str | None = None
+        pending_ui_selection: dict[str, Any] | None = None
+        session_turns: list[ChatTurnTelemetry] = []
 
         while True:
             try:
@@ -2367,6 +3147,32 @@ def chat(
                 console.print("Goodbye!")
                 logger.info("Chat session ended by user command", extra={"command": question.lower()})
                 break
+
+            if pending_ui_selection is not None:
+                selection_kind, selection_payload = _resolve_ui_selection_input(pending_ui_selection, question)
+                selection_id = str(pending_ui_selection.get("id", "selection") or "selection")
+
+                if selection_kind == "invalid":
+                    console.print("[yellow]Invalid selection. Choose by number, option id, or label.[/yellow]")
+                    _render_selection_block(console, pending_ui_selection)
+                    continue
+
+                if selection_kind == "free_text":
+                    raw_text = str((selection_payload or {}).get("text", "") or "").replace('"', '\\"')
+                    question = (
+                        f'User provided free-text response "{raw_text}" '
+                        f'for selection "{selection_id}". Continue accordingly.'
+                    )
+                    pending_ui_selection = None
+                else:
+                    option = selection_payload or {}
+                    option_id = str(option.get("id", "") or "").replace('"', '\\"')
+                    value = str(option.get("value", option_id) or "").replace('"', '\\"')
+                    question = (
+                        f'User selected "{option_id}" for selection "{selection_id}" '
+                        f'(value="{value}"). Continue accordingly.'
+                    )
+                    pending_ui_selection = None
 
             if coding_agent_instance is not None and question.startswith("/flow"):
                 parts = question.strip().split()
@@ -2447,28 +3253,73 @@ def chat(
                 if planning_request is None:
                     planning_request = question
                     planning_answers = []
-                    console.print(_build_planning_question(planning_request, 0, planning_question_limit))
+                    planning_questions = []
+                    planning_questions_asked_count = 0
+                    try:
+                        llm_question = _generate_planning_question_llm(
+                            ask_service=ask_service,
+                            planning_request=planning_request,
+                            prior_questions=planning_questions,
+                            prior_answers=planning_answers,
+                            asked_count=0,
+                            max_questions=planning_question_limit,
+                        )
+                        planning_question_source = "llm"
+                    except Exception as exc:
+                        logger.warning("Planning question generation failed; using static fallback: %s", exc)
+                        llm_question = _planning_questions(planning_question_limit)[0]
+                        planning_question_source = "fallback_static"
+                    planning_questions.append(llm_question)
+                    console.print(
+                        f"[cyan]Planning request:[/cyan] {planning_request}\n"
+                        f"[bold]Planning question 1/{planning_question_limit}[/bold]\n"
+                        f"{llm_question}"
+                    )
                     continue
 
                 planning_answers.append(question)
                 if len(planning_answers) < planning_question_limit:
-                    console.print(_build_planning_question(planning_request, len(planning_answers), planning_question_limit))
+                    asked_count = len(planning_answers)
+                    try:
+                        llm_question = _generate_planning_question_llm(
+                            ask_service=ask_service,
+                            planning_request=planning_request,
+                            prior_questions=planning_questions,
+                            prior_answers=planning_answers,
+                            asked_count=asked_count,
+                            max_questions=planning_question_limit,
+                        )
+                        planning_question_source = "llm"
+                    except Exception as exc:
+                        logger.warning("Planning question generation failed; using static fallback: %s", exc)
+                        llm_question = _planning_questions(planning_question_limit)[asked_count]
+                        planning_question_source = "fallback_static"
+                    planning_questions.append(llm_question)
+                    console.print(
+                        f"[cyan]Planning request:[/cyan] {planning_request}\n"
+                        f"[bold]Planning question {asked_count + 1}/{planning_question_limit}[/bold]\n"
+                        f"{llm_question}"
+                    )
                     continue
 
                 question = _build_planning_instruction(
                     planning_request,
                     planning_answers,
                     planning_question_limit,
+                    questions=planning_questions,
                 )
                 logger.info(
                     "Planning Q&A complete; generating plan response",
                     extra={
                         "planning_request": planning_request,
                         "answers_count": len(planning_answers),
+                        "question_source": planning_question_source,
                     },
                 )
+                planning_questions_asked_count = len(planning_answers)
                 planning_request = None
                 planning_answers = []
+                planning_questions = []
                 console.print("[cyan]Generating decision-complete plan...[/cyan]")
 
             logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
@@ -2575,10 +3426,11 @@ def chat(
                 result_flow_id = (result or {}).get("flow_id")
                 if isinstance(result_flow_id, str) and result_flow_id.strip():
                     active_flow_id = result_flow_id.strip()
-                _, parsed_payload = _extract_structured_answer(answer)
+                answer_text, parsed_payload = _extract_structured_answer(answer)
                 payload_sources = []
                 payload_warnings = []
                 payload_trace = []
+                payload_ui_blocks: list[dict[str, Any]] = []
                 if isinstance(parsed_payload, dict):
                     if isinstance(parsed_payload.get("sources"), list):
                         payload_sources = parsed_payload["sources"]
@@ -2586,6 +3438,9 @@ def chat(
                         payload_warnings = [str(w).strip() for w in parsed_payload["warnings"] if str(w).strip()]
                     if isinstance(parsed_payload.get("trace"), list):
                         payload_trace = parsed_payload["trace"]
+                    payload_ui_blocks = _effective_ui_blocks(answer_text, parsed_payload)
+                else:
+                    payload_ui_blocks = _effective_ui_blocks(answer_text, None)
                 merged_warns = list(warns)
                 for warning in payload_warnings:
                     if warning not in merged_warns:
@@ -2610,30 +3465,105 @@ def chat(
                     result["actions_taken_total"] = actions_total
                     result["actions_taken_truncated"] = actions_total > len(result.get("actions_taken", []))
                     result["warnings"] = merged_warns
-
-                console.print(
-                    "\n"
-                    + _render_turn_summary(
-                        answer=answer,
-                        sources_count=len(payload_sources),
-                        warnings_count=len(merged_warns),
-                        tool_steps=actions_total,
-                        changed_files_count=len(changed),
-                        has_diff=bool(diff.strip()),
-                    )
+                render_mode = (
+                    str((result or {}).get("render_mode", "")).strip().lower()
+                    if isinstance(result, dict)
+                    else ""
                 )
-                _render_coding_sections(console, result if isinstance(result, dict) else {})
-                if payload_sources:
-                    _render_answer_sections(
+                fallback_reason = (
+                    str((result or {}).get("fallback_reason", "")).strip().lower()
+                    if isinstance(result, dict)
+                    else ""
+                )
+                answer_only_fallback = render_mode == "answer_only" and fallback_reason == "tools_only_violation"
+                edit_completed = bool(changed) or bool(diff.strip())
+                answer_only_no_edit = (not answer_only_fallback) and (not edit_completed)
+
+                rendered_dynamic: dict[str, bool] = {}
+                if not answer_only_fallback:
+                    rendered_dynamic = _render_dynamic_blocks(
                         console,
-                        answer="",
-                        title="Sources",
-                        sources=payload_sources,
-                        warnings=[],
-                        trace=[],
+                        payload_ui_blocks,
+                        diagram_render_images=diagram_render_images,
+                        diagram_output_dir=resolved_diagram_output_dir,
+                        diagram_format=diagram_format,
+                        diagram_open_artifact=diagram_open,
+                        diagram_timeout_seconds=diagram_timeout_seconds,
+                        project_root=root,
                     )
-                if debug_tail:
-                    console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
+                selection_block = _pending_ui_selection_from_blocks(payload_ui_blocks)
+                if selection_block is not None:
+                    pending_ui_selection = selection_block
+                turn_record = ChatTurnTelemetry(
+                    turn_index=len(session_turns) + 1,
+                    timestamp=_now_iso(),
+                    question=question,
+                    answer_text=answer_text,
+                    sources=list(payload_sources),
+                    warnings=list(merged_warns),
+                    trace=_coerce_trace_items(effective_trace),
+                    tool_steps_total=actions_total,
+                    decisions=_extract_decisions(
+                        answer_text=answer_text,
+                        warnings=merged_warns,
+                        payload=parsed_payload if isinstance(parsed_payload, dict) else None,
+                        result_payload=result if isinstance(result, dict) else None,
+                    ),
+                    changed_files=[str(item) for item in changed if str(item).strip()],
+                    has_diff=bool(diff.strip()),
+                    coding_state={
+                        "plan": (result or {}).get("plan") if isinstance(result, dict) else None,
+                        "progress": (result or {}).get("progress") if isinstance(result, dict) else None,
+                        "checklist": (result or {}).get("checklist") if isinstance(result, dict) else None,
+                        "next_step": (result or {}).get("next_step") if isinstance(result, dict) else None,
+                        "flow_id": active_flow_id,
+                    },
+                )
+                session_turns.append(turn_record)
+                if answer_only_fallback or answer_only_no_edit:
+                    console.print("\n[bold]Answer[/bold]")
+                    if answer_text:
+                        console.print(Markdown(answer_text))
+                    else:
+                        console.print("[dim](no answer text)[/dim]")
+                else:
+                    _render_turn_transparency(
+                        console,
+                        turn=turn_record,
+                        history=session_turns,
+                    )
+                _log_chat_turn(
+                    run_logger,
+                    turn=turn_record,
+                    mode="coding-agent",
+                    dir_mode=dir_mode,
+                    coding_agent=True,
+                    flow_id=active_flow_id,
+                    render_mode=render_mode,
+                    fallback_reason=fallback_reason,
+                    planning_mode=planning_mode,
+                    planning_question_source=planning_question_source,
+                    planning_question_index=planning_questions_asked_count,
+                )
+                if not (answer_only_fallback or answer_only_no_edit):
+                    _render_coding_sections(
+                        console,
+                        result if isinstance(result, dict) else {},
+                        rendered_dynamic=rendered_dynamic,
+                        show_actions=False,
+                    )
+                    if payload_sources:
+                        _render_answer_sections(
+                            console,
+                            answer="",
+                            title="Sources",
+                            sources=payload_sources,
+                            warnings=[],
+                            trace=[],
+                            show_trace=False,
+                        )
+                    if debug_tail:
+                        console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
 
                 # Optional: if you want quick diff visibility without full diff spam:
                 # console.print("\n[dim]Tip: run with your own :diff command if you add history later.[/dim]")
@@ -2701,12 +3631,21 @@ def chat(
 
                 src_count = len(getattr(response, "sources", []) or [])
                 guessed = _looks_like_guess(getattr(response, "answer", ""))
+                attempt_answer_text, parsed_attempt_payload = _extract_structured_answer(
+                    getattr(response, "answer", "") or ""
+                )
+                attempt_ui_blocks = _effective_ui_blocks(
+                    attempt_answer_text,
+                    parsed_attempt_payload if isinstance(parsed_attempt_payload, dict) else None,
+                )
 
                 logger.debug(
                     "Chat attempt evaluation",
                     extra={"attempt": attempt, "src_count": src_count, "guessed": guessed},
                 )
 
+                if attempt_ui_blocks:
+                    break
                 if (src_count >= min_sources) and not guessed:
                     break
 
@@ -2720,23 +3659,72 @@ def chat(
             sources = getattr(response, "sources", []) or []
             warns = getattr(response, "warnings", []) or []
             trace = getattr(response, "trace", None) or []
+            answer_text, parsed_payload = _extract_structured_answer(answer)
+            ui_blocks = _effective_ui_blocks(
+                answer_text,
+                parsed_payload if isinstance(parsed_payload, dict) else None,
+            )
+            payload_sources = parsed_payload.get("sources", []) if isinstance(parsed_payload, dict) else []
+            effective_sources = list(sources) or (list(payload_sources) if isinstance(payload_sources, list) else [])
+            payload_trace = parsed_payload.get("trace", []) if isinstance(parsed_payload, dict) else []
+            effective_trace_raw = list(trace) or (list(payload_trace) if isinstance(payload_trace, list) else [])
+            merged_warns = _merge_warnings(warns, parsed_payload if isinstance(parsed_payload, dict) else None)
 
-            console.print(
-                "\n"
-                + _render_turn_summary(
-                    answer=answer,
-                    sources_count=len(sources),
-                    warnings_count=len(warns),
-                    tool_steps=len(trace),
-                )
+            _render_dynamic_blocks(
+                console,
+                ui_blocks,
+                diagram_render_images=diagram_render_images,
+                diagram_output_dir=resolved_diagram_output_dir,
+                diagram_format=diagram_format,
+                diagram_open_artifact=diagram_open,
+                diagram_timeout_seconds=diagram_timeout_seconds,
+                project_root=root,
+            )
+            selection_block = _pending_ui_selection_from_blocks(ui_blocks)
+            if selection_block is not None:
+                pending_ui_selection = selection_block
+            turn_record = ChatTurnTelemetry(
+                turn_index=len(session_turns) + 1,
+                timestamp=_now_iso(),
+                question=question,
+                answer_text=answer_text,
+                sources=effective_sources,
+                warnings=merged_warns,
+                trace=_coerce_trace_items(effective_trace_raw),
+                tool_steps_total=len(effective_trace_raw),
+                decisions=_extract_decisions(
+                    answer_text=answer_text,
+                    warnings=merged_warns,
+                    payload=parsed_payload if isinstance(parsed_payload, dict) else None,
+                ),
+            )
+            session_turns.append(turn_record)
+            _render_turn_transparency(
+                console,
+                turn=turn_record,
+                history=session_turns,
+            )
+            _log_chat_turn(
+                run_logger,
+                turn=turn_record,
+                mode="agent-tools" if agent_tools else "classic",
+                dir_mode=dir_mode,
+                coding_agent=False,
+                flow_id=active_flow_id,
+                render_mode="default",
+                fallback_reason="",
+                planning_mode=planning_mode,
+                planning_question_source=planning_question_source,
+                planning_question_index=planning_questions_asked_count,
             )
             _render_answer_sections(
                 console,
                 answer=answer,
                 title="Answer",
-                sources=sources,
-                warnings=warns,
-                trace=trace,
+                sources=effective_sources,
+                warnings=merged_warns,
+                trace=[],
+                show_trace=False,
             )
 
             # print debug tail if we have one from the last tool run

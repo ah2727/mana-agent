@@ -149,6 +149,97 @@ class CodingAgent:
     # Fallback policy: if apply_patch is attempted >= this many times and no changes appear, force write_file fallback.
     _PATCH_FAILURE_FALLBACK_THRESHOLD = 2
 
+    @staticmethod
+    def _extract_json_object_text(text: str) -> str | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if len(lines) >= 3 and lines[-1].strip() == "```":
+                raw = "\n".join(lines[1:-1]).strip()
+        if raw.startswith("{") and raw.endswith("}"):
+            return raw
+        start = raw.find("{")
+        if start == -1:
+            return None
+        depth = 0
+        in_string = False
+        escaped = False
+        for idx in range(start, len(raw)):
+            ch = raw[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[start : idx + 1].strip()
+                    return candidate if candidate else None
+        return None
+
+    @classmethod
+    def _parse_flow_checklist_json(cls, text: str) -> FlowChecklist:
+        candidate = cls._extract_json_object_text(text)
+        if candidate is None:
+            raise json.JSONDecodeError("No JSON object found", str(text or ""), 0)
+        payload = json.loads(candidate)
+        return FlowChecklist.model_validate(payload)
+
+    def _fallback_checklist(self, request: str) -> FlowChecklist:
+        explicit_files = sorted(
+            {
+                match.group(1).strip()
+                for match in self._EXPLICIT_FILE_RE.finditer(request or "")
+                if match.group(1).strip()
+            }
+        )
+        objective = " ".join((request or "").strip().split())[:220] or "Implement requested change"
+        inspect_title = "Inspect target file(s)" if explicit_files else "Discover target file(s)"
+        inspect_reason = (
+            f"Validate current behavior in: {', '.join(explicit_files[:3])}"
+            if explicit_files
+            else "Collect concrete evidence before edits"
+        )
+        return FlowChecklist(
+            objective=objective,
+            acceptance=["Requested change is applied", "No obvious regressions in touched files"],
+            steps=[
+                FlowStep(
+                    id="s1",
+                    title=inspect_title,
+                    reason=inspect_reason,
+                    status="in_progress",
+                    requires_tools=["semantic_search", "read_file"],
+                ),
+                FlowStep(
+                    id="s2",
+                    title="Apply requested change",
+                    reason="Implement the user request in repository files",
+                    status="pending",
+                    requires_tools=["apply_patch", "write_file"],
+                ),
+                FlowStep(
+                    id="s3",
+                    title="Verify and summarize",
+                    reason="Confirm edits and report outcomes",
+                    status="pending",
+                    requires_tools=["run_command", "read_file"],
+                ),
+            ],
+            next_action="Inspect file context, then apply the requested edit.",
+        )
+
     def __init__(
         self,
         *,
@@ -277,14 +368,10 @@ class CodingAgent:
             HumanMessage(content=user_prompt),
         ]
 
-        def _parse(text: str) -> FlowChecklist:
-            payload = json.loads(text)
-            return FlowChecklist.model_validate(payload)
-
         try:
             first = self.planner_llm.invoke(messages)
             raw = str(getattr(first, "content", "") or "").strip()
-            checklist = _parse(raw)
+            checklist = self._parse_flow_checklist_json(raw)
             if len(checklist.steps) > self.plan_max_steps:
                 checklist.steps = checklist.steps[: self.plan_max_steps]
             return checklist, warnings
@@ -304,16 +391,24 @@ class CodingAgent:
                     ]
                 )
                 repaired_raw = str(getattr(repair, "content", "") or "").strip()
-                checklist = _parse(repaired_raw)
+                checklist = self._parse_flow_checklist_json(repaired_raw)
                 if len(checklist.steps) > self.plan_max_steps:
                     checklist.steps = checklist.steps[: self.plan_max_steps]
                 return checklist, warnings
             except Exception as exc2:  # pragma: no cover - deterministic fallback
                 warnings.append(f"planner repair failed: {exc2}")
-                return None, warnings
+                warnings.append("planner fallback: using deterministic checklist")
+                fallback = self._fallback_checklist(request)
+                if len(fallback.steps) > self.plan_max_steps:
+                    fallback.steps = fallback.steps[: self.plan_max_steps]
+                return fallback, warnings
         except Exception as exc:  # pragma: no cover
             warnings.append(f"planner invocation failed: {exc}")
-            return None, warnings
+            warnings.append("planner fallback: using deterministic checklist")
+            fallback = self._fallback_checklist(request)
+            if len(fallback.steps) > self.plan_max_steps:
+                fallback.steps = fallback.steps[: self.plan_max_steps]
+            return fallback, warnings
 
     @staticmethod
     def _extract_payload(text: str) -> dict[str, Any] | None:
@@ -673,6 +768,12 @@ class CodingAgent:
         if decision.phase == "blocked":
             status = "warning"
         trace_rows = [item for item in trace if isinstance(item, dict)]
+        warning_text = "\n".join(str(item) for item in warnings).lower()
+        tools_only_fallback = (
+            ("tools_only_violation" in warning_text)
+            and len(trace_rows) == 0
+            and not changed
+        )
         result = {
             "status": status,
             "answer": answer,
@@ -702,6 +803,9 @@ class CodingAgent:
                 "finding_count": len(findings),
                 "findings": [_as_jsonable(f) for f in findings],
             },
+            "render_mode": "answer_only" if tools_only_fallback else "default",
+            "fallback_reason": "tools_only_violation" if tools_only_fallback else "",
+            "fallback_retry_attempted": bool("tools_only_violation_retry_attempted" in warning_text),
         }
         return result, active_flow_id, effective_flow_context
 
@@ -783,16 +887,16 @@ class CodingAgent:
     ) -> str:
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
         if self.tool_worker_client is not None:
+            tool_req = ToolRunRequest(
+                question=request,
+                index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
+                k=int(k if k is not None else 8),
+                max_steps=max_steps,
+                timeout_seconds=timeout_seconds,
+                tool_policy=tool_policy,
+                system_prompt=effective_prompt,
+            )
             try:
-                tool_req = ToolRunRequest(
-                    question=request,
-                    index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
-                    k=int(k if k is not None else 8),
-                    max_steps=max_steps,
-                    timeout_seconds=timeout_seconds,
-                    tool_policy=tool_policy,
-                    system_prompt=effective_prompt,
-                )
                 try:
                     response = self.tool_worker_client.run_tools(
                         tool_req,
@@ -803,6 +907,27 @@ class CodingAgent:
                 return self._stringify(response.model_dump())
             except ToolWorkerProcessError as exc:
                 if exc.code == "tools_only_violation":
+                    retry_req = tool_req.model_copy(update={"tools_only_strict_override": False})
+                    retry_warnings = [
+                        f"tools_only_violation: {exc}",
+                        "tools_only_violation_retry_attempted: strict override disabled for one retry",
+                    ]
+                    try:
+                        try:
+                            retry_response = self.tool_worker_client.run_tools(
+                                retry_req,
+                                on_event=self._log_worker_event,
+                            )
+                        except TypeError:
+                            retry_response = self.tool_worker_client.run_tools(retry_req)
+                        payload = retry_response.model_dump()
+                        existing = [str(item) for item in payload.get("warnings", []) if str(item).strip()]
+                        payload["warnings"] = [*existing, *retry_warnings, "tools_only_violation_retry_result: success"]
+                        payload["fallback_reason"] = "tools_only_violation"
+                        payload["fallback_retry_attempted"] = True
+                        return self._stringify(payload)
+                    except ToolWorkerProcessError as retry_exc:
+                        retry_warnings.append(f"tools_only_violation_retry_failed: {retry_exc}")
                     return self._stringify(
                         {
                             "answer": (
@@ -810,7 +935,10 @@ class CodingAgent:
                                 "Please provide a tool-executable request with specific files or operations."
                             ),
                             "trace": [],
-                            "warnings": [f"tools_only_violation: {exc}"],
+                            "warnings": retry_warnings,
+                            "render_mode": "answer_only",
+                            "fallback_reason": "tools_only_violation",
+                            "fallback_retry_attempted": True,
                         }
                     )
                 raise
@@ -847,16 +975,16 @@ class CodingAgent:
             return "No index_dirs provided for dir-mode."
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
         if self.tool_worker_client is not None:
+            tool_req = ToolRunRequest(
+                question=request,
+                index_dirs=resolved,
+                k=int(k if k is not None else 8),
+                max_steps=max_steps,
+                timeout_seconds=timeout_seconds,
+                tool_policy=tool_policy,
+                system_prompt=effective_prompt,
+            )
             try:
-                tool_req = ToolRunRequest(
-                    question=request,
-                    index_dirs=resolved,
-                    k=int(k if k is not None else 8),
-                    max_steps=max_steps,
-                    timeout_seconds=timeout_seconds,
-                    tool_policy=tool_policy,
-                    system_prompt=effective_prompt,
-                )
                 try:
                     response = self.tool_worker_client.run_tools(
                         tool_req,
@@ -867,6 +995,27 @@ class CodingAgent:
                 return self._stringify(response.model_dump())
             except ToolWorkerProcessError as exc:
                 if exc.code == "tools_only_violation":
+                    retry_req = tool_req.model_copy(update={"tools_only_strict_override": False})
+                    retry_warnings = [
+                        f"tools_only_violation: {exc}",
+                        "tools_only_violation_retry_attempted: strict override disabled for one retry",
+                    ]
+                    try:
+                        try:
+                            retry_response = self.tool_worker_client.run_tools(
+                                retry_req,
+                                on_event=self._log_worker_event,
+                            )
+                        except TypeError:
+                            retry_response = self.tool_worker_client.run_tools(retry_req)
+                        payload = retry_response.model_dump()
+                        existing = [str(item) for item in payload.get("warnings", []) if str(item).strip()]
+                        payload["warnings"] = [*existing, *retry_warnings, "tools_only_violation_retry_result: success"]
+                        payload["fallback_reason"] = "tools_only_violation"
+                        payload["fallback_retry_attempted"] = True
+                        return self._stringify(payload)
+                    except ToolWorkerProcessError as retry_exc:
+                        retry_warnings.append(f"tools_only_violation_retry_failed: {retry_exc}")
                     return self._stringify(
                         {
                             "answer": (
@@ -874,7 +1023,10 @@ class CodingAgent:
                                 "Please provide a tool-executable request with specific files or operations."
                             ),
                             "trace": [],
-                            "warnings": [f"tools_only_violation: {exc}"],
+                            "warnings": retry_warnings,
+                            "render_mode": "answer_only",
+                            "fallback_reason": "tools_only_violation",
+                            "fallback_retry_attempted": True,
                         }
                     )
                 raise

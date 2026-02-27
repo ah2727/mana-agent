@@ -286,6 +286,32 @@ def test_tool_worker_server_accepts_successful_tool_trace(monkeypatch) -> None:
     assert emitted[-1].payload["answer"] == "done"
 
 
+def test_tool_worker_server_allows_no_tool_success_when_override_disabled(monkeypatch) -> None:
+    class _FakeAskAgent:
+        def run(self, **_kwargs):
+            return SimpleNamespace(answer="no tools", sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    server = twp._ToolWorkerServer()
+    server._ask_agent = _FakeAskAgent()  # type: ignore[assignment]
+    server._tools_only_strict = True
+    emitted: list[twp.WorkerReply] = []
+    monkeypatch.setattr(twp._ToolWorkerServer, "_emit", staticmethod(lambda reply: emitted.append(reply)))
+    server._handle_run_tools(
+        twp.WorkerEnvelope(
+            type="run_tools",
+            request_id="req-override",
+            payload=twp.ToolRunRequest(
+                question="x",
+                index_dir="/tmp/.mana_index",
+                tools_only_strict_override=False,
+            ).model_dump(),
+        )
+    )
+    assert emitted
+    assert emitted[-1].type == "ok"
+    assert emitted[-1].payload["answer"] == "no tools"
+
+
 def test_tool_worker_server_emits_tool_events(monkeypatch) -> None:
     class _TraceRow:
         def to_dict(self) -> dict:

@@ -202,3 +202,67 @@ def test_coding_agent_handles_tools_only_worker_violation(tmp_path: Path, monkey
     assert "tools-only worker policy" in str(result.get("answer", "")).lower()
     warnings = result.get("warnings") or []
     assert any("tools_only_violation" in str(item) for item in warnings)
+
+
+def test_coding_agent_retries_tools_only_violation_once_with_override(tmp_path: Path, monkeypatch) -> None:
+    class _RetryWorker:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.requests = []
+
+        def run_tools(self, request):
+            self.calls += 1
+            self.requests.append(request)
+            if self.calls == 1:
+                raise ToolWorkerProcessError(
+                    code="tools_only_violation",
+                    message="no successful tool calls",
+                    retriable=False,
+                )
+            return type(
+                "_Resp",
+                (),
+                {
+                    "model_dump": lambda self: {
+                        "answer": "fallback answer",
+                        "sources": [],
+                        "mode": "agent-tools",
+                        "trace": [],
+                        "warnings": [],
+                    }
+                },
+            )()
+
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    worker = _RetryWorker()
+    agent.tool_worker_client = worker
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    assert worker.calls == 2
+    assert worker.requests[1].tools_only_strict_override is False
+    assert result.get("render_mode") == "answer_only"
+    assert result.get("fallback_reason") == "tools_only_violation"
+    assert result.get("fallback_retry_attempted") is True
+
+
+def test_plan_checklist_falls_back_when_planner_json_is_invalid(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent._plan_checklist = CodingAgent._plan_checklist.__get__(agent, CodingAgent)  # type: ignore[method-assign]
+
+    class _BadPlanner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            # first call: invalid schema text, second call: invalid repair text
+            if self.calls == 1:
+                return type("_Msg", (), {"content": "not json"})()
+            return type("_Msg", (), {"content": "```json\n{ broken }\n```"})()
+
+    agent.planner_llm = _BadPlanner()
+    checklist, warnings = agent._plan_checklist("update README.md with new version")
+    assert checklist is not None
+    assert checklist.steps
+    assert any("planner parse failed" in str(item) for item in warnings)

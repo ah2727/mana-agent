@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -456,6 +457,101 @@ def test_chat_blocks_edit_requests_without_coding_agent(monkeypatch, tmp_path: P
     assert "--coding-agent" in result.stdout
 
 
+def test_chat_transparency_sections_always_render_in_normal_mode(monkeypatch, tmp_path: Path) -> None:
+    class _AskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
+
+    result = runner.invoke(
+        app,
+        ["chat"],
+        input="first question\nsecond question\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert result.stdout.count("Summary") >= 2
+    assert result.stdout.count("Steps") >= 2
+    assert result.stdout.count("Decisions") >= 2
+    assert result.stdout.count("History") >= 2
+    assert "Session History" in result.stdout
+
+
+def test_chat_transparency_uses_trace_steps_in_agent_tools_mode(monkeypatch, tmp_path: Path) -> None:
+    class _TracingAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+        def ask_with_tools(
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponseWithTrace:
+            _ = (index_dir, question, k, max_steps, timeout_seconds)
+            return AskResponseWithTrace(
+                answer="Decision: Use semantic search first",
+                sources=[],
+                mode="agent-tools",
+                trace=[
+                    {
+                        "tool_name": "semantic_search",
+                        "status": "ok",
+                        "duration_ms": 3.5,
+                        "args_summary": "query='planner'",
+                    }
+                ],
+                warnings=[],
+            )
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _TracingAskService())
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools"],
+        input="plan this\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Steps" in result.stdout
+    assert "semantic_search" in result.stdout
+    assert "Decisions" in result.stdout
+    assert "Use semantic search first" in result.stdout
+
+
+def test_chat_writes_llm_run_log_rows(monkeypatch, tmp_path: Path) -> None:
+    class _AskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    rows: list[dict] = []
+
+    class _FakeRunLogger:
+        def __init__(self, log_file=None) -> None:
+            _ = log_file
+
+        def log(self, payload: dict) -> None:
+            rows.append(payload)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.LlmRunLogger", _FakeRunLogger)
+
+    result = runner.invoke(
+        app,
+        ["chat"],
+        input="what is this project?\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert rows
+    assert rows[0]["flow"] == "chat"
+    assert rows[0]["mode"] == "classic"
+    assert rows[0]["question"] == "what is this project?"
+
+
 def test_flow_show_checkpoint_and_reset_commands(monkeypatch, tmp_path: Path) -> None:
     class _FakeAskService(FakeAskService):
         def __init__(self) -> None:
@@ -644,9 +740,123 @@ def test_flow_checklist_cli_view_renders_codex_sections(monkeypatch, tmp_path: P
     assert "Plan" in result.stdout
     assert "Progress" in result.stdout
     assert "Checklist" in result.stdout
-    assert "Actions Taken" in result.stdout
+    assert "Steps" in result.stdout
+    assert "Decisions" in result.stdout
+    assert "History" in result.stdout
     assert "Next Step" in result.stdout
     assert "Flow Checklist" in result.stdout
+
+
+def test_chat_coding_agent_answer_only_on_tools_only_fallback(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return {
+                "answer": "Request blocked by tools-only worker policy.",
+                "changed_files": [],
+                "warnings": ["tools_only_violation: no successful tool calls"],
+                "diff": "",
+                "flow_id": self.active,
+                "actions_taken": [],
+                "actions_taken_total": 0,
+                "render_mode": "answer_only",
+                "fallback_reason": "tools_only_violation",
+                "fallback_retry_attempted": True,
+            }
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="update readme.md with new version\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Answer" in result.stdout
+    assert "Request blocked by tools-only worker policy." in result.stdout
+    assert "Summary" not in result.stdout
+    assert "Steps" not in result.stdout
+    assert "History" not in result.stdout
+    assert "Next Step" not in result.stdout
+
+
+def test_chat_coding_agent_answer_only_when_no_repo_edits(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return {
+                "answer": "Analysis complete. No repository edits required.",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "actions_taken": [
+                    {
+                        "tool_name": "read_file",
+                        "status": "ok",
+                        "duration_ms": 1.2,
+                        "args_summary": "path='README.md' start=1 end=50",
+                    }
+                ],
+                "actions_taken_total": 1,
+                "plan": {"objective": "should not render", "steps": []},
+                "progress": {"phase": "inspect", "why": "No edits needed"},
+                "checklist": {"done": 1, "pending": 0, "blocked": 0, "total": 1},
+                "next_step": "Done",
+            }
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="analyze this src,give me best plan for upgrade\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Answer" in result.stdout
+    assert "Analysis complete. No repository edits required." in result.stdout
+    assert "Summary" not in result.stdout
+    assert "Steps" not in result.stdout
+    assert "History" not in result.stdout
+    assert "Plan" not in result.stdout
+    assert "Checklist" not in result.stdout
+    assert "Next Step" not in result.stdout
 
 
 def test_large_json_answer_is_rendered_as_sections_not_raw_blob(monkeypatch, tmp_path: Path) -> None:
@@ -807,3 +1017,564 @@ def test_chat_summary_uses_actions_taken_total_when_trace_is_truncated(monkeypat
     )
     assert result.exit_code == 0
     assert "- tool steps: 37" in result.stdout
+
+
+def test_chat_renders_dynamic_plan_and_diagram_blocks_in_normal_path(monkeypatch, tmp_path: Path) -> None:
+    class _DynamicAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+        def ask_with_tools(
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponseWithTrace:
+            _ = (index_dir, question, k, max_steps, timeout_seconds)
+            payload = {
+                "answer": "Dynamic answer",
+                "ui_blocks": [
+                    {
+                        "type": "plan",
+                        "title": "Architecture Plan",
+                        "objective": "Ship dynamic UI",
+                        "steps": [{"status": "in_progress", "title": "Render ui_blocks", "detail": "Use rich panel tables"}],
+                    },
+                    {
+                        "type": "diagram",
+                        "title": "Flow Diagram",
+                        "format": "mermaid",
+                        "content": "graph TD\nA-->B",
+                    },
+                ],
+            }
+            hit = SearchHit(0.9, "/tmp/good.py", 1, 3, "add", "snippet")
+            return AskResponseWithTrace(
+                answer=json.dumps(payload),
+                sources=[hit],
+                mode="agent-tools",
+                trace=[],
+                warnings=[],
+            )
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _DynamicAskService())
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools"],
+        input="show dynamic\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Architecture Plan" in result.stdout
+    assert "Render ui_blocks" in result.stdout
+    assert "Flow Diagram" in result.stdout
+    assert "graph TD" in result.stdout
+
+
+def test_chat_inferrs_mermaid_diagram_block_and_renders_before_summary(monkeypatch, tmp_path: Path) -> None:
+    class _MermaidAskService(FakeAskService):
+        calls: list[str] = []
+
+        def __init__(self) -> None:
+            self.ask_agent = object()
+            _MermaidAskService.calls = []
+
+        def ask_with_tools(
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponseWithTrace:
+            _ = (index_dir, k, max_steps, timeout_seconds)
+            _MermaidAskService.calls.append(question)
+            answer = "```mermaid\ngraph TD\nA-->B\n```"
+            return AskResponseWithTrace(answer=answer, sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _MermaidAskService())
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools"],
+        input="show diagram\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert len(_MermaidAskService.calls) == 1
+    assert "graph TD" in result.stdout
+    assert result.stdout.find("Diagram") < result.stdout.find("Summary")
+
+
+def test_chat_diagram_artifact_render_invokes_mermaid_renderer(monkeypatch, tmp_path: Path) -> None:
+    class _DiagramAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+        def ask_with_tools(
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponseWithTrace:
+            _ = (index_dir, question, k, max_steps, timeout_seconds)
+            payload = {
+                "answer": "diagram answer",
+                "ui_blocks": [
+                    {
+                        "type": "diagram",
+                        "title": "Flow Diagram",
+                        "format": "mermaid",
+                        "content": "graph TD\nA-->B",
+                    }
+                ],
+            }
+            return AskResponseWithTrace(answer=json.dumps(payload), sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    calls: list[dict] = []
+
+    def _fake_render_mermaid_artifact(
+        content: str,
+        *,
+        output_dir: Path,
+        title: str,
+        image_format: str,
+        timeout_seconds: int,
+        project_root: Path | None = None,
+    ):
+        calls.append(
+            {
+                "content": content,
+                "output_dir": output_dir,
+                "title": title,
+                "image_format": image_format,
+                "timeout_seconds": timeout_seconds,
+                "project_root": project_root,
+            }
+        )
+        return (tmp_path / "flow.svg", None)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _DiagramAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli._render_mermaid_artifact", _fake_render_mermaid_artifact)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--diagram-output-dir", str(tmp_path), "--diagram-format", "svg"],
+        input="show diagram\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["content"] == "graph TD\nA-->B"
+    assert calls[0]["image_format"] == "svg"
+    assert "Diagram Artifact" in result.stdout
+    assert str(tmp_path / "flow.svg") in result.stdout
+
+
+def test_chat_no_diagram_render_images_skips_mermaid_artifact(monkeypatch, tmp_path: Path) -> None:
+    class _DiagramAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+        def ask_with_tools(
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponseWithTrace:
+            _ = (index_dir, question, k, max_steps, timeout_seconds)
+            payload = {
+                "answer": "diagram answer",
+                "ui_blocks": [
+                    {
+                        "type": "diagram",
+                        "title": "Flow Diagram",
+                        "format": "mermaid",
+                        "content": "graph TD\nA-->B",
+                    }
+                ],
+            }
+            return AskResponseWithTrace(answer=json.dumps(payload), sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    calls: list[dict] = []
+
+    def _fake_render_mermaid_artifact(
+        content: str,
+        *,
+        output_dir: Path,
+        title: str,
+        image_format: str,
+        timeout_seconds: int,
+        project_root: Path | None = None,
+    ):
+        _ = (content, output_dir, title, image_format, timeout_seconds, project_root)
+        calls.append({})
+        return (tmp_path / "flow.svg", None)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _DiagramAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli._render_mermaid_artifact", _fake_render_mermaid_artifact)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--no-diagram-render-images"],
+        input="show diagram\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert len(calls) == 0
+    assert "Diagram Artifact" not in result.stdout
+
+
+def test_chat_coding_path_prefers_dynamic_plan_over_static_plan_section(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            payload = {
+                "answer": "dynamic",
+                "ui_blocks": [
+                    {
+                        "type": "plan",
+                        "title": "Dynamic Plan",
+                        "objective": "DYNAMIC_OBJECTIVE",
+                        "steps": [{"status": "done", "title": "done step"}],
+                    }
+                ],
+            }
+            return {
+                "answer": json.dumps(payload),
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "STATIC_PLAN_SHOULD_NOT_RENDER", "steps": [{"status": "pending", "title": "static"}]},
+                "progress": {"phase": "edit", "why": "ok", "budgets": {"search_used": 0, "search_budget": 4, "read_used": 0, "read_budget": 6, "read_files_observed": 0, "required_read_files": 2}},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate(*_args, **_kwargs)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="implement\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "DYNAMIC_OBJECTIVE" in result.stdout
+    assert "STATIC_PLAN_SHOULD_NOT_RENDER" not in result.stdout
+
+
+def test_chat_coding_path_inferrs_mermaid_diagram_block_and_renders_before_summary(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return {
+                "answer": "```mermaid\ngraph LR\nX-->Y\n```",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "obj", "steps": []},
+                "progress": {"phase": "edit", "why": "ok", "budgets": {"search_used": 0, "search_budget": 4, "read_used": 0, "read_budget": 6, "read_files_observed": 0, "required_read_files": 2}},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate(*_args, **_kwargs)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="diagram\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "graph LR" in result.stdout
+    assert result.stdout.find("Diagram") < result.stdout.find("Summary")
+
+
+def test_chat_ignores_malformed_ui_blocks_and_falls_back_to_answer(monkeypatch, tmp_path: Path) -> None:
+    class _MalformedAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+        def ask_with_tools(
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponseWithTrace:
+            _ = (index_dir, question, k, max_steps, timeout_seconds)
+            payload = {
+                "answer": "Fallback answer",
+                "ui_blocks": [
+                    {"type": "diagram", "content": ""},
+                    {"no_type": "x"},
+                    "invalid",
+                ],
+            }
+            return AskResponseWithTrace(answer=json.dumps(payload), sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _MalformedAskService())
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools"],
+        input="hello\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Fallback answer" in result.stdout
+
+
+def test_chat_selection_flow_accepts_numeric_choice_and_synthesizes_follow_up(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        calls: list[str] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+            _FakeCodingAgent.calls = []
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def _base_result(self, answer: str) -> dict:
+            return {
+                "answer": answer,
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "obj", "steps": []},
+                "progress": {"phase": "inspect", "why": "ok", "budgets": {"search_used": 0, "search_budget": 4, "read_used": 0, "read_budget": 6, "read_files_observed": 0, "required_read_files": 2}},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate(self, question: str, *_args: object, **_kwargs: object) -> dict:
+            _FakeCodingAgent.calls.append(question)
+            if len(_FakeCodingAgent.calls) == 1:
+                payload = {
+                    "answer": "",
+                    "ui_blocks": [
+                        {
+                            "type": "selection",
+                            "id": "mode_select",
+                            "prompt": "Pick a mode",
+                            "options": [
+                                {"id": "safe", "label": "Safe mode", "value": "safe"},
+                                {"id": "fast", "label": "Fast mode", "value": "speed"},
+                            ],
+                        }
+                    ],
+                }
+                return self._base_result(json.dumps(payload))
+            return self._base_result("Selection applied")
+
+        def generate_dir_mode(self, *args: object, **kwargs: object) -> dict:
+            return self.generate(*args, **kwargs)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="begin\n2\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert len(_FakeCodingAgent.calls) == 2
+    assert _FakeCodingAgent.calls[1] == (
+        'User selected "fast" for selection "mode_select" (value="speed"). Continue accordingly.'
+    )
+
+
+def test_chat_selection_flow_reprompts_on_invalid_choice(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        calls: list[str] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-123"
+            _FakeCodingAgent.calls = []
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def _base_result(self, answer: str) -> dict:
+            return {
+                "answer": answer,
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "obj", "steps": []},
+                "progress": {"phase": "inspect", "why": "ok", "budgets": {"search_used": 0, "search_budget": 4, "read_used": 0, "read_budget": 6, "read_files_observed": 0, "required_read_files": 2}},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate(self, question: str, *_args: object, **_kwargs: object) -> dict:
+            _FakeCodingAgent.calls.append(question)
+            if len(_FakeCodingAgent.calls) == 1:
+                payload = {
+                    "answer": "",
+                    "ui_blocks": [
+                        {
+                            "type": "continue",
+                            "prompt": "Continue current flow?",
+                            "options": [
+                                {"id": "continue", "label": "Continue"},
+                                {"id": "new", "label": "Start new"},
+                            ],
+                        }
+                    ],
+                }
+                return self._base_result(json.dumps(payload))
+            return self._base_result("Handled")
+
+        def generate_dir_mode(self, *args: object, **kwargs: object) -> dict:
+            return self.generate(*args, **kwargs)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="begin\nbad choice\nnew\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Invalid selection" in result.stdout
+    assert len(_FakeCodingAgent.calls) == 2
+    assert _FakeCodingAgent.calls[1] == (
+        'User selected "new" for selection "continue_selection" (value="new"). Continue accordingly.'
+    )
+
+
+def test_chat_selection_flow_works_in_normal_agent_tools_path(monkeypatch, tmp_path: Path) -> None:
+    class _SelectionAskService(FakeAskService):
+        calls: list[str] = []
+
+        def __init__(self) -> None:
+            self.ask_agent = object()
+            _SelectionAskService.calls = []
+
+        def ask_with_tools(
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponseWithTrace:
+            _ = (index_dir, k, max_steps, timeout_seconds)
+            _SelectionAskService.calls.append(question)
+            if len(_SelectionAskService.calls) == 1:
+                payload = {
+                    "answer": "",
+                    "ui_blocks": [
+                        {
+                            "type": "selection",
+                            "id": "normal_select",
+                            "prompt": "Pick one",
+                            "options": [
+                                {"id": "one", "label": "One"},
+                                {"id": "two", "label": "Two"},
+                            ],
+                        }
+                    ],
+                }
+                return AskResponseWithTrace(answer=json.dumps(payload), sources=[], mode="agent-tools", trace=[], warnings=[])
+            hit_a = SearchHit(0.8, "/tmp/a.py", 1, 2, "a", "snippet")
+            hit_b = SearchHit(0.8, "/tmp/b.py", 3, 4, "b", "snippet")
+            return AskResponseWithTrace(
+                answer="Normal path handled",
+                sources=[hit_a, hit_b],
+                mode="agent-tools",
+                trace=[],
+                warnings=[],
+            )
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _SelectionAskService())
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools"],
+        input="begin\n2\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert len(_SelectionAskService.calls) == 2
+    assert _SelectionAskService.calls[1] == (
+        'User selected "two" for selection "normal_select" (value="two"). Continue accordingly.'
+    )

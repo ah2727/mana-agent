@@ -45,6 +45,7 @@ class ToolRunRequest(BaseModel):
     timeout_seconds: int = 30
     tool_policy: dict[str, Any] | None = None
     system_prompt: str | None = None
+    tools_only_strict_override: bool | None = None
 
 
 class ToolRunResponse(BaseModel):
@@ -436,7 +437,10 @@ class _ToolWorkerServer:
                 )
             trace_rows = [item.to_dict() for item in getattr(result, "trace", [])]
             ok_tools = len([row for row in trace_rows if str(row.get("status", "")).lower().strip() == "ok"])
-            if self._tools_only_strict and ok_tools <= 0:
+            strict_required = self._tools_only_strict
+            if req.tools_only_strict_override is not None:
+                strict_required = bool(req.tools_only_strict_override)
+            if strict_required and ok_tools <= 0:
                 self._emit(
                     WorkerReply(
                         type="error",

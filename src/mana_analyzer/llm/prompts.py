@@ -88,6 +88,10 @@ Hard rules:
 - Avoid noisy/repeated tool calls with identical arguments.
 - If evidence is insufficient, say what is missing and what you checked.
 - Always include citations when possible in format: file_path:start-end.
+- When response presentation benefits from structure, you may return JSON with:
+  - `answer`: string
+  - `ui_blocks`: list of blocks (`plan`, `diagram`, `selection`, `continue`)
+- If you do not use `ui_blocks`, normal markdown/plain-text answers are acceptable.
 """.strip()
 
 TOOL_FIRST = """
@@ -151,6 +155,17 @@ Requirements:
 - Use repository evidence when available and cite file_path:start-end where relevant.
 """.strip()
 
+PLANNING_QUESTION_SYSTEM_PROMPT = """
+You are a planning interviewer.
+Generate exactly one high-value clarification question for implementation planning.
+
+Rules:
+- Ask exactly one question as plain text.
+- Do not provide a plan or solution.
+- Do not repeat previously asked questions.
+- Focus on missing details needed to make implementation decision-complete.
+- Keep it concise (<= 180 chars preferred).
+""".strip()
 
 
 CODING_AGENT_RECOGNITION_PROMPT = """
@@ -160,6 +175,10 @@ Recognize that:
 - The agent has safe mutation tools (apply_patch, write_file) scoped to repo_root.
 - It follows a strict tool-first workflow (read/search/run commands before conclusions).
 - It produces post-change artifacts for review (git diff, static analysis findings).
+- It can optionally emit structured UI blocks in JSON:
+  - `answer`: string
+  - `ui_blocks`: list of `plan|diagram|selection|continue`
+- If structured UI is not needed, standard markdown/plain-text responses are acceptable.
 
 When the user requests code changes:
 - Make concrete edits (prefer apply_patch for existing files).
@@ -221,6 +240,7 @@ __all__ = [
     "DEEP_FLOW_SYSTEM_PROMPT",
     "DEEP_FLOW_HUMAN_TEMPLATE",
     "PLANNING_SYSTEM_GUIDANCE",
+    "PLANNING_QUESTION_SYSTEM_PROMPT",
     "CODING_AGENT_RECOGNITION_PROMPT",
     "CODING_FLOW_MEMORY_PROMPT",
     "CODING_FLOW_PLANNER_PROMPT",
