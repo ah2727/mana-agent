@@ -365,6 +365,199 @@ def test_tools_manager_retries_conversational_finalize_without_edits(tmp_path: P
     assert any("planner_finalize_conversational_without_edits" in str(item) for item in result.warnings)
 
 
+def test_tools_manager_retries_non_hard_blocker_terminal_without_edits(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+
+    first_plan = ToolsPlan(
+        objective="Run",
+        steps=[],
+        decision="finalize",
+        decision_reason="Blocker: I need a scope choice. Please choose option 1 or 2.",
+        stop_conditions=["done"],
+        finalize_action="Awaiting scope decision.",
+    )
+    second_plan = ToolsPlan(
+        objective="Run",
+        steps=[],
+        decision="finalize",
+        decision_reason="Completed.",
+        stop_conditions=["done"],
+        finalize_action="Done.",
+    )
+    calls = {"count": 0}
+
+    def _plan_with_source(**_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return first_plan, [], "planner"
+        return second_plan, [], "planner"
+
+    monkeypatch.setattr(orchestrator, "_plan_with_source", _plan_with_source)
+    monkeypatch.setattr(
+        orchestrator,
+        "_deterministic_fallback_plan",
+        lambda **_kwargs: ToolsPlan(
+            objective="Run",
+            steps=[
+                {
+                    "id": "s1",
+                    "title": "Inspect files",
+                    "tool_intent": "inspect",
+                    "args_hint": "read_file",
+                    "success_signal": "context gathered",
+                    "fallback": "search",
+                    "status": "in_progress",
+                }
+            ],
+            current_step_id="s1",
+            decision="continue",
+            decision_reason="forced retry",
+            stop_conditions=["done"],
+            finalize_action="done",
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="retry",
+                requests=[{"question": "Inspect relevant files and continue execution."}],
+                continue_after=True,
+                expected_progress="retry progress",
+            ),
+            [],
+        ),
+    )
+
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=2,
+    )
+    assert result.toolsmanager_requests_count == 1
+    assert any("planner_terminal_nonhard_blocker_retry" in str(item) for item in result.warnings)
+
+
+def test_tools_manager_retries_repository_access_soft_blocker_terminal(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+
+    first_plan = ToolsPlan(
+        objective="Run",
+        steps=[],
+        decision="finalize",
+        decision_reason=(
+            "I'm blocked on making a safe, accurate update because I need to read the current repository files first."
+        ),
+        stop_conditions=["done"],
+        finalize_action="Please share permission to proceed.",
+    )
+    second_plan = ToolsPlan(
+        objective="Run",
+        steps=[],
+        decision="finalize",
+        decision_reason="Completed.",
+        stop_conditions=["done"],
+        finalize_action="Done.",
+    )
+    calls = {"count": 0}
+
+    def _plan_with_source(**_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return first_plan, [], "planner"
+        return second_plan, [], "planner"
+
+    monkeypatch.setattr(orchestrator, "_plan_with_source", _plan_with_source)
+    monkeypatch.setattr(
+        orchestrator,
+        "_deterministic_fallback_plan",
+        lambda **_kwargs: ToolsPlan(
+            objective="Run",
+            steps=[
+                {
+                    "id": "s1",
+                    "title": "Inspect files",
+                    "tool_intent": "inspect",
+                    "args_hint": "read_file",
+                    "success_signal": "context gathered",
+                    "fallback": "search",
+                    "status": "in_progress",
+                }
+            ],
+            current_step_id="s1",
+            decision="continue",
+            decision_reason="forced retry",
+            stop_conditions=["done"],
+            finalize_action="done",
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="retry",
+                requests=[{"question": "Inspect relevant files and continue execution."}],
+                continue_after=True,
+                expected_progress="retry progress",
+            ),
+            [],
+        ),
+    )
+
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=2,
+    )
+    assert result.toolsmanager_requests_count == 1
+    assert any("planner_terminal_nonhard_blocker_retry" in str(item) for item in result.warnings)
+
+
+def test_tools_manager_preserves_stop_for_hard_blocker(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+
+    stop_plan = ToolsPlan(
+        objective="Run",
+        steps=[],
+        decision="stop",
+        decision_reason="Permission denied and missing credential for write access.",
+        stop_conditions=["done"],
+        finalize_action="Blocked.",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (stop_plan, [], "planner"))
+
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=3,
+    )
+    assert result.terminal_reason == "planner_stop"
+    assert result.toolsmanager_requests_count == 0
+    assert any("planner_terminal_hard_blocker_stop" in str(item) for item in result.warnings)
+
+
 def test_tools_manager_merges_batch_results_in_input_order(tmp_path: Path, monkeypatch) -> None:
     orchestrator = _build_orchestrator(tmp_path)
 

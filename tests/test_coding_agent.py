@@ -199,6 +199,17 @@ def test_coding_agent_prevents_duplicate_semantic_search_loops(tmp_path: Path, m
     assert policy["search_repeat_limit"] == 1
 
 
+def test_coding_agent_effective_prompt_includes_language_tooling_guide(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    prompt = agent._effective_system_prompt_for("Fix failing pytest and npm test flows")
+    lowered = prompt.lower()
+    assert ".venv" in lowered
+    assert "node_modules" in lowered
+    assert "npm install" in lowered
+    assert "pytest -q" in lowered
+
+
 def test_coding_agent_enforces_search_budget_and_transitions_phase(tmp_path: Path, monkeypatch) -> None:
     payload = {
         "answer": "ok",

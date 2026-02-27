@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from mana_analyzer.llm.prompts import (
     CODING_AGENT_RECOGNITION_PROMPT,
+    CODING_AGENT_LANGUAGE_TOOLING_PROMPT,
     CODING_FLOW_MEMORY_PROMPT,
     CODING_FLOW_PLANNER_PROMPT,
     FULL_AUTO_EXECUTION_PROMPT,
@@ -42,7 +43,8 @@ from mana_analyzer.tools import build_apply_patch_tool, build_write_file_tool
 
 logger = logging.getLogger(__name__)
 
-CODING_SYSTEM_PROMPT = """\
+CODING_SYSTEM_PROMPT = (
+    """\
 You are a coding agent operating inside a repository.
 
 Rules:
@@ -87,6 +89,10 @@ Workflow:
 8) If user intent is an edit and you already know the target file/content change, execute the mutation in this turn and do not emit "if you want me to proceed" style confirmation text.
 
 """
+    .strip()
+    + "\n\n"
+    + CODING_AGENT_LANGUAGE_TOOLING_PROMPT
+)
 
 
 class FlowStep(BaseModel):

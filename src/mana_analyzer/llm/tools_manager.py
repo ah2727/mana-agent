@@ -797,12 +797,81 @@ class ToolsManagerOrchestrator:
         return any(token in lowered for token in patterns)
 
     @classmethod
+    def _looks_like_hard_blocker_prompt(cls, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        patterns = (
+            "missing credential",
+            "missing credentials",
+            "missing api key",
+            "missing token",
+            "missing secret",
+            "permission denied",
+            "insufficient permission",
+            "unauthorized",
+            "forbidden",
+            "access denied",
+            "missing target identifier",
+            "target identifier required",
+            "missing identifier",
+            "identifier is required",
+            "missing file path",
+            "path is required",
+            "target path required",
+            "provide file path",
+            "unavailable",
+        )
+        return any(token in lowered for token in patterns)
+
+    @classmethod
+    def _looks_like_non_hard_blocker_prompt(cls, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        if cls._looks_like_hard_blocker_prompt(lowered):
+            return False
+        patterns = (
+            "blocker decision",
+            "need one blocker decision",
+            "scope choice",
+            "scope decision",
+            "need scope",
+            "which scope",
+            "choose scope",
+            "choose option",
+            "which option",
+            "option 1",
+            "option 2",
+            "1 or 2",
+            "one or two",
+            "pick one",
+            "awaiting scope decision",
+            "awaiting your decision",
+            "i'm blocked on",
+            "i am blocked on",
+            "blocked on making",
+            "need to read",
+            "need to inspect",
+            "need to review",
+            "before patching",
+            "before editing",
+            "before making changes",
+            "share permission to proceed",
+            "permission to proceed",
+            "requires explicit tool execution",
+            "tool access is available",
+            "once tool access is available",
+        )
+        return any(token in lowered for token in patterns)
+
+    @classmethod
     def _is_blocked_terminal_plan(cls, plan: ToolsPlan) -> bool:
-        if str(plan.decision or "").strip().lower() == "stop":
-            return True
         fields = [str(plan.decision_reason or ""), str(plan.finalize_action or "")]
-        lowered = " ".join(fields).lower()
-        return any(token in lowered for token in ("blocked", "missing credential", "permission denied", "unavailable"))
+        combined = " ".join(fields)
+        if str(plan.decision or "").strip().lower() == "stop":
+            return cls._looks_like_hard_blocker_prompt(combined)
+        return cls._looks_like_hard_blocker_prompt(combined)
 
     @staticmethod
     def _synthesize_terminal_answer(
@@ -995,6 +1064,51 @@ class ToolsManagerOrchestrator:
             planner_decisions.append(planner_row)
 
             if plan.decision in {"finalize", "stop"}:
+                decision_text = " ".join(
+                    [
+                        str(plan.decision_reason or "").strip(),
+                        str(plan.finalize_action or "").strip(),
+                    ]
+                ).strip()
+                has_hard_blocker = self._looks_like_hard_blocker_prompt(decision_text)
+                has_non_hard_blocker = self._looks_like_non_hard_blocker_prompt(decision_text)
+                has_conversational_terminal = (
+                    self._looks_like_conversational_terminal(plan.finalize_action)
+                    or self._looks_like_conversational_terminal(plan.decision_reason)
+                )
+                should_retry_terminal = bool(
+                    (not changed_files)
+                    and pass_index < pass_cap
+                    and (
+                        has_conversational_terminal
+                        or has_non_hard_blocker
+                        or (plan.decision == "stop" and not has_hard_blocker)
+                    )
+                )
+                if should_retry_terminal:
+                    if has_conversational_terminal:
+                        all_warnings.append(
+                            "planner_finalize_conversational_without_edits; forcing another execution pass"
+                        )
+                    if has_non_hard_blocker or (plan.decision == "stop" and not has_hard_blocker):
+                        all_warnings.append(
+                            "planner_terminal_nonhard_blocker_retry; forcing another execution pass"
+                        )
+                    plan = self._deterministic_fallback_plan(
+                        request=(
+                            f"{request}\n\n"
+                            "Full-auto continuation directive:\n"
+                            "- Do not ask for confirmation.\n"
+                            "- Do not pause for non-hard scope/option choices.\n"
+                            "- Continue with concrete file inspection/edits/verification.\n"
+                            "- Return blocked only for true blockers."
+                        ),
+                        flow_context=flow_context,
+                        previous_plan=plan,
+                        reason="terminal_nonhard_blocker_retry",
+                    )
+                    continue
+
                 if (
                     plan.decision == "finalize"
                     and not changed_files
@@ -1021,6 +1135,32 @@ class ToolsManagerOrchestrator:
                         reason="conversational_terminal_retry",
                     )
                     continue
+                if plan.decision == "stop":
+                    if has_hard_blocker:
+                        all_warnings.append("planner_terminal_hard_blocker_stop")
+                    else:
+                        all_warnings.append(
+                            "planner_terminal_nonhard_blocker_retry_exhausted; pass cap reached before retry"
+                        )
+                        terminal_reason = "pass_cap_reached"
+                        if not latest_answer:
+                            latest_answer = str(plan.decision_reason or plan.finalize_action or "").strip()
+                        all_pass_logs.append(
+                            {
+                                "pass_index": pass_index,
+                                "planner_step_id": plan.current_step_id,
+                                "planner_step_title": str(getattr(step, "title", "") or ""),
+                                "planner_decision": "continue",
+                                "planner_decision_reason": "non-hard blocker stop downgraded to pass_cap_reached",
+                                "batch_reason": "planner_terminal_nonhard_exhausted",
+                                "expected_progress": "",
+                                "requests_count": 0,
+                                "request_fingerprints": [],
+                                "tool_steps": 0,
+                                "warnings_delta": 0,
+                            }
+                        )
+                        break
                 terminal_reason = "planner_finalize" if plan.decision == "finalize" else "planner_stop"
                 if not latest_answer:
                     latest_answer = str(plan.finalize_action or "").strip()

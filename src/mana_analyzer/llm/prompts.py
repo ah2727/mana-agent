@@ -204,6 +204,63 @@ When using the apply_patch tool, you MUST provide a git-unified diff that `git a
 
 """.strip()
 
+CODING_AGENT_LANGUAGE_TOOLING_PROMPT = """
+Language-aware tooling and command policy:
+
+1) Detect ecosystem before running install/test commands.
+   - Python hints: `pyproject.toml`, `requirements*.txt`, `Pipfile`, `poetry.lock`, `uv.lock`, `tox.ini`.
+   - Node/JS/TS hints: `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`.
+   - Rust hints: `Cargo.toml`, `Cargo.lock`.
+   - Go hints: `go.mod`, `go.sum`.
+   - Ruby hints: `Gemfile`, `Gemfile.lock`.
+   - PHP hints: `composer.json`, `composer.lock`.
+   - Dart/Flutter hints: `pubspec.yaml`, `.dart_tool/`.
+   - JVM hints: `pom.xml`, `build.gradle`, `build.gradle.kts`, `gradlew`.
+   - .NET hints: `*.sln`, `*.csproj`, `global.json`.
+
+2) Ignore noisy/generated paths during discovery and grep/search:
+   `node_modules/`, `.venv/`, `venv/`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`,
+   `.next/`, `dist/`, `build/`, `coverage/`, `target/`, `vendor/`, `out/`, `.dart_tool/`,
+   `Pods/`, `.mana_index/`.
+
+3) Python workflow (prefer virtual env if present).
+   - Environment keywords to detect: `.venv`, `venv`, `virtualenv`.
+   - If `.venv/bin/python` exists, use it; otherwise if `venv/bin/python` exists, use it.
+   - Install preference:
+     1. `uv sync` when `uv.lock` exists.
+     2. `poetry install` when `poetry.lock` exists.
+     3. `python -m pip install -r requirements.txt` for requirements projects.
+     4. `pipenv install --dev` for Pipfile projects.
+   - Test preference:
+     1. `pytest -q` (default).
+     2. `python -m pytest -q` if direct `pytest` is unavailable.
+     3. Project-specific fallback only if manifests/config require it (e.g., `tox -q`).
+
+4) Node/JS/TS workflow (always ignore `node_modules` in repository search).
+   - Install preference:
+     1. `pnpm install --frozen-lockfile` when `pnpm-lock.yaml` exists.
+     2. `yarn install --frozen-lockfile` when `yarn.lock` exists.
+     3. `npm ci` when `package-lock.json`/`npm-shrinkwrap.json` exists.
+     4. `npm install` as fallback.
+   - Test preference:
+     1. `pnpm test` / `yarn test` / `npm test` based on lockfile manager.
+     2. If no test script exists, report that clearly and avoid inventing one.
+
+5) Other ecosystems:
+   - Rust: `cargo test` (and `cargo check` for quick verification).
+   - Go: `go test ./...`.
+   - Ruby: `bundle install` then `bundle exec rspec` (or project-defined test task).
+   - PHP: `composer install` then `vendor/bin/phpunit` (or `composer test` if defined).
+   - Dart: `dart pub get` + `dart test`; Flutter: `flutter pub get` + `flutter test`.
+   - Maven: `mvn test`; Gradle: `./gradlew test`; .NET: `dotnet test`.
+
+6) Command selection constraints:
+   - Choose one ecosystem path from detected manifests; do not run unrelated package managers.
+   - Prefer lockfile-respecting install commands before generic installs.
+   - After command failure, inspect stderr and try one bounded fallback only when justified.
+   - Report missing toolchain/command as a concrete blocker instead of guessing.
+""".strip()
+
 FULL_AUTO_EXECUTION_PROMPT = """
 Full-auto execution mode is enabled.
 
@@ -334,6 +391,7 @@ __all__ = [
     "PLANNING_SYSTEM_GUIDANCE",
     "PLANNING_QUESTION_SYSTEM_PROMPT",
     "CODING_AGENT_RECOGNITION_PROMPT",
+    "CODING_AGENT_LANGUAGE_TOOLING_PROMPT",
     "FULL_AUTO_EXECUTION_PROMPT",
     "CODING_FLOW_MEMORY_PROMPT",
     "CODING_FLOW_PLANNER_PROMPT",

@@ -38,7 +38,7 @@ def test_toolsmanager_prompt_mentions_parallel_independence_and_ordering() -> No
     assert "independent" in text
     assert "parallel" in text
     assert "input order" in text or "original input order" in text
-    assert "changed_files" in text
+    assert "changed_files" in text or "file-change evidence" in text
     assert "true blockers" in text
 
 
@@ -52,3 +52,12 @@ def test_coding_prompts_enforce_noop_retry_flow() -> None:
     assert "no-op" in recog_text
     assert "apply_patch" in recog_text and "write_file" in recog_text
     assert "execute the edit in the same turn" in recog_text
+
+
+def test_coding_language_tooling_prompt_covers_python_node_and_ignores() -> None:
+    text = str(getattr(prompts, "CODING_AGENT_LANGUAGE_TOOLING_PROMPT", "") or "").lower()
+    assert ".venv" in text and "venv" in text
+    assert "pytest -q" in text
+    assert "node_modules" in text
+    assert "npm install" in text
+    assert "npm test" in text

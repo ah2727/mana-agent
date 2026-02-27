@@ -2064,6 +2064,21 @@ def test_sanitize_full_auto_answer_text_replaces_confirmation_prompts() -> None:
     assert cleaned.startswith("Status: executing")
 
 
+def test_sanitize_full_auto_answer_text_replaces_non_hard_blocker_prompts() -> None:
+    text = "Blocker: I need a scope choice. Please choose option 1 or 2."
+    cleaned = _sanitize_full_auto_answer_text(text, changed_files_count=0, terminal_reason="planner_finalize")
+    assert cleaned.startswith("Status: executing")
+
+
+def test_sanitize_full_auto_answer_text_replaces_non_hard_repository_access_prompts() -> None:
+    text = (
+        "I'm blocked on making a safe, accurate update because I need to read the current repository files first. "
+        "Please share permission to proceed."
+    )
+    cleaned = _sanitize_full_auto_answer_text(text, changed_files_count=0, terminal_reason="planner_finalize")
+    assert cleaned.startswith("Status: executing")
+
+
 def test_chat_full_auto_profile_forces_auto_execute_for_edit_requests(monkeypatch, tmp_path: Path) -> None:
     class _FakeAskService(FakeAskService):
         def __init__(self) -> None:
@@ -2132,7 +2147,7 @@ def test_chat_full_auto_profile_forces_auto_execute_for_edit_requests(monkeypatc
     result = runner.invoke(
         app,
         ["chat", "--agent-tools", "--coding-agent", "--execution-profile", "full-auto"],
-        input="please patch src/example.py\nquit\n",
+        input="update readme.md with full cli flags and descriptions\nquit\n",
     )
     assert result.exit_code == 0
     assert _FakeCodingAgent.auto_calls
@@ -2214,3 +2229,520 @@ def test_chat_full_auto_conflict_is_auto_continued(monkeypatch, tmp_path: Path) 
     assert result.exit_code == 0
     assert _FakeCodingAgent.auto_calls == 1
     assert "This request appears to diverge from the active flow." not in result.stdout
+
+
+def test_chat_full_auto_pass_cap_auto_resumes_until_completion(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        auto_calls = 0
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-checkpoint-1"
+
+        def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:
+            _FakeCodingAgent.auto_calls += 1
+            if _FakeCodingAgent.auto_calls == 1:
+                return {
+                    "answer": "working",
+                    "changed_files": [],
+                    "warnings": [],
+                    "diff": "",
+                    "flow_id": self.active,
+                    "plan": {
+                        "objective": "Implement request",
+                        "steps": [
+                            {"status": "done", "title": "Inspect files"},
+                            {"status": "pending", "title": "Apply edit"},
+                        ],
+                    },
+                    "checklist": {"done": 1, "pending": 1, "blocked": 0, "total": 2},
+                    "progress": {"phase": "answer", "why": "continue_execution"},
+                    "next_step": "continue_execution",
+                    "auto_execute_passes": 2,
+                    "auto_execute_terminal_reason": "pass_cap_reached",
+                    "toolsmanager_requests_count": 1,
+                    "pass_logs": [
+                        {
+                            "pass_index": 1,
+                            "planner_decision": "continue",
+                            "planner_decision_reason": "pass one",
+                        },
+                        {
+                            "pass_index": 2,
+                            "planner_decision": "continue",
+                            "planner_decision_reason": "pass two",
+                        },
+                    ],
+                    "planner_decisions": [
+                        {"pass_index": 1, "decision": "decide-one", "decision_reason": "pass one"},
+                        {"pass_index": 2, "decision": "decide-two", "decision_reason": "pass two"},
+                    ],
+                }
+            return {
+                "answer": "done",
+                "changed_files": ["src/example.py"],
+                "warnings": [],
+                "diff": "diff --git a/src/example.py b/src/example.py\n",
+                "flow_id": self.active,
+                "plan": {
+                    "objective": "Implement request",
+                    "steps": [{"status": "done", "title": "Finalize"}],
+                },
+                "checklist": {"done": 1, "pending": 0, "blocked": 0, "total": 1},
+                "progress": {"phase": "answer", "why": "complete"},
+                "next_step": "done",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "completed",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--agent-tools",
+            "--coding-agent",
+            "--execution-profile",
+            "full-auto",
+            "--full-auto-status-every",
+            "2",
+        ],
+        input="please modify src/a.py\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeCodingAgent.auto_calls == 2
+    assert result.stdout.count("Full-auto Checkpoint") == 1
+    assert "checklist: done 1 | pending 1 | blocked 0 | total 2" in result.stdout
+    assert "Status: executing (pass_cap_reached)." not in result.stdout
+
+
+def test_chat_full_auto_checkpoint_window_is_non_overlapping(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        auto_calls = 0
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-checkpoint-window"
+
+        def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:
+            _FakeCodingAgent.auto_calls += 1
+            if _FakeCodingAgent.auto_calls == 1:
+                return {
+                    "answer": "working",
+                    "changed_files": [],
+                    "warnings": [],
+                    "diff": "",
+                    "flow_id": self.active,
+                    "plan": {"objective": "Implement request", "steps": []},
+                    "checklist": {"done": 0, "pending": 2, "blocked": 0, "total": 2},
+                    "progress": {"phase": "answer", "why": "continue_execution"},
+                    "next_step": "continue_execution",
+                    "auto_execute_passes": 4,
+                    "auto_execute_terminal_reason": "pass_cap_reached",
+                    "toolsmanager_requests_count": 1,
+                    "pass_logs": [
+                        {"pass_index": 1, "planner_decision": "continue", "planner_decision_reason": "pass one"},
+                        {"pass_index": 2, "planner_decision": "continue", "planner_decision_reason": "pass two"},
+                        {"pass_index": 3, "planner_decision": "continue", "planner_decision_reason": "pass three"},
+                        {"pass_index": 4, "planner_decision": "continue", "planner_decision_reason": "pass four"},
+                    ],
+                    "planner_decisions": [
+                        {"pass_index": 1, "decision": "decide-one", "decision_reason": "pass one"},
+                        {"pass_index": 2, "decision": "decide-two", "decision_reason": "pass two"},
+                        {"pass_index": 3, "decision": "decide-three", "decision_reason": "pass three"},
+                        {"pass_index": 4, "decision": "decide-four", "decision_reason": "pass four"},
+                    ],
+                }
+            return {
+                "answer": "done",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "Implement request", "steps": []},
+                "progress": {"phase": "answer", "why": "complete"},
+                "next_step": "done",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "completed",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--agent-tools",
+            "--coding-agent",
+            "--execution-profile",
+            "full-auto",
+            "--full-auto-status-every",
+            "2",
+        ],
+        input="please modify src/a.py\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert result.stdout.count("Full-auto Checkpoint") == 2
+    assert result.stdout.count("decide-two") == 1
+    assert result.stdout.count("decide-four") == 1
+
+
+def test_chat_full_auto_checkpoint_can_be_disabled(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        auto_calls = 0
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-checkpoint-2"
+
+        def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:
+            _FakeCodingAgent.auto_calls += 1
+            if _FakeCodingAgent.auto_calls == 1:
+                return {
+                    "answer": "working",
+                    "changed_files": [],
+                    "warnings": [],
+                    "diff": "",
+                    "flow_id": self.active,
+                    "plan": {"objective": "Implement request", "steps": [{"status": "pending", "title": "Inspect"}]},
+                    "progress": {"phase": "answer", "why": "continue_execution"},
+                    "next_step": "continue_execution",
+                    "auto_execute_passes": 1,
+                    "auto_execute_terminal_reason": "pass_cap_reached",
+                    "toolsmanager_requests_count": 1,
+                    "pass_logs": [{"pass_index": 1, "planner_decision": "continue", "planner_decision_reason": "pass"}],
+                    "planner_decisions": [{"pass_index": 1, "decision": "decide-pass", "decision_reason": "pass"}],
+                }
+            return {
+                "answer": "done",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "Implement request", "steps": [{"status": "pending", "title": "Inspect"}]},
+                "progress": {"phase": "answer", "why": "complete"},
+                "next_step": "done",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "completed",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--agent-tools",
+            "--coding-agent",
+            "--execution-profile",
+            "full-auto",
+            "--full-auto-status-every",
+            "0",
+        ],
+        input="please modify src/a.py\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeCodingAgent.auto_calls == 2
+    assert "Full-auto Checkpoint" not in result.stdout
+
+
+def test_chat_balanced_mode_does_not_auto_resume_pass_cap(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        auto_calls = 0
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-balanced-1"
+
+        def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:
+            _FakeCodingAgent.auto_calls += 1
+            return {
+                "answer": "need more passes",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "Implement request", "steps": [{"status": "pending", "title": "Inspect"}]},
+                "progress": {"phase": "answer", "why": "continue_execution"},
+                "checklist": {"done": 0, "pending": 1, "blocked": 0, "total": 1},
+                "actions_taken": [],
+                "next_step": "continue_execution",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "pass_cap_reached",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [{"pass_index": 1, "planner_decision": "continue", "planner_decision_reason": "pass"}],
+                "planner_decisions": [{"pass_index": 1, "decision": "decide-pass", "decision_reason": "pass"}],
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+        def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
+            return self.generate_auto_execute()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--agent-tools",
+            "--coding-agent",
+            "--execution-profile",
+            "balanced",
+            "--full-auto-status-every",
+            "2",
+        ],
+        input="implement plan.\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeCodingAgent.auto_calls == 1
+    assert "Full-auto Checkpoint" not in result.stdout
+
+
+def test_chat_full_auto_tools_manager_path_auto_resumes_pass_cap(monkeypatch, tmp_path: Path) -> None:
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeAutoResult:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def model_dump(self) -> dict[str, object]:
+            return dict(self.payload)
+
+    class _FakeOrchestrator:
+        run_calls = 0
+
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def preview_plan(self, **_kwargs: object) -> dict:
+            return {
+                "prechecklist": {
+                    "objective": "Implement plan",
+                    "source": "planner",
+                    "steps": [{"id": "s1", "status": "in_progress", "title": "Inspect files"}],
+                },
+                "prechecklist_source": "planner",
+                "prechecklist_warning": "",
+                "warnings": [],
+            }
+
+        def run(self, **_kwargs: object):
+            _FakeOrchestrator.run_calls += 1
+            if _FakeOrchestrator.run_calls == 1:
+                return _FakeAutoResult(
+                    {
+                        "answer": "working",
+                        "sources": [],
+                        "trace": [],
+                        "warnings": [],
+                        "changed_files": [],
+                        "plan": {"objective": "Implement plan", "steps": [{"id": "s1", "title": "Inspect"}]},
+                        "passes": 2,
+                        "terminal_reason": "pass_cap_reached",
+                        "toolsmanager_requests_count": 1,
+                        "pass_logs": [
+                            {"pass_index": 1, "planner_decision": "continue", "planner_decision_reason": "pass one"},
+                            {"pass_index": 2, "planner_decision": "continue", "planner_decision_reason": "pass two"},
+                        ],
+                        "planner_decisions": [
+                            {"pass_index": 1, "decision": "decide-one", "decision_reason": "pass one"},
+                            {"pass_index": 2, "decision": "decide-two", "decision_reason": "pass two"},
+                        ],
+                        "checklist": {"done": 1, "pending": 1, "blocked": 0, "total": 2},
+                    }
+                )
+            return _FakeAutoResult(
+                {
+                    "answer": "auto execution complete",
+                    "sources": [],
+                    "trace": [],
+                    "warnings": [],
+                    "changed_files": [],
+                    "plan": {"objective": "Implement plan", "steps": [{"id": "s1", "title": "Inspect"}]},
+                    "passes": 1,
+                    "terminal_reason": "manager_stop",
+                    "toolsmanager_requests_count": 1,
+                    "pass_logs": [],
+                    "planner_decisions": [],
+                }
+            )
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolsManagerOrchestrator", _FakeOrchestrator)
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--agent-tools",
+            "--execution-profile",
+            "full-auto",
+            "--full-auto-status-every",
+            "2",
+        ],
+        input="implement plan.\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeOrchestrator.run_calls == 2
+    assert result.stdout.count("Full-auto Checkpoint") == 1
+    assert "auto execution complete" in result.stdout
+    assert "Status: executing (pass_cap_reached)." not in result.stdout

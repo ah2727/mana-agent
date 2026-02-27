@@ -180,6 +180,15 @@ _EDIT_INTENT_TOKENS = (
     "integrate",
     "patch",
     "modify",
+    "edit",
+    "update",
+    "rewrite",
+    "refactor",
+    "fix",
+    "create",
+    "add",
+    "remove",
+    "delete",
     "edit file",
     "edit this",
     "change file",
@@ -189,6 +198,10 @@ _EDIT_INTENT_TOKENS = (
     "apply patch",
     "fix this",
     "implement this",
+)
+
+_EDIT_TARGET_PATTERN = re.compile(
+    r"\b(readme(?:\.md)?|[\w./-]+\.(?:py|md|js|jsx|ts|tsx|json|toml|ya?ml|ini|cfg|txt|sh|go|rs|java|kt|rb|php|swift|sql|c|cc|cpp|h|hpp|cs))\b"
 )
 
 
@@ -491,6 +504,10 @@ def _log_chat_turn(
     tool_execution_duration_ms: float = 0.0,
     tool_execution_requests_ok: int = 0,
     tool_execution_requests_failed: int = 0,
+    full_auto_resume_cycles: int = 0,
+    full_auto_passes_total: int = 0,
+    full_auto_pass_checkpoints_emitted: int = 0,
+    resumed_from_pass_cap: bool = False,
     multiline_input: bool | None = None,
     multiline_terminator: str | None = None,
 ) -> None:
@@ -535,6 +552,10 @@ def _log_chat_turn(
                 "tool_execution_duration_ms": float(tool_execution_duration_ms or 0.0),
                 "tool_execution_requests_ok": int(tool_execution_requests_ok or 0),
                 "tool_execution_requests_failed": int(tool_execution_requests_failed or 0),
+                "full_auto_resume_cycles": int(full_auto_resume_cycles or 0),
+                "full_auto_passes_total": int(full_auto_passes_total or 0),
+                "full_auto_pass_checkpoints_emitted": int(full_auto_pass_checkpoints_emitted or 0),
+                "resumed_from_pass_cap": bool(resumed_from_pass_cap),
                 "multiline_input": bool(multiline_input) if multiline_input is not None else None,
                 "multiline_terminator": str(multiline_terminator or ""),
             }
@@ -1395,6 +1416,123 @@ def _render_flow_checklist(console: Console, checklist: dict[str, Any]) -> None:
             )
 
 
+def _derive_checklist_counts_from_steps(steps: list[Any]) -> dict[str, int] | None:
+    if not steps:
+        return None
+    done = 0
+    blocked = 0
+    pending = 0
+    total = 0
+    for item in steps:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "pending") or "pending").strip().lower()
+        if status not in {"pending", "in_progress", "done", "blocked"}:
+            status = "pending"
+        total += 1
+        if status == "done":
+            done += 1
+        elif status == "blocked":
+            blocked += 1
+        else:
+            pending += 1
+    if total <= 0:
+        return None
+    return {"done": done, "pending": pending, "blocked": blocked, "total": total}
+
+
+def _resolve_payload_checklist_counts(payload: dict[str, Any]) -> dict[str, int] | None:
+    checklist = payload.get("checklist")
+    if isinstance(checklist, dict):
+        done = int(checklist.get("done", 0) or 0)
+        pending = int(checklist.get("pending", 0) or 0)
+        blocked = int(checklist.get("blocked", 0) or 0)
+        total_raw = checklist.get("total")
+        if total_raw is None:
+            total = max(0, done + pending + blocked)
+        else:
+            total = max(0, int(total_raw or 0))
+        if total > 0 or done > 0 or pending > 0 or blocked > 0:
+            return {"done": done, "pending": pending, "blocked": blocked, "total": total}
+
+    plan = payload.get("plan")
+    if isinstance(plan, dict):
+        steps = plan.get("steps")
+        if isinstance(steps, list):
+            return _derive_checklist_counts_from_steps(steps)
+    return None
+
+
+def _checkpoint_decisions_from_pass_window(
+    planner_decisions: list[dict[str, Any]],
+    pass_logs: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for item in reversed(planner_decisions):
+        decision = str(item.get("decision", "") or "").strip()
+        rationale = str(item.get("decision_reason", "") or item.get("rationale", "") or "").strip()
+        if not decision:
+            continue
+        key = (decision, rationale)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"decision": decision[:200], "rationale": rationale[:220]})
+        if len(rows) >= 3:
+            return rows
+
+    for item in reversed(pass_logs):
+        decision = str(item.get("planner_decision", "") or "").strip()
+        rationale = str(item.get("planner_decision_reason", "") or "").strip()
+        if not decision:
+            continue
+        key = (decision, rationale)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"decision": decision[:200], "rationale": rationale[:220]})
+        if len(rows) >= 3:
+            break
+    return rows
+
+
+def _render_full_auto_checkpoint(
+    console: Console,
+    *,
+    decision_rows: list[dict[str, str]],
+    checklist_counts: dict[str, int] | None,
+    window_passes: int,
+    pass_total: int,
+    resume_cycles: int,
+) -> None:
+    console.print("\n[bold cyan]Full-auto Checkpoint[/bold cyan]")
+    decisions = list(decision_rows or [])[:3]
+    if decisions:
+        for item in decisions:
+            decision = str(item.get("decision", "")).strip()
+            rationale = str(item.get("rationale", "")).strip()
+            if decision and rationale:
+                console.print(f"- decision: {decision} ({rationale})")
+            elif decision:
+                console.print(f"- decision: {decision}")
+    else:
+        console.print("- decision: none")
+
+    if checklist_counts is not None:
+        console.print(
+            f"- checklist: done {checklist_counts['done']} | pending {checklist_counts['pending']} | "
+            f"blocked {checklist_counts['blocked']} | total {checklist_counts['total']}"
+        )
+    else:
+        console.print("- checklist: unavailable")
+
+    console.print(
+        f"- status: resuming full-auto (resume_cycle={resume_cycles}; window_passes={window_passes}; passes_total={pass_total})"
+    )
+
+
 class LiveLogBuffer(logging.Handler):
     """Capture recent log records and stream a tail into Rich Live."""
 
@@ -1430,7 +1568,12 @@ class LiveLogBuffer(logging.Handler):
 
 def _looks_like_edit_request(question: str) -> bool:
     lowered = (question or "").lower()
-    return any(token in lowered for token in _EDIT_INTENT_TOKENS)
+    if any(token in lowered for token in _EDIT_INTENT_TOKENS):
+        return True
+    has_edit_verb = bool(
+        re.search(r"\b(update|edit|modify|patch|rewrite|refactor|fix|create|add|remove|delete|rename|document)\b", lowered)
+    )
+    return bool(has_edit_verb and _EDIT_TARGET_PATTERN.search(lowered))
 
 
 def _looks_like_plan_trigger_request(question: str) -> bool:
@@ -1479,9 +1622,82 @@ def _sanitize_full_auto_answer_text(
     changed_files_count: int = 0,
     terminal_reason: str = "",
 ) -> str:
+    def _normalize_terminal_reason(reason: str) -> str:
+        return str(reason or "").strip().lower()
+
+    def _looks_like_hard_blocker_text(text: str) -> bool:
+        lowered_text = str(text or "").strip().lower()
+        if not lowered_text:
+            return False
+        patterns = (
+            "missing credential",
+            "missing credentials",
+            "missing api key",
+            "missing token",
+            "missing secret",
+            "permission denied",
+            "insufficient permission",
+            "unauthorized",
+            "forbidden",
+            "access denied",
+            "missing target identifier",
+            "target identifier required",
+            "missing identifier",
+            "identifier is required",
+            "missing file path",
+            "path is required",
+            "target path required",
+            "provide file path",
+            "unavailable",
+        )
+        return any(token in lowered_text for token in patterns)
+
+    def _looks_like_non_hard_blocker_text(text: str) -> bool:
+        lowered_text = str(text or "").strip().lower()
+        if not lowered_text:
+            return False
+        if _looks_like_hard_blocker_text(lowered_text):
+            return False
+        patterns = (
+            "blocker decision",
+            "need one blocker decision",
+            "scope choice",
+            "scope decision",
+            "need scope",
+            "which scope",
+            "choose scope",
+            "choose option",
+            "which option",
+            "option 1",
+            "option 2",
+            "1 or 2",
+            "one or two",
+            "pick one",
+            "awaiting scope decision",
+            "awaiting your decision",
+            "i'm blocked on",
+            "i am blocked on",
+            "blocked on making",
+            "need to read",
+            "need to inspect",
+            "need to review",
+            "before patching",
+            "before editing",
+            "before making changes",
+            "share permission to proceed",
+            "permission to proceed",
+            "requires explicit tool execution",
+            "tool access is available",
+            "once tool access is available",
+        )
+        return any(token in lowered_text for token in patterns)
+
     text = str(answer_text or "").strip()
     if not text:
         reason = str(terminal_reason or "").strip()
+        reason_key = _normalize_terminal_reason(reason)
+        if reason_key == "pass_cap_reached":
+            return "Status: executing."
         if reason:
             if any(token in reason for token in ("blocked", "error", "unavailable", "violation")):
                 return f"Status: blocked ({reason})."
@@ -1497,11 +1713,20 @@ def _sanitize_full_auto_answer_text(
         "type yes",
         "let me know if you want",
     )
-    if any(token in lowered for token in confirmation_patterns):
+    has_confirmation_prompt = any(token in lowered for token in confirmation_patterns)
+    has_non_hard_blocker_prompt = _looks_like_non_hard_blocker_text(lowered)
+    if has_confirmation_prompt or has_non_hard_blocker_prompt:
         reason = str(terminal_reason or "").strip()
+        reason_key = _normalize_terminal_reason(reason)
+        reason_and_text = f"{reason}\n{text}"
         if changed_files_count > 0:
             return "Status: completed."
-        if reason and any(token in reason for token in ("blocked", "error", "unavailable", "violation")):
+        if reason_key == "pass_cap_reached":
+            return "Status: executing."
+        if reason and (
+            any(token in reason for token in ("blocked", "error", "unavailable", "violation"))
+            or _looks_like_hard_blocker_text(reason_and_text)
+        ):
             return f"Status: blocked ({reason})."
         if reason:
             return f"Status: executing ({reason})."
@@ -3247,6 +3472,12 @@ def chat(
         "--full-auto",
         help="Alias for --execution-profile full-auto.",
     ),
+    full_auto_status_every: int = typer.Option(
+        10,
+        "--full-auto-status-every",
+        min=0,
+        help="In full-auto profile, print a compact checkpoint every N auto-execute passes (0 disables).",
+    ),
     agent_max_steps: int = typer.Option(6, "--agent-max-steps"),
     agent_unlimited: bool = typer.Option(
         False,
@@ -3324,6 +3555,7 @@ def chat(
             "auto_execute_max_passes": auto_execute_max_passes,
             "execution_profile": execution_profile,
             "full_auto": full_auto,
+            "full_auto_status_every": full_auto_status_every,
             "agent_max_steps": agent_max_steps,
             "agent_unlimited": agent_unlimited,
             "agent_timeout_seconds": agent_timeout_seconds,
@@ -3350,6 +3582,7 @@ def chat(
         # Keep user override when they pass a non-default value.
         if int(auto_execute_max_passes) == 4:
             auto_execute_max_passes = 10
+    full_auto_status_every = max(0, int(full_auto_status_every))
     planning_question_limit = max(1, min(planning_max_questions, 6))
     auto_execute_max_passes = max(1, min(int(auto_execute_max_passes), 12))
     chat_agent_max_steps = _resolve_agent_max_steps(
@@ -3745,6 +3978,13 @@ def chat(
                 f"(max passes: {auto_execute_max_passes})"
             )
             console.print(f"[cyan]Execution profile:[/cyan] {execution_profile}")
+            if execution_profile == "full-auto":
+                if full_auto_status_every > 0:
+                    console.print(
+                        f"[cyan]Full-auto checkpoint:[/cyan] every {full_auto_status_every} pass(es)"
+                    )
+                else:
+                    console.print("[cyan]Full-auto checkpoint:[/cyan] disabled")
         if diagram_render_images:
             console.print(
                 f"[cyan]Diagram rendering:[/cyan] {diagram_format} -> {resolved_diagram_output_dir}"
@@ -3779,6 +4019,11 @@ def chat(
         pending_prechecklist_source: str = ""
         pending_prechecklist_warning: str = ""
         session_turns: list[ChatTurnTelemetry] = []
+        full_auto_pass_window_logs: list[dict[str, Any]] = []
+        full_auto_pass_window_decisions: list[dict[str, Any]] = []
+        full_auto_latest_checklist_counts: dict[str, int] | None = None
+        full_auto_passes_total: int = 0
+        full_auto_pass_checkpoints_emitted: int = 0
 
         def _base_auto_execute_tool_policy(user_question: str) -> dict[str, Any]:
             if coding_agent_instance is not None:
@@ -4019,6 +4264,124 @@ def chat(
                     )
             return payload, debug_tail
 
+        def _build_full_auto_resume_request(
+            *,
+            original_question: str,
+            resume_cycle: int,
+            terminal_reason: str,
+        ) -> str:
+            reason = str(terminal_reason or "").strip() or "pass_cap_reached"
+            return (
+                f"{original_question}\n\n"
+                "FULL-AUTO RESUME DIRECTIVE:\n"
+                f"- resume_cycle: {int(resume_cycle)}\n"
+                f"- prior_terminal_reason: {reason}\n"
+                "- Continue from current repository/flow state.\n"
+                "- Do not ask for confirmation or scope-choice questions.\n"
+                "- Execute inspect/edit/verify loops until complete or hard-blocked.\n"
+            )
+
+        def _ingest_full_auto_pass_payload(payload: dict[str, Any]) -> int:
+            nonlocal full_auto_pass_window_logs
+            nonlocal full_auto_pass_window_decisions
+            nonlocal full_auto_latest_checklist_counts
+            nonlocal full_auto_passes_total
+
+            pass_logs = payload.get("pass_logs") if isinstance(payload.get("pass_logs"), list) else []
+            normalized_logs = [item for item in pass_logs if isinstance(item, dict)]
+            if normalized_logs:
+                full_auto_pass_window_logs.extend(normalized_logs)
+                full_auto_passes_total += len(normalized_logs)
+
+            planner_rows = (
+                payload.get("planner_decisions")
+                if isinstance(payload.get("planner_decisions"), list)
+                else []
+            )
+            normalized_planner_rows = [item for item in planner_rows if isinstance(item, dict)]
+            if normalized_planner_rows:
+                full_auto_pass_window_decisions.extend(normalized_planner_rows)
+
+            counts = _resolve_payload_checklist_counts(payload)
+            if counts is not None:
+                full_auto_latest_checklist_counts = counts
+            return len(normalized_logs)
+
+        def _emit_full_auto_pass_checkpoints(*, resume_cycles: int) -> int:
+            nonlocal full_auto_pass_window_logs
+            nonlocal full_auto_pass_window_decisions
+            nonlocal full_auto_pass_checkpoints_emitted
+
+            if str(execution_profile or "").strip().lower() != "full-auto":
+                return 0
+            every = max(0, int(full_auto_status_every))
+            if every <= 0:
+                return 0
+
+            emitted = 0
+            while len(full_auto_pass_window_logs) >= every:
+                checkpoint_logs = full_auto_pass_window_logs[:every]
+                full_auto_pass_window_logs = full_auto_pass_window_logs[every:]
+
+                take_rows = min(len(full_auto_pass_window_decisions), every)
+                checkpoint_planner_rows = full_auto_pass_window_decisions[:take_rows]
+                full_auto_pass_window_decisions = full_auto_pass_window_decisions[take_rows:]
+
+                decision_rows = _checkpoint_decisions_from_pass_window(
+                    checkpoint_planner_rows,
+                    checkpoint_logs,
+                )
+                _render_full_auto_checkpoint(
+                    console,
+                    decision_rows=decision_rows,
+                    checklist_counts=full_auto_latest_checklist_counts,
+                    window_passes=len(checkpoint_logs),
+                    pass_total=full_auto_passes_total,
+                    resume_cycles=resume_cycles,
+                )
+                full_auto_pass_checkpoints_emitted += 1
+                emitted += 1
+            return emitted
+
+        def _run_auto_execute_pipeline_with_resume(
+            user_question: str,
+            *,
+            render_progress: bool = True,
+        ) -> tuple[dict[str, Any], str]:
+            run_full_auto = str(execution_profile or "").strip().lower() == "full-auto"
+            resume_cycles = 0
+            resumed_from_pass_cap = False
+            turn_passes_total = 0
+            turn_checkpoints_emitted = 0
+            effective_question = user_question
+            last_debug_tail = ""
+
+            while True:
+                payload, debug_tail = _run_auto_execute_pipeline(
+                    effective_question,
+                    render_progress=(render_progress and resume_cycles == 0),
+                )
+                last_debug_tail = debug_tail
+                if run_full_auto:
+                    turn_passes_total += _ingest_full_auto_pass_payload(payload)
+                terminal_reason = str(payload.get("terminal_reason", "") or "").strip().lower()
+                if run_full_auto and terminal_reason == "pass_cap_reached":
+                    resumed_from_pass_cap = True
+                    resume_cycles += 1
+                    turn_checkpoints_emitted += _emit_full_auto_pass_checkpoints(resume_cycles=resume_cycles)
+                    effective_question = _build_full_auto_resume_request(
+                        original_question=user_question,
+                        resume_cycle=resume_cycles,
+                        terminal_reason=terminal_reason,
+                    )
+                    continue
+
+                payload["full_auto_resume_cycles"] = int(resume_cycles)
+                payload["full_auto_passes_total"] = int(turn_passes_total)
+                payload["full_auto_pass_checkpoints_emitted"] = int(turn_checkpoints_emitted)
+                payload["resumed_from_pass_cap"] = bool(resumed_from_pass_cap)
+                return payload, last_debug_tail
+
         def _emit_auto_execute_terminal(
             *,
             user_question: str,
@@ -4124,6 +4487,10 @@ def chat(
                 tool_execution_duration_ms=float(payload.get("execution_duration_ms", 0.0) or 0.0),
                 tool_execution_requests_ok=int(payload.get("execution_requests_ok", 0) or 0),
                 tool_execution_requests_failed=int(payload.get("execution_requests_failed", 0) or 0),
+                full_auto_resume_cycles=int(payload.get("full_auto_resume_cycles", 0) or 0),
+                full_auto_passes_total=int(payload.get("full_auto_passes_total", 0) or 0),
+                full_auto_pass_checkpoints_emitted=int(payload.get("full_auto_pass_checkpoints_emitted", 0) or 0),
+                resumed_from_pass_cap=bool(payload.get("resumed_from_pass_cap", False)),
                 multiline_input=multiline_input,
                 multiline_terminator=multiline_terminator,
             )
@@ -4354,7 +4721,7 @@ def chat(
                 planning_answers = []
                 planning_questions = []
                 if agent_tools and auto_execute_plan:
-                    auto_payload, auto_debug_tail = _run_auto_execute_pipeline(question)
+                    auto_payload, auto_debug_tail = _run_auto_execute_pipeline_with_resume(question)
                     _emit_auto_execute_terminal(
                         user_question=question,
                         payload=auto_payload,
@@ -4413,7 +4780,10 @@ def chat(
                 and auto_execute_plan
                 and _looks_like_plan_trigger_request(question)
             ):
-                auto_payload, auto_debug_tail = _run_auto_execute_pipeline(question, render_progress=False)
+                auto_payload, auto_debug_tail = _run_auto_execute_pipeline_with_resume(
+                    question,
+                    render_progress=False,
+                )
                 _emit_auto_execute_terminal(
                     user_question=question,
                     payload=auto_payload,
@@ -4427,6 +4797,11 @@ def chat(
             if coding_agent_instance is not None:
                 cb = RichToolCallbackHandler(show_inputs=True)
                 execute_plan_now = bool(auto_execute_plan and (plan_trigger_request or force_auto_execute_edit))
+                request_for_generation = question
+                turn_full_auto_resume_cycles = 0
+                turn_full_auto_passes_total = 0
+                turn_full_auto_pass_checkpoints_emitted = 0
+                turn_resumed_from_pass_cap = False
 
                 try:
                     if dir_mode:
@@ -4438,7 +4813,7 @@ def chat(
                         def _call(callbacks: list[BaseCallbackHandler]):
                             if execute_plan_now and hasattr(coding_agent_instance, "generate_auto_execute"):
                                 return coding_agent_instance.generate_auto_execute(
-                                    question,
+                                    request_for_generation,
                                     index_dirs=index_dirs,
                                     k=resolved_k,
                                     max_steps=coding_agent_max_steps,
@@ -4458,7 +4833,7 @@ def chat(
                                     ),
                                 )
                             return coding_agent_instance.generate_dir_mode(
-                                question,
+                                request_for_generation,
                                 index_dirs=index_dirs,
                                 k=resolved_k,
                                 max_steps=coding_agent_max_steps,
@@ -4472,7 +4847,7 @@ def chat(
                         def _call(callbacks: list[BaseCallbackHandler]):
                             if execute_plan_now and hasattr(coding_agent_instance, "generate_auto_execute"):
                                 return coding_agent_instance.generate_auto_execute(
-                                    question,
+                                    request_for_generation,
                                     index_dir=resolved_index_dir,
                                     k=resolved_k,
                                     max_steps=coding_agent_max_steps,
@@ -4492,7 +4867,7 @@ def chat(
                                     ),
                                 )
                             return coding_agent_instance.generate(
-                                question,
+                                request_for_generation,
                                 index_dir=resolved_index_dir,
                                 k=resolved_k,
                                 max_steps=coding_agent_max_steps,
@@ -4501,12 +4876,37 @@ def chat(
                                 flow_id=active_flow_id,
                             )
 
-                    result, debug_tail = _run_with_live_buffer(
-                        console,
-                        spinner_text="Coding…",
-                        fn=_call,
-                        callbacks=[cb],
-                    )
+                    while True:
+                        result, debug_tail = _run_with_live_buffer(
+                            console,
+                            spinner_text="Coding…",
+                            fn=_call,
+                            callbacks=[cb],
+                        )
+                        if not (
+                            execution_profile == "full-auto"
+                            and execute_plan_now
+                            and isinstance(result, dict)
+                        ):
+                            break
+                        turn_full_auto_passes_total += _ingest_full_auto_pass_payload(result)
+                        terminal_reason = str((result or {}).get("auto_execute_terminal_reason", "") or "").strip().lower()
+                        flow_from_cycle = (result or {}).get("flow_id")
+                        if isinstance(flow_from_cycle, str) and flow_from_cycle.strip():
+                            active_flow_id = flow_from_cycle.strip()
+                        if terminal_reason != "pass_cap_reached":
+                            break
+                        turn_resumed_from_pass_cap = True
+                        turn_full_auto_resume_cycles += 1
+                        turn_full_auto_pass_checkpoints_emitted += _emit_full_auto_pass_checkpoints(
+                            resume_cycles=turn_full_auto_resume_cycles
+                        )
+                        request_for_generation = _build_full_auto_resume_request(
+                            original_question=question,
+                            resume_cycle=turn_full_auto_resume_cycles,
+                            terminal_reason=terminal_reason,
+                        )
+                        continue
 
                 except ToolWorkerProcessError as exc:
                     _log_exception("coding_agent.generate.worker", exc)
@@ -4542,6 +4942,10 @@ def chat(
                         result["prechecklist_source"] = pending_prechecklist_source
                     if pending_prechecklist_warning and not str(result.get("prechecklist_warning", "")).strip():
                         result["prechecklist_warning"] = pending_prechecklist_warning
+                    result["full_auto_resume_cycles"] = int(turn_full_auto_resume_cycles)
+                    result["full_auto_passes_total"] = int(turn_full_auto_passes_total)
+                    result["full_auto_pass_checkpoints_emitted"] = int(turn_full_auto_pass_checkpoints_emitted)
+                    result["resumed_from_pass_cap"] = bool(turn_resumed_from_pass_cap)
                 answer_text, parsed_payload = _extract_structured_answer(answer)
                 if execution_profile == "full-auto" and execute_plan_now:
                     answer_text = _sanitize_full_auto_answer_text(
@@ -4719,6 +5123,26 @@ def chat(
                         if isinstance(result, dict)
                         else 0
                     ),
+                    full_auto_resume_cycles=(
+                        int((result or {}).get("full_auto_resume_cycles", 0) or 0)
+                        if isinstance(result, dict)
+                        else 0
+                    ),
+                    full_auto_passes_total=(
+                        int((result or {}).get("full_auto_passes_total", 0) or 0)
+                        if isinstance(result, dict)
+                        else 0
+                    ),
+                    full_auto_pass_checkpoints_emitted=(
+                        int((result or {}).get("full_auto_pass_checkpoints_emitted", 0) or 0)
+                        if isinstance(result, dict)
+                        else 0
+                    ),
+                    resumed_from_pass_cap=(
+                        bool((result or {}).get("resumed_from_pass_cap", False))
+                        if isinstance(result, dict)
+                        else False
+                    ),
                     multiline_input=multiline_input,
                     multiline_terminator=multiline_terminator,
                 )
@@ -4844,7 +5268,7 @@ def chat(
                 answer_text,
                 parsed_payload if isinstance(parsed_payload, dict) else None,
             ):
-                auto_payload, auto_debug_tail = _run_auto_execute_pipeline(question)
+                auto_payload, auto_debug_tail = _run_auto_execute_pipeline_with_resume(question)
                 _emit_auto_execute_terminal(
                     user_question=question,
                     payload=auto_payload,

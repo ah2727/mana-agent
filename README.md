@@ -178,6 +178,10 @@ All commands share common options:
 - The **Head Tools Planner** prompt (`HEAD_TOOLS_PLANNER_PROMPT`) decides objective, steps, current step, and terminal decision (`continue|revise|finalize|stop`).
 - The **ToolsManager** prompt (`TOOLSMANAGER_PROMPT`) compiles those steps into 1..N worker-executable tool requests with optional per-request tool-policy overrides.
 - Auto-execute pass logs record planner decision, batch reason, request fingerprints, tool steps, warnings delta, and terminal reason for transparent debugging.
+- Full-auto pass-cap behavior:
+  - `pass_cap_reached` is treated as a resumable checkpoint, not a terminal user-facing stop.
+  - The chat loop auto-resumes same-turn execution until completion or a hard blocker (for example, permissions/credentials/tool-worker failures).
+  - `--full-auto-status-every N` emits compact checkpoint summaries every `N` **auto-execute passes** (not chat turns), summarizing decisions + checklist counts since the previous checkpoint.
 - Runtime execution backend is configurable:
   - `local` (default): executes per-pass requests through the existing worker client path.
   - `redis` (opt-in): enqueues per-pass requests to Redis/RQ workers for concurrent multi-process execution.
@@ -208,6 +212,7 @@ If Redis/RQ is unavailable at runtime, the CLI falls back to the local executor 
 - Repository mutation tools: `apply_patch`, `write_file`.
 - Repository execution/inspection tools: `read_file`, `semantic_search`, `run_command`.
 - Patch format requirement for `apply_patch`: use git-unified diff (`diff --git`, `---`, `+++`, `@@` hunks). Non-git patch wrappers are intentionally rejected in tool policy and prompts.
+- Language-aware tooling matrix (install/test commands + ignore paths): [`docs/coding-agent-language-tooling.md`](docs/coding-agent-language-tooling.md).
 
 ### GitHub code search service
 
