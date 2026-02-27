@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field, ValidationError
 

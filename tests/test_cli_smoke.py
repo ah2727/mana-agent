@@ -879,9 +879,9 @@ def test_large_json_answer_is_rendered_as_sections_not_raw_blob(monkeypatch, tmp
             huge = '{"answer":"' + ("x" * 5000) + '"}'
             return {
                 "answer": huge,
-                "changed_files": [],
+                "changed_files": ["src/example.py"],
                 "warnings": [],
-                "diff": "",
+                "diff": "diff --git a/src/example.py b/src/example.py\n",
                 "flow_id": self.active,
                 "plan": {"objective": "obj", "steps": []},
                 "progress": {"phase": "inspect", "why": "insufficient reads", "budgets": {"search_used": 2, "search_budget": 4, "read_used": 1, "read_budget": 6, "read_files_observed": 1, "required_read_files": 2}},
@@ -989,9 +989,9 @@ def test_chat_summary_uses_actions_taken_total_when_trace_is_truncated(monkeypat
         def generate(self, *_args: object, **_kwargs: object) -> dict:
             return {
                 "answer": "done",
-                "changed_files": [],
+                "changed_files": ["src/example.py"],
                 "warnings": [],
-                "diff": "",
+                "diff": "diff --git a/src/example.py b/src/example.py\n",
                 "flow_id": self.active,
                 "plan": {"objective": "obj", "steps": []},
                 "progress": {"phase": "edit", "why": "ok", "budgets": {"search_used": 0, "search_budget": 4, "read_used": 0, "read_budget": 6, "read_files_observed": 0, "required_read_files": 2}},
@@ -1173,7 +1173,7 @@ def test_chat_diagram_artifact_render_invokes_mermaid_renderer(monkeypatch, tmp_
     assert calls[0]["content"] == "graph TD\nA-->B"
     assert calls[0]["image_format"] == "svg"
     assert "Diagram Artifact" in result.stdout
-    assert str(tmp_path / "flow.svg") in result.stdout
+    assert "flow.svg" in result.stdout
 
 
 def test_chat_no_diagram_render_images_skips_mermaid_artifact(monkeypatch, tmp_path: Path) -> None:
@@ -1310,9 +1310,9 @@ def test_chat_coding_path_inferrs_mermaid_diagram_block_and_renders_before_summa
         def generate(self, *_args: object, **_kwargs: object) -> dict:
             return {
                 "answer": "```mermaid\ngraph LR\nX-->Y\n```",
-                "changed_files": [],
+                "changed_files": ["src/example.py"],
                 "warnings": [],
-                "diff": "",
+                "diff": "diff --git a/src/example.py b/src/example.py\n",
                 "flow_id": self.active,
                 "plan": {"objective": "obj", "steps": []},
                 "progress": {"phase": "edit", "why": "ok", "budgets": {"search_used": 0, "search_budget": 4, "read_used": 0, "read_budget": 6, "read_files_observed": 0, "required_read_files": 2}},

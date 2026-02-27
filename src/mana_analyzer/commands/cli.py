@@ -17,7 +17,7 @@ import hashlib
 from typing import Any
 
 import typer
-from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage
 from rich.console import Console
 from rich.markdown import Markdown

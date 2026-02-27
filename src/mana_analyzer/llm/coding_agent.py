@@ -10,6 +10,7 @@ Coding agent wrapper with:
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import inspect
 import json
@@ -149,9 +150,93 @@ class CodingAgent:
     )
     _WEB_INTENT_TOKENS = ("latest", "internet", "online", "web", "news", "search web")
     _EXPLICIT_FILE_RE = re.compile(r"(?i)\b([A-Za-z0-9_\-./]+\.[A-Za-z0-9_]+)\b")
+    _AMBIGUOUS_FOLLOWUP_RE = re.compile(
+        r"(?i)^\s*(yes|yep|ok|okay|sure|continue|go|proceed|begin|start|do it|done|next)\s*[/!.]?\s*$"
+    )
 
     # Fallback policy: if apply_patch is attempted >= this many times and no changes appear, force write_file fallback.
     _PATCH_FAILURE_FALLBACK_THRESHOLD = 2
+
+    @staticmethod
+    def _parse_json_or_literal(raw: str) -> Any | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        try:
+            return ast.literal_eval(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _checklist_from_plan_text(text: str, request: str = "") -> FlowChecklist | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        steps: list[str] = []
+        objective = ""
+        for line in raw.splitlines():
+            item = line.strip()
+            if not item:
+                continue
+            lowered = item.lower()
+            if lowered.startswith("objective:"):
+                objective = item.split(":", 1)[1].strip()
+                continue
+            if lowered in {"plan:", "execution plan:", "**execution plan**"}:
+                continue
+            match = re.match(r"^(?:\d+[.)]\s+|[-*]\s+)(.+)$", item)
+            if match:
+                step_text = match.group(1).strip()
+                if step_text:
+                    steps.append(step_text[:220])
+        if not steps:
+            return None
+        resolved_objective = objective or (" ".join((request or "").strip().split())[:220] or "Implement requested change")
+        flow_steps: list[FlowStep] = []
+        for idx, title in enumerate(steps[:20], start=1):
+            flow_steps.append(
+                FlowStep(
+                    id=f"s{idx}",
+                    title=title,
+                    reason="Derived from planner text output",
+                    status="in_progress" if idx == 1 else "pending",
+                    requires_tools=[],
+                )
+            )
+        return FlowChecklist(
+            objective=resolved_objective,
+            constraints=[],
+            acceptance=["Requested change is applied"],
+            steps=flow_steps,
+            next_action=flow_steps[0].title if flow_steps else "",
+        )
+
+    @classmethod
+    def _coerce_checklist_from_obj(cls, parsed: Any, request: str = "") -> FlowChecklist | None:
+        if isinstance(parsed, dict):
+            if "objective" in parsed and "steps" in parsed:
+                return FlowChecklist.model_validate(parsed)
+            text_payload = parsed.get("text")
+            if isinstance(text_payload, str):
+                return cls._checklist_from_plan_text(text_payload, request=request)
+            return None
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict) and "objective" in item and "steps" in item:
+                    return FlowChecklist.model_validate(item)
+            text_chunks: list[str] = []
+            for item in parsed:
+                if isinstance(item, dict):
+                    text_value = item.get("text")
+                    if isinstance(text_value, str) and text_value.strip():
+                        text_chunks.append(text_value.strip())
+            if text_chunks:
+                return cls._checklist_from_plan_text("\n".join(text_chunks), request=request)
+        return None
 
     @staticmethod
     def _extract_json_object_text(text: str) -> str | None:
@@ -193,12 +278,27 @@ class CodingAgent:
         return None
 
     @classmethod
-    def _parse_flow_checklist_json(cls, text: str) -> FlowChecklist:
-        candidate = cls._extract_json_object_text(text)
-        if candidate is None:
-            raise json.JSONDecodeError("No JSON object found", str(text or ""), 0)
-        payload = json.loads(candidate)
-        return FlowChecklist.model_validate(payload)
+    def _parse_flow_checklist_json(cls, text: str, request: str = "") -> FlowChecklist:
+        raw = str(text or "").strip()
+        parsed_root = cls._parse_json_or_literal(raw)
+        if parsed_root is not None:
+            checklist = cls._coerce_checklist_from_obj(parsed_root, request=request)
+            if checklist is not None:
+                return checklist
+
+        candidate = cls._extract_json_object_text(raw)
+        if candidate is not None:
+            parsed_candidate = cls._parse_json_or_literal(candidate)
+            if parsed_candidate is not None:
+                checklist = cls._coerce_checklist_from_obj(parsed_candidate, request=request)
+                if checklist is not None:
+                    return checklist
+
+        text_checklist = cls._checklist_from_plan_text(raw, request=request)
+        if text_checklist is not None:
+            return text_checklist
+
+        raise json.JSONDecodeError("No checklist payload found", raw, 0)
 
     def _fallback_checklist(self, request: str) -> FlowChecklist:
         explicit_files = sorted(
@@ -302,6 +402,43 @@ class CodingAgent:
         lowered = request.lower()
         return any(token in lowered for token in self._WEB_INTENT_TOKENS)
 
+    @classmethod
+    def _is_ambiguous_followup(cls, request: str) -> bool:
+        text = (request or "").strip()
+        if not text:
+            return False
+        if cls._AMBIGUOUS_FOLLOWUP_RE.match(text):
+            return True
+        # Keep very short acknowledgements as ambiguous unless they include file/symbol hints.
+        if len(text) <= 12 and not cls._EXPLICIT_FILE_RE.search(text):
+            lowered = text.lower()
+            return lowered in {"yes", "yes.", "ok", "ok.", "begin", "begin.", "go", "go.", "continue", "continue."}
+        return False
+
+    @staticmethod
+    def _extract_objective_from_flow_context(flow_context: str | None) -> str:
+        context = (flow_context or "").strip()
+        if not context:
+            return ""
+        for line in context.splitlines():
+            text = line.strip()
+            if text.lower().startswith("current objective:"):
+                return text.split(":", 1)[1].strip()
+        return ""
+
+    def _rewrite_ambiguous_followup(self, request: str, flow_context: str | None) -> str:
+        if not self._is_ambiguous_followup(request):
+            return request
+        objective = self._extract_objective_from_flow_context(flow_context)
+        if not objective:
+            return request
+        return (
+            "Continue the active coding flow.\n"
+            f"Original follow-up: {request.strip()}\n"
+            f"Current objective: {objective}\n"
+            "Proceed with concrete inspection/edit/verification steps for this objective."
+        )
+
     def _effective_system_prompt_for(self, request: str, *, flow_context: str | None = None) -> str:
         prompt = self.system_prompt
         if self._looks_like_edit_request(request):
@@ -375,7 +512,7 @@ class CodingAgent:
         try:
             first = self.planner_llm.invoke(messages)
             raw = str(getattr(first, "content", "") or "").strip()
-            checklist = self._parse_flow_checklist_json(raw)
+            checklist = self._parse_flow_checklist_json(raw, request=request)
             if len(checklist.steps) > self.plan_max_steps:
                 checklist.steps = checklist.steps[: self.plan_max_steps]
             return checklist, warnings
@@ -395,7 +532,7 @@ class CodingAgent:
                     ]
                 )
                 repaired_raw = str(getattr(repair, "content", "") or "").strip()
-                checklist = self._parse_flow_checklist_json(repaired_raw)
+                checklist = self._parse_flow_checklist_json(repaired_raw, request=request)
                 if len(checklist.steps) > self.plan_max_steps:
                     checklist.steps = checklist.steps[: self.plan_max_steps]
                 return checklist, warnings
@@ -660,9 +797,16 @@ class CodingAgent:
 
         tool_policy = self._tool_policy_for_request(request)
         required_read_files = int(tool_policy.get("require_read_files", self.require_read_files) or self.require_read_files)
+        request_for_run = self._rewrite_ambiguous_followup(request, effective_flow_context)
+        if request_for_run != request:
+            warnings.append("followup_request_rewritten_from_flow_context")
 
         # First pass
-        answer = call_agent_fn(tool_policy=tool_policy, flow_context=effective_flow_context)
+        answer = call_agent_fn(
+            request_text=request_for_run,
+            tool_policy=tool_policy,
+            flow_context=effective_flow_context,
+        )
 
         after = self._git_status_paths()
         changed = sorted(after.difference(before))
@@ -689,7 +833,11 @@ class CodingAgent:
 
             # Disable apply_patch tool for this retry so the agent must use write_file (or read/run).
             with self._without_tool("apply_patch"):
-                answer = call_agent_fn(tool_policy=tool_policy, flow_context=effective_flow_context)
+                answer = call_agent_fn(
+                    request_text=request_for_run,
+                    tool_policy=tool_policy,
+                    flow_context=effective_flow_context,
+                )
 
             after2 = self._git_status_paths()
             changed = sorted(after2.difference(before))
@@ -725,7 +873,11 @@ class CodingAgent:
             logger.warning("Forcing write_file fallback: re-running agent with apply_patch disabled.")
 
             with self._without_tool("apply_patch"):
-                answer = call_agent_fn(tool_policy=tool_policy, flow_context=effective_flow_context)
+                answer = call_agent_fn(
+                    request_text=request_for_run,
+                    tool_policy=tool_policy,
+                    flow_context=effective_flow_context,
+                )
 
             after2 = self._git_status_paths()
             changed = sorted(after2.difference(before))
@@ -825,9 +977,9 @@ class CodingAgent:
         flow_context: str | None = None,
         flow_id: str | None = None,
     ) -> dict[str, Any]:
-        def _call(*, tool_policy: dict[str, Any], flow_context: str | None) -> str:
+        def _call(*, request_text: str, tool_policy: dict[str, Any], flow_context: str | None) -> str:
             return self._call_agent_single(
-                request,
+                request_text,
                 index_dir=index_dir,
                 k=k,
                 max_steps=max_steps,
@@ -857,9 +1009,9 @@ class CodingAgent:
         flow_context: str | None = None,
         flow_id: str | None = None,
     ) -> dict[str, Any]:
-        def _call(*, tool_policy: dict[str, Any], flow_context: str | None) -> str:
+        def _call(*, request_text: str, tool_policy: dict[str, Any], flow_context: str | None) -> str:
             return self._call_agent_multi(
-                request,
+                request_text,
                 index_dirs=index_dirs,
                 k=k,
                 max_steps=max_steps,

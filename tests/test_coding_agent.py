@@ -186,6 +186,33 @@ def test_dir_mode_coding_agent_flow_context_included(tmp_path: Path, monkeypatch
     assert isinstance(first.get("plan"), dict)
 
 
+def test_dir_mode_rewrites_ambiguous_followup_with_flow_context(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    first = agent.generate_dir_mode(
+        "Refactor parser and update prompts",
+        index_dirs=[tmp_path / "proj/.mana_index"],
+        k=4,
+    )
+    flow_id = str(first.get("flow_id") or "")
+    second = agent.generate_dir_mode(
+        "yes.",
+        index_dirs=[tmp_path / "proj/.mana_index"],
+        k=4,
+        flow_id=flow_id,
+    )
+    _ = second
+
+    fake = agent.ask_agent
+    assert isinstance(fake, _FakeAskAgent)
+    assert len(fake.calls) >= 2
+    followup_question = str(fake.calls[1]["question"])
+    assert followup_question != "yes."
+    assert "Current objective:" in followup_question
+    warnings = second.get("warnings") or []
+    assert any("followup_request_rewritten_from_flow_context" in str(item) for item in warnings)
+
+
 def test_coding_agent_handles_tools_only_worker_violation(tmp_path: Path, monkeypatch) -> None:
     class _FailingWorker:
         def run_tools(self, _request):
@@ -266,3 +293,57 @@ def test_plan_checklist_falls_back_when_planner_json_is_invalid(tmp_path: Path, 
     assert checklist is not None
     assert checklist.steps
     assert any("planner parse failed" in str(item) for item in warnings)
+
+
+def test_plan_checklist_parses_python_literal_payload_without_repair(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent._plan_checklist = CodingAgent._plan_checklist.__get__(agent, CodingAgent)  # type: ignore[method-assign]
+
+    class _LiteralPlanner:
+        def invoke(self, _messages):
+            return type(
+                "_Msg",
+                (),
+                {
+                    "content": (
+                        "{'objective': 'Update README', 'constraints': [], 'acceptance': ['done'], "
+                        "'steps': [{'id': 's1', 'title': 'Inspect README.md', 'reason': 'Gather context', "
+                        "'status': 'in_progress', 'requires_tools': ['read_file']}], "
+                        "'next_action': 'Inspect README.md'}"
+                    )
+                },
+            )()
+
+    agent.planner_llm = _LiteralPlanner()
+    checklist, warnings = agent._plan_checklist("update README.md with new version")
+    assert checklist is not None
+    assert checklist.objective == "Update README"
+    assert checklist.steps
+    assert warnings == []
+
+
+def test_plan_checklist_parses_list_blocks_with_plan_text(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent._plan_checklist = CodingAgent._plan_checklist.__get__(agent, CodingAgent)  # type: ignore[method-assign]
+
+    class _ListPlanner:
+        def invoke(self, _messages):
+            return type(
+                "_Msg",
+                (),
+                {
+                    "content": (
+                        "[{'id': 'rs_1', 'summary': [], 'type': 'reasoning'}, "
+                        "{'type': 'text', 'text': 'Plan:\\n1. Inspect README.md\\n2. Update docs\\n3. Verify formatting'}]"
+                    )
+                },
+            )()
+
+    agent.planner_llm = _ListPlanner()
+    checklist, warnings = agent._plan_checklist("update README.md with new version")
+    assert checklist is not None
+    assert len(checklist.steps) >= 3
+    assert checklist.steps[0].title.startswith("Inspect README.md")
+    assert warnings == []
