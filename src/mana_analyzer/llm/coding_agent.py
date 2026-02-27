@@ -83,6 +83,8 @@ Workflow:
 
 
 class FlowStep(BaseModel):
+    """Represents a planned step with tooling guidance and execution status."""
+
     id: str
     title: str
     reason: str
@@ -91,6 +93,8 @@ class FlowStep(BaseModel):
 
 
 class FlowChecklist(BaseModel):
+    """Structured plan capturing the objective, constraints, acceptance criteria, and steps."""
+
     objective: str
     constraints: list[str] = Field(default_factory=list)
     acceptance: list[str] = Field(default_factory=list)
