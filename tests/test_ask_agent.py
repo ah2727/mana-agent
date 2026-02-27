@@ -119,6 +119,24 @@ def test_ask_agent_collects_trace_and_sources(tmp_path: Path) -> None:
     assert any(item.tool_name == "semantic_search" for item in result.trace)
 
 
+def test_ask_agent_extracts_text_from_list_content_blocks(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage(
+                [
+                    {"id": "rs_1", "summary": [], "type": "reasoning"},
+                    {"type": "text", "text": "Only the final answer should be shown."},
+                ],
+                tool_calls=[],
+            ),
+        ]
+    )
+
+    result = agent.run("Why?", tmp_path / ".mana_index", 3, max_steps=2, timeout_seconds=2)
+    assert result.answer == "Only the final answer should be shown."
+
+
 def test_ask_agent_run_multi_uses_all_indexes(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
     agent.llm = _FakeLLM([_FakeAIMessage("Answer with citations", tool_calls=[])])

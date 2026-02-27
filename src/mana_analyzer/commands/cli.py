@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
 import logging
 import os
@@ -529,6 +530,38 @@ def _log_chat_turn(
 
 def _extract_structured_answer(answer: str) -> tuple[str, dict | None]:
     """Split plain-text answer from optional JSON wrapper payload."""
+
+    def _extract_text_from_blocks(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            text_value = value.get("text")
+            if isinstance(text_value, str):
+                return text_value.strip()
+            if isinstance(text_value, dict):
+                nested = text_value.get("value")
+                if isinstance(nested, str):
+                    return nested.strip()
+            for key in ("content", "value"):
+                nested = value.get(key)
+                if nested is not None:
+                    extracted = _extract_text_from_blocks(nested).strip()
+                    if extracted:
+                        return extracted
+            return ""
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, dict):
+                    block_type = str(item.get("type", "")).strip().lower()
+                    if block_type and block_type not in {"text", "output_text"}:
+                        continue
+                extracted = _extract_text_from_blocks(item).strip()
+                if extracted:
+                    parts.append(extracted)
+            return "\n".join(parts).strip()
+        return ""
+
     raw = (answer or "").strip()
     if not raw:
         return "", None
@@ -550,7 +583,24 @@ def _extract_structured_answer(answer: str) -> tuple[str, dict | None]:
             nested_answer = payload.get("answer")
             if isinstance(nested_answer, str):
                 return nested_answer.strip(), payload
+            nested_text = _extract_text_from_blocks(nested_answer).strip()
+            if nested_text:
+                return nested_text, payload
             return candidate, payload
+        if isinstance(payload, list):
+            extracted = _extract_text_from_blocks(payload).strip()
+            if extracted:
+                return extracted, None
+
+    if raw.startswith("["):
+        try:
+            payload = ast.literal_eval(raw)
+        except Exception:
+            payload = None
+        if isinstance(payload, list):
+            extracted = _extract_text_from_blocks(payload).strip()
+            if extracted:
+                return extracted, None
 
     return raw, None
 

@@ -149,6 +149,46 @@ class AskAgent:
             return detail
         return ""
 
+    @classmethod
+    def _extract_model_text(cls, content: Any) -> str:
+        """Normalize model message content to user-facing text.
+
+        Newer model responses may return list-based content blocks that include
+        non-display items like ``{"type": "reasoning"}``. This extractor keeps
+        only text-like blocks.
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, dict):
+            value = content.get("text")
+            if isinstance(value, str):
+                return value.strip()
+            if isinstance(value, dict):
+                nested_value = value.get("value")
+                if isinstance(nested_value, str):
+                    return nested_value.strip()
+            for key in ("content", "value"):
+                nested = content.get(key)
+                if nested is not None:
+                    extracted = cls._extract_model_text(nested).strip()
+                    if extracted:
+                        return extracted
+            return ""
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    block_type = str(item.get("type", "")).strip().lower()
+                    if block_type and block_type not in {"text", "output_text"}:
+                        continue
+                extracted = cls._extract_model_text(item).strip()
+                if extracted:
+                    parts.append(extracted)
+            return "\n".join(parts).strip()
+        return str(content).strip()
+
     def _build_tools(
         self, k_default: int, timeout_seconds: int
     ) -> tuple[list[BaseTool], list[ToolInvocationTrace], list[SearchHit], list[str]]:
@@ -401,7 +441,7 @@ class AskAgent:
 
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if not tool_calls:
-                final_answer = str(ai_msg.content)
+                final_answer = self._extract_model_text(ai_msg.content) or str(ai_msg.content)
                 break
 
             for call in tool_calls:
