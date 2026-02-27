@@ -533,6 +533,7 @@ def _log_chat_turn(
                 "decisions": list(turn.decisions or []),
                 "changed_files": list(turn.changed_files or []),
                 "has_diff": bool(turn.has_diff),
+                "coding_state": dict(turn.coding_state or {}),
                 "render_mode": str(render_mode or "default"),
                 "fallback_reason": str(fallback_reason or ""),
                 "planning_mode": bool(planning_mode),
@@ -1237,6 +1238,12 @@ def _render_coding_sections(
                 f"read: {budgets.get('read_used', 0)}/{budgets.get('read_budget', 0)} | "
                 f"read-files: {budgets.get('read_files_observed', 0)}/{budgets.get('required_read_files', 0)}"
             )
+            if "read_line_window" in budgets:
+                console.print(
+                    f"- read-window: {budgets.get('read_line_window', 0)} | "
+                    f"dynamic: {bool(budgets.get('dynamic_read_budget_used', False))} | "
+                    f"fallback: {bool(budgets.get('dynamic_read_budget_fallback_used', False))}"
+                )
 
     if checklist:
         console.print("\n[bold]Checklist[/bold]")
@@ -3433,7 +3440,7 @@ def chat(
     coding_read_budget: int = typer.Option(
         6,
         "--coding-read-budget",
-        help="Max read_file calls per coding turn.",
+        help="Max read_file calls per coding turn (full-auto uses this as dynamic per-turn cap).",
     ),
     coding_require_read_files: int = typer.Option(
         2,
@@ -4040,6 +4047,7 @@ def chat(
                 ],
                 "search_budget": max(1, int(coding_search_budget or settings.coding_search_budget)),
                 "read_budget": max(1, int(coding_read_budget or settings.coding_read_budget)),
+                "read_line_window": 400,
                 "require_read_files": max(1, int(coding_require_read_files or settings.coding_require_read_files)),
                 "block_internet": block_internet,
                 "search_repeat_limit": 1,

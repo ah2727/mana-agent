@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -100,6 +101,30 @@ def test_ask_agent_records_timeout(tmp_path: Path, monkeypatch) -> None:
     output = run_command.invoke({"cmd": "rg demo"})
     assert "timed out" in output.lower()
     assert traces[-1].status == "timeout"
+
+
+def test_ask_agent_read_file_uses_policy_line_window(tmp_path: Path) -> None:
+    source_file = tmp_path / "src.py"
+    source_file.write_text("\n".join(f"line-{idx}" for idx in range(1, 1500)), encoding="utf-8")
+    agent = _build_agent(tmp_path)
+    tools, _traces, _, _ = agent._build_tools(k_default=4, timeout_seconds=1, read_line_window=900)
+    read_file = [item for item in tools if item.name == "read_file"][0]
+
+    payload = json.loads(read_file.invoke({"path": str(source_file), "start_line": 10, "end_line": 5000}))
+    assert int(payload["start_line"]) == 10
+    assert int(payload["end_line"]) == 910
+
+
+def test_ask_agent_read_file_line_window_is_safely_clamped(tmp_path: Path) -> None:
+    source_file = tmp_path / "src.py"
+    source_file.write_text("\n".join(f"line-{idx}" for idx in range(1, 1500)), encoding="utf-8")
+    agent = _build_agent(tmp_path)
+    tools, _traces, _, _ = agent._build_tools(k_default=4, timeout_seconds=1, read_line_window=20)
+    read_file = [item for item in tools if item.name == "read_file"][0]
+
+    payload = json.loads(read_file.invoke({"path": str(source_file), "start_line": 1, "end_line": 5000}))
+    assert int(payload["start_line"]) == 1
+    assert int(payload["end_line"]) == 201
 
 
 def test_ask_agent_collects_trace_and_sources(tmp_path: Path) -> None:

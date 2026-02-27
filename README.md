@@ -135,7 +135,7 @@ All commands accept a `--verbose` flag for more detailed output and a `--config`
 | `CODING_FLOW_MAX_TASKS` | `20` | Max open tasks tracked in each flow. |
 | `CODING_PLAN_MAX_STEPS` | `8` | Default planning budget for the coding agent. |
 | `CODING_SEARCH_BUDGET` | `4` | Default semantic search budget per plan. |
-| `CODING_READ_BUDGET` | `6` | Default number of files the agent must inspect. |
+| `CODING_READ_BUDGET` | `6` | Default `read_file` call budget per coding turn. In `--execution-profile full-auto`, this is the dynamic upper cap selected by the LLM each turn. |
 | `CODING_REQUIRE_READ_FILES` | `2` | Minimum required read files before edits. |
 
 Drop a `settings.toml` into your project root to pin extra options such as `index_dir`, logging detail, or tool-worker orchestration. Optional extras and compatibility guidance live in [`docs/optional-deps.md`](docs/optional-deps.md), which helps you evaluate GPU FAISS, security tooling, and other enhancers before rolling them into production.
@@ -182,6 +182,9 @@ All commands share common options:
   - `pass_cap_reached` is treated as a resumable checkpoint, not a terminal user-facing stop.
   - The chat loop auto-resumes same-turn execution until completion or a hard blocker (for example, permissions/credentials/tool-worker failures).
   - `--full-auto-status-every N` emits compact checkpoint summaries every `N` **auto-execute passes** (not chat turns), summarizing decisions + checklist counts since the previous checkpoint.
+  - Full-auto also enables LLM-driven dynamic read policy per turn:
+    - `read_budget` is selected each turn and clamped to `1..min(--coding-read-budget, 60)`.
+    - `read_file` line windows are policy-driven and clamped to `200..2000` lines per call.
 - Runtime execution backend is configurable:
   - `local` (default): executes per-pass requests through the existing worker client path.
   - `redis` (opt-in): enqueues per-pass requests to Redis/RQ workers for concurrent multi-process execution.

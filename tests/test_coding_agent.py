@@ -118,6 +118,7 @@ def _build_agent(
     *,
     payload: dict,
     memory: bool = True,
+    full_auto_mode: bool = False,
 ) -> CodingAgent:
     monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_write_file_tool", lambda **_kwargs: _Tool("write_file"))
     monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_apply_patch_tool", lambda **_kwargs: _Tool("apply_patch"))
@@ -134,6 +135,7 @@ def _build_agent(
         search_budget=4,
         read_budget=6,
         require_read_files=2,
+        full_auto_mode=full_auto_mode,
     )
     monkeypatch.setattr(agent, "_plan_checklist", lambda request, flow_context=None: (_fixed_checklist(), []))
     monkeypatch.setattr(agent, "_git_status_paths", lambda: set())  # type: ignore[method-assign]
@@ -142,7 +144,7 @@ def _build_agent(
     return agent
 
 
-def _build_agent_with_ask(tmp_path: Path, monkeypatch, ask_agent) -> CodingAgent:
+def _build_agent_with_ask(tmp_path: Path, monkeypatch, ask_agent, *, full_auto_mode: bool = False) -> CodingAgent:
     monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_write_file_tool", lambda **_kwargs: _Tool("write_file"))
     monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_apply_patch_tool", lambda **_kwargs: _Tool("apply_patch"))
     svc = CodingMemoryService(project_root=tmp_path, max_turns=5, max_tasks=20)
@@ -157,6 +159,7 @@ def _build_agent_with_ask(tmp_path: Path, monkeypatch, ask_agent) -> CodingAgent
         search_budget=4,
         read_budget=6,
         require_read_files=1,
+        full_auto_mode=full_auto_mode,
     )
     monkeypatch.setattr(agent, "_plan_checklist", lambda request, flow_context=None: (_fixed_checklist(), []))
     monkeypatch.setattr(agent, "_git_diff", lambda _paths: "")  # type: ignore[method-assign]
@@ -228,6 +231,100 @@ def test_coding_agent_enforces_search_budget_and_transitions_phase(tmp_path: Pat
     policy = fake.calls[0]["tool_policy"]
     assert policy["search_budget"] == 4
     assert result["progress"]["budgets"]["search_used"] == 2
+
+
+def test_coding_agent_full_auto_dynamic_read_policy_clamps_to_caps(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload, full_auto_mode=True)
+
+    class _StructuredPlanner:
+        class _Runner:
+            def invoke(self, _messages):
+                return {"read_budget": 999, "read_line_window": 9999, "reason": "broad discovery"}
+
+        def with_structured_output(self, _schema):
+            return self._Runner()
+
+    agent.planner_llm = _StructuredPlanner()
+    policy = agent._tool_policy_for_request("update docs and tests")
+    assert policy["read_budget"] == 6
+    assert policy["read_budget_cap"] == 6
+    assert policy["read_line_window"] == 2000
+    assert policy["dynamic_read_budget_used"] is True
+    assert policy["dynamic_read_budget_fallback_used"] is False
+
+
+def test_coding_agent_non_full_auto_keeps_static_read_budget_without_dynamic_invoke(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload, full_auto_mode=False)
+
+    class _NoInvokePlanner:
+        def with_structured_output(self, _schema):  # pragma: no cover - should not be called
+            raise AssertionError("dynamic planner must not be invoked in non-full-auto")
+
+        def invoke(self, _messages):  # pragma: no cover - should not be called
+            raise AssertionError("dynamic planner must not be invoked in non-full-auto")
+
+    agent.planner_llm = _NoInvokePlanner()
+    policy = agent._tool_policy_for_request("update docs and tests")
+    assert policy["read_budget"] == 6
+    assert policy["read_line_window"] == 400
+    assert policy["dynamic_read_budget_used"] is False
+    assert policy["dynamic_read_budget_fallback_used"] is False
+
+
+def test_coding_agent_full_auto_dynamic_read_policy_fallback_on_parse_failure(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload, full_auto_mode=True)
+
+    class _BrokenPlanner:
+        class _Runner:
+            def invoke(self, _messages):
+                raise RuntimeError("structured output unavailable")
+
+        def with_structured_output(self, _schema):
+            return self._Runner()
+
+        def invoke(self, _messages):
+            raise RuntimeError("llm parse failure")
+
+    agent.planner_llm = _BrokenPlanner()
+    policy = agent._tool_policy_for_request("update docs and tests")
+    assert policy["read_budget"] == 6
+    assert policy["read_line_window"] == 400
+    assert policy["dynamic_read_budget_used"] is False
+    assert policy["dynamic_read_budget_fallback_used"] is True
+
+
+def test_coding_agent_progress_budgets_include_dynamic_read_metadata(tmp_path: Path, monkeypatch) -> None:
+    payload = {
+        "answer": "ok",
+        "trace": [
+            {"tool_name": "read_file", "status": "ok", "duration_ms": 1.0, "output_preview": '{"file_path":"src/a.py"}'},
+            {"tool_name": "read_file", "status": "ok", "duration_ms": 1.0, "output_preview": '{"file_path":"src/b.py"}'},
+        ],
+        "warnings": [],
+    }
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload, full_auto_mode=True)
+    monkeypatch.setattr(
+        agent,
+        "_dynamic_read_policy_for_request",
+        lambda request, flow_context=None: {
+            "read_budget": 5,
+            "read_line_window": 900,
+            "dynamic_read_budget_used": True,
+            "dynamic_read_budget_fallback_used": False,
+            "dynamic_read_budget_reason": "targeted module sweep",
+        },
+    )
+
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    budgets = result["progress"]["budgets"]
+    assert budgets["read_budget"] == 5
+    assert budgets["read_budget_cap"] == 6
+    assert budgets["read_line_window"] == 900
+    assert budgets["dynamic_read_budget_used"] is True
+    assert budgets["dynamic_read_budget_fallback_used"] is False
 
 
 def test_coding_agent_repo_only_default_disables_internet_without_explicit_user_request(

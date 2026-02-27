@@ -121,6 +121,14 @@ class ExecutionDecision(BaseModel):
     why: str
 
 
+class DynamicReadPolicy(BaseModel):
+    """LLM-selected read policy for one coding turn (full-auto only)."""
+
+    read_budget: int
+    read_line_window: int
+    reason: str = ""
+
+
 class AskAgentLike(Protocol):
     tools: list[Any]
 
@@ -172,6 +180,10 @@ class CodingAgent:
 
     # Fallback policy: if apply_patch is attempted >= this many times and no changes appear, force write_file fallback.
     _PATCH_FAILURE_FALLBACK_THRESHOLD = 2
+    _DEFAULT_READ_LINE_WINDOW = 400
+    _MIN_READ_LINE_WINDOW = 200
+    _MAX_READ_LINE_WINDOW = 2000
+    _MAX_DYNAMIC_READ_BUDGET = 60
 
     @staticmethod
     def _parse_json_or_literal(raw: str) -> Any | None:
@@ -654,7 +666,7 @@ class CodingAgent:
             except Exception as exc:
                 warnings.append(f"coding memory setup failed: {exc}")
 
-        tool_policy = self._tool_policy_for_request(request)
+        tool_policy = self._tool_policy_for_request(request, flow_context=effective_flow_context)
         try:
             _ = callbacks
             orchestrated = self.tools_manager_orchestrator.run(
@@ -768,7 +780,16 @@ class CodingAgent:
                 "why": f"auto_execute_terminal_reason={orchestrated.terminal_reason}",
                 "budgets": {
                     "search_budget": self.search_budget,
-                    "read_budget": self.read_budget,
+                    "read_budget": int(tool_policy.get("read_budget", self.read_budget) or self.read_budget),
+                    "read_budget_cap": int(tool_policy.get("read_budget_cap", self.read_budget) or self.read_budget),
+                    "read_line_window": int(
+                        tool_policy.get("read_line_window", self._DEFAULT_READ_LINE_WINDOW)
+                        or self._DEFAULT_READ_LINE_WINDOW
+                    ),
+                    "dynamic_read_budget_used": bool(tool_policy.get("dynamic_read_budget_used", False)),
+                    "dynamic_read_budget_fallback_used": bool(
+                        tool_policy.get("dynamic_read_budget_fallback_used", False)
+                    ),
                     "required_read_files": int(tool_policy.get("require_read_files", self.require_read_files) or self.require_read_files),
                 },
             },
@@ -1196,7 +1217,87 @@ class CodingAgent:
         pending = len(checklist.steps) - done - blocked
         return {"done": done, "pending": pending, "blocked": blocked, "total": len(checklist.steps)}
 
-    def _tool_policy_for_request(self, request: str) -> dict[str, Any]:
+    @staticmethod
+    def _clamp_read_line_window(value: int) -> int:
+        return max(CodingAgent._MIN_READ_LINE_WINDOW, min(int(value), CodingAgent._MAX_READ_LINE_WINDOW))
+
+    def _dynamic_read_policy_for_request(
+        self,
+        request: str,
+        *,
+        flow_context: str | None = None,
+    ) -> dict[str, Any]:
+        user_cap = max(1, int(self.read_budget))
+        selected: dict[str, Any] = {
+            "read_budget": user_cap,
+            "read_line_window": self._clamp_read_line_window(self._DEFAULT_READ_LINE_WINDOW),
+            "dynamic_read_budget_used": False,
+            "dynamic_read_budget_fallback_used": False,
+            "dynamic_read_budget_reason": "static_default",
+        }
+        if not self.full_auto_mode:
+            return selected
+        dynamic_cap = max(1, min(user_cap, self._MAX_DYNAMIC_READ_BUDGET))
+        selected["read_budget"] = dynamic_cap
+
+        flow_summary = str(flow_context or "").strip()
+        if len(flow_summary) > 1600:
+            flow_summary = flow_summary[:1600].rstrip()
+        prompt = (
+            "Select safe read_file limits for one coding turn.\n"
+            "Return JSON with fields: read_budget, read_line_window, reason.\n"
+            f"Constraints:\n"
+            f"- read_budget must be between 1 and {dynamic_cap}\n"
+            f"- read_line_window must be between {self._MIN_READ_LINE_WINDOW} and {self._MAX_READ_LINE_WINDOW}\n"
+            "- Increase limits only when broad discovery is required.\n"
+            "- Keep limits conservative by default.\n\n"
+            f"User request:\n{request}\n\n"
+            f"Flow context:\n{flow_summary or 'none'}"
+        )
+        messages = [
+            SystemMessage(content="You output only valid JSON for the requested schema."),
+            HumanMessage(content=prompt),
+        ]
+
+        def _finalize(policy: DynamicReadPolicy) -> dict[str, Any]:
+            budget = max(1, min(int(policy.read_budget), dynamic_cap))
+            line_window = self._clamp_read_line_window(int(policy.read_line_window))
+            return {
+                "read_budget": budget,
+                "read_line_window": line_window,
+                "dynamic_read_budget_used": True,
+                "dynamic_read_budget_fallback_used": False,
+                "dynamic_read_budget_reason": str(policy.reason or "").strip(),
+            }
+
+        try:
+            if hasattr(self.planner_llm, "with_structured_output"):
+                structured_llm = self.planner_llm.with_structured_output(DynamicReadPolicy)
+                structured_result = structured_llm.invoke(messages)
+                policy = (
+                    structured_result
+                    if isinstance(structured_result, DynamicReadPolicy)
+                    else DynamicReadPolicy.model_validate(structured_result)
+                )
+                return _finalize(policy)
+        except Exception:
+            pass
+
+        try:
+            response = self.planner_llm.invoke(messages)
+            raw = str(getattr(response, "content", "") or "").strip()
+            parsed = self._parse_json_or_literal(raw)
+            if isinstance(parsed, dict):
+                policy = DynamicReadPolicy.model_validate(parsed)
+                return _finalize(policy)
+        except Exception:
+            pass
+
+        selected["dynamic_read_budget_fallback_used"] = True
+        selected["dynamic_read_budget_reason"] = "fallback_static_default"
+        return selected
+
+    def _tool_policy_for_request(self, request: str, *, flow_context: str | None = None) -> dict[str, Any]:
         block_internet = self.repo_only_internet_default and (not self._allows_web_search(request))
         require_read_files = self.require_read_files
         explicit_files = {
@@ -1207,6 +1308,10 @@ class CodingAgent:
         # Single-target file edits (e.g. README.md) should not be blocked by a 2-file gate.
         if len(explicit_files) == 1:
             require_read_files = 1
+        dynamic_read_policy = self._dynamic_read_policy_for_request(
+            request,
+            flow_context=flow_context,
+        )
         return {
             "allowed_tools": [
                 "semantic_search",
@@ -1217,7 +1322,17 @@ class CodingAgent:
                 "search_internet",
             ],
             "search_budget": self.search_budget,
-            "read_budget": self.read_budget,
+            "read_budget": int(dynamic_read_policy.get("read_budget", self.read_budget) or self.read_budget),
+            "read_budget_cap": int(self.read_budget),
+            "read_line_window": int(
+                dynamic_read_policy.get("read_line_window", self._DEFAULT_READ_LINE_WINDOW)
+                or self._DEFAULT_READ_LINE_WINDOW
+            ),
+            "dynamic_read_budget_used": bool(dynamic_read_policy.get("dynamic_read_budget_used", False)),
+            "dynamic_read_budget_fallback_used": bool(
+                dynamic_read_policy.get("dynamic_read_budget_fallback_used", False)
+            ),
+            "dynamic_read_budget_reason": str(dynamic_read_policy.get("dynamic_read_budget_reason", "") or ""),
             "require_read_files": require_read_files,
             "block_internet": block_internet,
             "search_repeat_limit": 1,
@@ -1267,7 +1382,7 @@ class CodingAgent:
             }
             return result, active_flow_id, effective_flow_context
 
-        tool_policy = self._tool_policy_for_request(request)
+        tool_policy = self._tool_policy_for_request(request, flow_context=effective_flow_context)
         required_read_files = int(tool_policy.get("require_read_files", self.require_read_files) or self.require_read_files)
         request_for_run = self._rewrite_ambiguous_followup(request, effective_flow_context)
         if request_for_run != request:
@@ -1490,8 +1605,17 @@ class CodingAgent:
                 "budgets": {
                     "search_budget": self.search_budget,
                     "search_used": counters.get("semantic_search", 0),
-                    "read_budget": self.read_budget,
+                    "read_budget": int(tool_policy.get("read_budget", self.read_budget) or self.read_budget),
+                    "read_budget_cap": int(tool_policy.get("read_budget_cap", self.read_budget) or self.read_budget),
                     "read_used": counters.get("read_file", 0),
+                    "read_line_window": int(
+                        tool_policy.get("read_line_window", self._DEFAULT_READ_LINE_WINDOW)
+                        or self._DEFAULT_READ_LINE_WINDOW
+                    ),
+                    "dynamic_read_budget_used": bool(tool_policy.get("dynamic_read_budget_used", False)),
+                    "dynamic_read_budget_fallback_used": bool(
+                        tool_policy.get("dynamic_read_budget_fallback_used", False)
+                    ),
                     "required_read_files": required_read_files,
                     "read_files_observed": read_count,
                 },

@@ -1,10 +1,11 @@
 import json
+from io import StringIO
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from mana_analyzer.analysis.models import AskResponse, AskResponseWithTrace, Finding, SearchHit
-from mana_analyzer.commands.cli import _sanitize_full_auto_answer_text, app
+from mana_analyzer.commands.cli import _render_coding_sections, _sanitize_full_auto_answer_text, app
 
 runner = CliRunner()
 
@@ -2077,6 +2078,170 @@ def test_sanitize_full_auto_answer_text_replaces_non_hard_repository_access_prom
     )
     cleaned = _sanitize_full_auto_answer_text(text, changed_files_count=0, terminal_reason="planner_finalize")
     assert cleaned.startswith("Status: executing")
+
+
+def test_render_coding_sections_shows_dynamic_read_budget_metadata() -> None:
+    from rich.console import Console
+
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    _render_coding_sections(
+        console,
+        {
+            "plan": {},
+            "progress": {
+                "phase": "inspect",
+                "why": "dynamic policy selected",
+                "budgets": {
+                    "search_used": 1,
+                    "search_budget": 4,
+                    "read_used": 2,
+                    "read_budget": 5,
+                    "required_read_files": 2,
+                    "read_files_observed": 2,
+                    "read_line_window": 900,
+                    "dynamic_read_budget_used": True,
+                    "dynamic_read_budget_fallback_used": False,
+                },
+            },
+            "checklist": {"done": 1, "pending": 0, "blocked": 0, "total": 1},
+            "next_step": "continue",
+        },
+        show_actions=False,
+        show_warnings=False,
+    )
+    rendered = output.getvalue()
+    assert "read-window: 900" in rendered
+    assert "dynamic: True" in rendered
+    assert "fallback: False" in rendered
+
+
+def test_chat_coding_read_budget_cli_value_is_passed_to_coding_agent_cap(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        init_kwargs: dict[str, object] = {}
+
+        def __init__(self, **kwargs: object) -> None:
+            _FakeCodingAgent.init_kwargs = dict(kwargs)
+            self.active = "flow-budget-cap"
+
+        def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:
+            return {
+                "answer": "done",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "Implement request", "steps": []},
+                "progress": {"phase": "answer", "why": "complete"},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "completed",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--agent-tools",
+            "--coding-agent",
+            "--execution-profile",
+            "full-auto",
+            "--coding-read-budget",
+            "11",
+        ],
+        input="update readme.md\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert int(_FakeCodingAgent.init_kwargs.get("read_budget", 0) or 0) == 11
+    assert bool(_FakeCodingAgent.init_kwargs.get("full_auto_mode", False)) is True
+
+
+def test_chat_balanced_profile_keeps_coding_agent_non_full_auto_mode(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        init_kwargs: dict[str, object] = {}
+
+        def __init__(self, **kwargs: object) -> None:
+            _FakeCodingAgent.init_kwargs = dict(kwargs)
+            self.active = "flow-balanced-budget"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--agent-tools",
+            "--coding-agent",
+            "--execution-profile",
+            "balanced",
+            "--coding-read-budget",
+            "7",
+        ],
+        input="quit\n",
+    )
+    assert result.exit_code == 0
+    assert int(_FakeCodingAgent.init_kwargs.get("read_budget", 0) or 0) == 7
+    assert bool(_FakeCodingAgent.init_kwargs.get("full_auto_mode", True)) is False
 
 
 def test_chat_full_auto_profile_forces_auto_execute_for_edit_requests(monkeypatch, tmp_path: Path) -> None:

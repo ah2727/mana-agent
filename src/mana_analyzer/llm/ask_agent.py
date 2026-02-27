@@ -190,11 +190,15 @@ class AskAgent:
         return str(content).strip()
 
     def _build_tools(
-        self, k_default: int, timeout_seconds: int
+        self,
+        k_default: int,
+        timeout_seconds: int,
+        read_line_window: int = 400,
     ) -> tuple[list[BaseTool], list[ToolInvocationTrace], list[SearchHit], list[str]]:
         traces: list[ToolInvocationTrace] = []
         sources: list[SearchHit] = []
         warnings: list[str] = []
+        safe_read_line_window = max(200, min(int(read_line_window or 400), 2000))
         resolved_indexes = list(getattr(self, "_resolved_indexes", []) or [])
         if not resolved_indexes:
             fallback_index = Path(getattr(self, "_resolved_index", self.project_root / ".mana_index")).resolve()
@@ -254,7 +258,7 @@ class AskAgent:
                 lines = resolved.read_text(encoding="utf-8").splitlines()
                 start = max(start_line, 1)
                 end = max(end_line, start)
-                end = min(end, start + 400)
+                end = min(end, start + safe_read_line_window)
                 segment = lines[start - 1 : end]
                 result = {
                     "file_path": str(resolved),
@@ -405,7 +409,22 @@ class AskAgent:
         else:
             self._resolved_indexes = [self._resolved_index]
 
-        tools, traces, sources, warnings = self._build_tools(k_default=k, timeout_seconds=timeout_seconds)
+        policy = dict(tool_policy or {})
+        allowed_tools = {str(x) for x in (policy.get("allowed_tools") or []) if str(x).strip()}
+        search_budget = int(policy.get("search_budget", 0) or 0)
+        read_budget = int(policy.get("read_budget", 0) or 0)
+        read_line_window = max(200, min(int(policy.get("read_line_window", 400) or 400), 2000))
+        require_read_files = int(policy.get("require_read_files", 0) or 0)
+        block_internet = bool(policy.get("block_internet", False))
+        search_repeat_limit = int(policy.get("search_repeat_limit", 1) or 1)
+        search_seen: dict[str, int] = defaultdict(int)
+        max_semantic_k = int(policy.get("max_semantic_k", 50) or 50)
+
+        tools, traces, sources, warnings = self._build_tools(
+            k_default=k,
+            timeout_seconds=timeout_seconds,
+            read_line_window=read_line_window,
+        )
         tool_map = {tool.name: tool for tool in tools}
 
         bound = self.llm.bind_tools(tools)
@@ -421,15 +440,6 @@ class AskAgent:
         seen_tool_args: dict[tuple[str, str], int] = defaultdict(int)
         tool_counts: dict[str, int] = defaultdict(int)
         unique_read_files: set[str] = set()
-        policy = dict(tool_policy or {})
-        allowed_tools = {str(x) for x in (policy.get("allowed_tools") or []) if str(x).strip()}
-        search_budget = int(policy.get("search_budget", 0) or 0)
-        read_budget = int(policy.get("read_budget", 0) or 0)
-        require_read_files = int(policy.get("require_read_files", 0) or 0)
-        block_internet = bool(policy.get("block_internet", False))
-        search_repeat_limit = int(policy.get("search_repeat_limit", 1) or 1)
-        search_seen: dict[str, int] = defaultdict(int)
-        max_semantic_k = int(policy.get("max_semantic_k", 50) or 50)
 
         final_answer = ""
         for _ in range(max_steps):
@@ -583,6 +593,7 @@ class AskAgent:
                     "k": k,
                     "max_steps": max_steps,
                     "timeout_seconds": timeout_seconds,
+                    "read_line_window": read_line_window,
                     "tool_calls": len(traces),
                     "trace": [item.to_dict() for item in traces],
                     "sources_count": len(result.sources),
