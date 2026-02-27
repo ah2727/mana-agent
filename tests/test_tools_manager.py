@@ -566,3 +566,40 @@ def test_tools_manager_mixed_batch_failures_are_warnings_not_crash(tmp_path: Pat
     assert result.execution_requests_ok == 1
     assert result.execution_requests_failed == 1
     assert any("job_timeout" in str(item) for item in result.warnings)
+
+
+def test_deterministic_fallback_edit_directive_mentions_write_retry_and_change_evidence(tmp_path: Path) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    plan = ToolsPlan(
+        objective="Update README section",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Edit README",
+                "tool_intent": "edit",
+                "args_hint": "insert diagram section",
+                "success_signal": "README updated",
+                "fallback": "write_file fallback",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+
+    req = orchestrator._deterministic_fallback_request(
+        request="insert project diagram into README.md",
+        flow_context=None,
+        plan=plan,
+        step=plan.steps[0],
+        pass_index=1,
+    )
+
+    assert req is not None
+    text = str(req.question).lower()
+    assert "apply_patch" in text
+    assert "write_file" in text
+    assert "changed_files" in text
+    assert "conversational terminal" in text

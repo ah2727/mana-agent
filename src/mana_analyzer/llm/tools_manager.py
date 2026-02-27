@@ -751,8 +751,9 @@ class ToolsManagerOrchestrator:
             )
         elif step.tool_intent == "edit":
             directive = (
-                "Apply concrete repository edits for this step. Prefer apply_patch first and use write_file fallback "
-                "if patch application fails."
+                "Apply concrete repository edits for this step. Prefer apply_patch first; if patch chain fails or no-ops, "
+                "force write_file full-content fallback, then verify changed_files evidence before terminal response. "
+                "Do not emit conversational terminal text for unresolved edit-intent work."
             )
         elif step.tool_intent == "verify":
             directive = (

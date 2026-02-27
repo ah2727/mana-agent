@@ -29,6 +29,7 @@ Workflow:
 4) After each mutation attempt, verify file-change evidence (`changed_files`, git status, or diff).
 5) If mutation succeeds but no files changed, treat it as a no-op and retry with corrected patch/content.
 6) Do not finalize on no-op attempts; only finalize after a real file change or a clear blocker.
+7) If the user requested an edit and the target/content is known, execute the mutation now; do not stop with "if you want me to proceed" style confirmation text.
 
 Output rules:
 - Output ONLY the unified diff text for patch steps (no prose).
@@ -199,6 +200,7 @@ When using the apply_patch tool, you MUST provide a git-unified diff that `git a
 - After any `apply_patch` or `write_file` mutation attempt, check whether files actually changed.
 - If the mutation reports success but no file changed, retry with adjusted edit payload and do not finalize on that no-op.
 - Keep retries bounded by existing anti-loop safeguards; report blocker status if no-op persists.
+- When edit intent is explicit and required file/target is already identified, execute the edit in the same turn; do not ask for an extra "proceed" confirmation.
 
 """.strip()
 
@@ -312,6 +314,10 @@ Rules:
 - Requests in the same batch must be independent and safe to run in parallel.
 - Do not rely on one request's output as an input prerequisite for another request in the same batch.
 - Assume execution responses are merged in original input order for deterministic reporting.
+- For edit-intent passes: prefer apply_patch first, then write_file full-content fallback when patch fails or no-ops.
+- For edit-intent passes: verify changed_files evidence before terminal/final responses.
+- Do not emit conversational terminal text for edit-intent passes when no file-change evidence exists.
+- Return blocked only for true blockers after bounded retries.
 - Use tool_policy_override only when needed; otherwise omit it.
 - If no safe actionable request exists, return requests as [] and explain why in `batch_reason`.
 """.strip()

@@ -38,6 +38,8 @@ def test_toolsmanager_prompt_mentions_parallel_independence_and_ordering() -> No
     assert "independent" in text
     assert "parallel" in text
     assert "input order" in text or "original input order" in text
+    assert "changed_files" in text
+    assert "true blockers" in text
 
 
 def test_coding_prompts_enforce_noop_retry_flow() -> None:
@@ -46,5 +48,7 @@ def test_coding_prompts_enforce_noop_retry_flow() -> None:
     assert "no-op" in system_text
     assert "files changed" in system_text or "file-change evidence" in system_text
     assert "do not finalize on no-op" in system_text
+    assert "if you want me to proceed" in system_text
     assert "no-op" in recog_text
     assert "apply_patch" in recog_text and "write_file" in recog_text
+    assert "execute the edit in the same turn" in recog_text

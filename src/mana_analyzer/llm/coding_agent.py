@@ -84,6 +84,7 @@ Workflow:
    - generate full updated file content
    - write_file in chunks with part_index, then finalize=true
 7) Keep retries bounded by anti-loop policy; if no-op persists after bounded retries, return blocked status with concrete reason.
+8) If user intent is an edit and you already know the target file/content change, execute the mutation in this turn and do not emit "if you want me to proceed" style confirmation text.
 
 """
 
@@ -798,6 +799,23 @@ class CodingAgent:
         lowered = request.lower()
         return any(token in lowered for token in self._EDIT_INTENT_TOKENS)
 
+    @staticmethod
+    def _looks_like_conversational_terminal(text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        patterns = (
+            "if you want",
+            "reply \"yes",
+            "reply 'yes",
+            "let me know if you want",
+            "if you want, i can",
+            "if you want i can",
+            "say yes",
+            "type yes",
+        )
+        return any(token in lowered for token in patterns)
+
     def _allows_web_search(self, request: str) -> bool:
         lowered = request.lower()
         return any(token in lowered for token in self._WEB_INTENT_TOKENS)
@@ -1103,17 +1121,6 @@ class CodingAgent:
                         read_files.add(path)
 
         read_count = len(read_files)
-        if read_count < required_read_files:
-            return (
-                ExecutionDecision(
-                    phase="blocked",
-                    tool_call_allowed=False,
-                    why=f"Need at least {required_read_files} unique read_file inspections before edit/answer.",
-                ),
-                counts,
-                read_count,
-            )
-
         if changed_files:
             phase = "verify" if any(x.endswith(".py") for x in changed_files) else "answer"
             return (
@@ -1121,6 +1128,17 @@ class CodingAgent:
                     phase=phase,
                     tool_call_allowed=True,
                     why="Edits detected; proceed to verification/answer.",
+                ),
+                counts,
+                read_count,
+            )
+
+        if read_count < required_read_files:
+            return (
+                ExecutionDecision(
+                    phase="blocked",
+                    tool_call_allowed=False,
+                    why=f"Need at least {required_read_files} unique read_file inspections before edit/answer.",
                 ),
                 counts,
                 read_count,
@@ -1249,95 +1267,169 @@ class CodingAgent:
         if request_for_run != request:
             warnings.append("followup_request_rewritten_from_flow_context")
 
+        edit_intent = self._looks_like_edit_request(request_for_run)
+        forced_write_retry = False
+
         # First pass
         answer = call_agent_fn(
             request_text=request_for_run,
             tool_policy=tool_policy,
             flow_context=effective_flow_context,
         )
-
-        after = self._git_status_paths()
-        changed = sorted(after.difference(before))
-
+        changed = sorted(self._git_status_paths().difference(before))
         payload = self._extract_payload(answer) or {}
         trace = payload.get("trace", [])
         if not isinstance(trace, list):
             trace = []
 
+        payload_warnings = payload.get("warnings", [])
+        if isinstance(payload_warnings, list):
+            warnings.extend(str(item) for item in payload_warnings if str(item).strip())
+
+        trace_rows = [item for item in trace if isinstance(item, dict)]
+        combined_trace_rows = list(trace_rows)
+
         # If patch loop detected and no changes, force a single retry without apply_patch.
         force_fallback, force_reason = self._should_force_write_fallback(
-            trace=[item for item in trace if isinstance(item, dict)],
+            trace=trace_rows,
             changed_files=changed,
         )
         if force_fallback:
             logger.warning(force_reason)
-
-            # Nudge the model strongly toward write_file chunk/finalize.
+            warnings.append("forced_write_file_retry_after_patch_noop")
             retry_request = (
                 "NOTE: apply_patch is unavailable or failed/no-op repeatedly. "
                 "Use write_file fallback (chunked part_index + finalize) with full file content.\n\n"
                 f"Original request:\n{request}"
             )
-
-            # Disable apply_patch tool for this retry so the agent must use write_file (or read/run).
             with self._without_tool("apply_patch"):
                 answer = call_agent_fn(
-                    request_text=request_for_run,
+                    request_text=retry_request,
                     tool_policy=tool_policy,
                     flow_context=effective_flow_context,
                 )
-
-            after2 = self._git_status_paths()
-            changed = sorted(after2.difference(before))
-
-            # Refresh payload/trace from retry for reporting
+            forced_write_retry = True
+            changed = sorted(self._git_status_paths().difference(before))
             payload = self._extract_payload(answer) or {}
             trace = payload.get("trace", [])
             if not isinstance(trace, list):
                 trace = []
-
-        findings = self._run_static_analysis([p for p in changed if p.endswith(".py")])
-        diff = self._git_diff(changed)
-        answer_text = self._extract_answer_text(answer)
-
-        payload_warnings = payload.get("warnings", [])
-        if isinstance(payload_warnings, list):
-            warnings.extend(str(item) for item in payload_warnings if str(item).strip())
+            payload_warnings = payload.get("warnings", [])
+            if isinstance(payload_warnings, list):
+                warnings.extend(str(item) for item in payload_warnings if str(item).strip())
+            trace_rows = [item for item in trace if isinstance(item, dict)]
+            combined_trace_rows.extend(trace_rows)
 
         decision, counters, read_count = self._compute_progress(
             checklist=checklist,
-            trace=[item for item in trace if isinstance(item, dict)],
+            trace=combined_trace_rows,
             warnings=warnings,
             changed_files=changed,
             required_read_files=required_read_files,
         )
         force_write = (
-        decision.phase == "edit"
-        and "forcing write_file fallback" in decision.why.lower()
-        and not changed
+            decision.phase == "edit"
+            and "forcing write_file fallback" in decision.why.lower()
+            and not changed
         )
 
         if force_write:
             logger.warning("Forcing write_file fallback: re-running agent with apply_patch disabled.")
-
+            warnings.append("forced_write_file_retry_after_patch_noop")
+            retry_request = (
+                "NOTE: apply_patch is unavailable or failed/no-op repeatedly. "
+                "Use write_file fallback (chunked part_index + finalize) with full file content.\n\n"
+                f"Original request:\n{request}"
+            )
             with self._without_tool("apply_patch"):
                 answer = call_agent_fn(
-                    request_text=request_for_run,
+                    request_text=retry_request,
                     tool_policy=tool_policy,
                     flow_context=effective_flow_context,
                 )
-
-            after2 = self._git_status_paths()
-            changed = sorted(after2.difference(before))
-
-            # refresh diff/findings/trace based on retry output
-            findings = self._run_static_analysis([p for p in changed if p.endswith(".py")])
-            diff = self._git_diff(changed)
-
+            forced_write_retry = True
+            changed = sorted(self._git_status_paths().difference(before))
             payload = self._extract_payload(answer) or {}
             trace = payload.get("trace", [])
             if not isinstance(trace, list):
                 trace = []
+            payload_warnings = payload.get("warnings", [])
+            if isinstance(payload_warnings, list):
+                warnings.extend(str(item) for item in payload_warnings if str(item).strip())
+            trace_rows = [item for item in trace if isinstance(item, dict)]
+            combined_trace_rows.extend(trace_rows)
+            decision, counters, read_count = self._compute_progress(
+                checklist=checklist,
+                trace=combined_trace_rows,
+                warnings=warnings,
+                changed_files=changed,
+                required_read_files=required_read_files,
+            )
+
+        answer_text = self._extract_answer_text(answer)
+        mutation_tools_seen = {str(row.get("tool_name", "")) for row in combined_trace_rows}
+        attempted_apply_patch = "apply_patch" in mutation_tools_seen
+        attempted_write_file = "write_file" in mutation_tools_seen
+
+        if edit_intent and not changed and attempted_apply_patch:
+            warnings.append("mutation_noop_after_apply_patch")
+        if edit_intent and not changed and attempted_write_file:
+            warnings.append("mutation_noop_after_write_file")
+
+        if (
+            edit_intent
+            and not changed
+            and self._looks_like_conversational_terminal(answer_text)
+            and not forced_write_retry
+        ):
+            warnings.append("edit_intent_conversational_noop_detected")
+            retry_request = (
+                "Do not ask for confirmation. Execute concrete repository edits now. "
+                "If apply_patch fails/no-ops, use write_file full-content fallback and verify changed_files.\n\n"
+                f"Original request:\n{request}"
+            )
+            with self._without_tool("apply_patch"):
+                answer = call_agent_fn(
+                    request_text=retry_request,
+                    tool_policy=tool_policy,
+                    flow_context=effective_flow_context,
+                )
+            changed = sorted(self._git_status_paths().difference(before))
+            payload = self._extract_payload(answer) or {}
+            trace = payload.get("trace", [])
+            if not isinstance(trace, list):
+                trace = []
+            payload_warnings = payload.get("warnings", [])
+            if isinstance(payload_warnings, list):
+                warnings.extend(str(item) for item in payload_warnings if str(item).strip())
+            trace_rows = [item for item in trace if isinstance(item, dict)]
+            combined_trace_rows.extend(trace_rows)
+            answer_text = self._extract_answer_text(answer)
+            mutation_tools_seen = {str(row.get("tool_name", "")) for row in combined_trace_rows}
+            attempted_apply_patch = "apply_patch" in mutation_tools_seen
+            attempted_write_file = "write_file" in mutation_tools_seen
+            decision, counters, read_count = self._compute_progress(
+                checklist=checklist,
+                trace=combined_trace_rows,
+                warnings=warnings,
+                changed_files=changed,
+                required_read_files=required_read_files,
+            )
+
+        if edit_intent and not changed and attempted_apply_patch and attempted_write_file:
+            warnings.append("mutation_exhausted_true_blocker")
+            decision = ExecutionDecision(
+                phase="blocked",
+                tool_call_allowed=False,
+                why=(
+                    "mutation_exhausted_true_blocker: apply_patch and write_file produced no file changes "
+                    "after bounded retries."
+                ),
+            )
+
+        trace_rows = combined_trace_rows
+        findings = self._run_static_analysis([p for p in changed if p.endswith(".py")])
+        diff = self._git_diff(changed)
         checklist_counts = self._checklist_counts(checklist)
         transitions = [
             {

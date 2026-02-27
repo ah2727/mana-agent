@@ -52,6 +52,52 @@ class _FakeAskAgent:
         return json.dumps(self.response_payload)
 
 
+class _SequenceAskAgent(_FakeAskAgent):
+    def __init__(self, response_payloads: list[dict]) -> None:
+        super().__init__(response_payload=response_payloads[0] if response_payloads else {})
+        self._payloads = list(response_payloads)
+        self._cursor = 0
+
+    def _next_payload(self) -> dict:
+        if not self._payloads:
+            return {}
+        if self._cursor >= len(self._payloads):
+            return self._payloads[-1]
+        payload = self._payloads[self._cursor]
+        self._cursor += 1
+        return payload
+
+    def run(
+        self,
+        question: str,
+        index_dir: str | Path,
+        k: int,
+        max_steps: int,
+        timeout_seconds: int,
+        callbacks: list[object] | None = None,
+        system_prompt: str | None = None,
+        tool_policy: dict | None = None,
+    ) -> str:
+        _ = (index_dir, k, max_steps, timeout_seconds, callbacks, system_prompt)
+        self.calls.append({"question": question, "tool_policy": tool_policy or {}})
+        return json.dumps(self._next_payload())
+
+    def run_multi(
+        self,
+        question: str,
+        index_dirs,
+        k: int,
+        max_steps: int,
+        timeout_seconds: int,
+        callbacks: list[object] | None = None,
+        system_prompt: str | None = None,
+        tool_policy: dict | None = None,
+    ) -> str:
+        _ = (index_dirs, k, max_steps, timeout_seconds, callbacks, system_prompt)
+        self.calls.append({"question": question, "tool_policy": tool_policy or {}})
+        return json.dumps(self._next_payload())
+
+
 def _fixed_checklist() -> FlowChecklist:
     return FlowChecklist(
         objective="Implement request",
@@ -91,6 +137,28 @@ def _build_agent(
     )
     monkeypatch.setattr(agent, "_plan_checklist", lambda request, flow_context=None: (_fixed_checklist(), []))
     monkeypatch.setattr(agent, "_git_status_paths", lambda: set())  # type: ignore[method-assign]
+    monkeypatch.setattr(agent, "_git_diff", lambda _paths: "")  # type: ignore[method-assign]
+    monkeypatch.setattr(agent, "_run_static_analysis", lambda _paths: [])  # type: ignore[method-assign]
+    return agent
+
+
+def _build_agent_with_ask(tmp_path: Path, monkeypatch, ask_agent) -> CodingAgent:
+    monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_write_file_tool", lambda **_kwargs: _Tool("write_file"))
+    monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_apply_patch_tool", lambda **_kwargs: _Tool("apply_patch"))
+    svc = CodingMemoryService(project_root=tmp_path, max_turns=5, max_tasks=20)
+    agent = CodingAgent(
+        api_key="test-key",
+        repo_root=tmp_path,
+        ask_agent=ask_agent,
+        allowed_prefixes=None,
+        coding_memory_service=svc,
+        coding_memory_enabled=True,
+        plan_max_steps=8,
+        search_budget=4,
+        read_budget=6,
+        require_read_files=1,
+    )
+    monkeypatch.setattr(agent, "_plan_checklist", lambda request, flow_context=None: (_fixed_checklist(), []))
     monkeypatch.setattr(agent, "_git_diff", lambda _paths: "")  # type: ignore[method-assign]
     monkeypatch.setattr(agent, "_run_static_analysis", lambda _paths: [])  # type: ignore[method-assign]
     return agent
@@ -309,6 +377,126 @@ def test_coding_agent_retries_tools_only_violation_once_with_override(tmp_path: 
     assert result.get("render_mode") == "answer_only"
     assert result.get("fallback_reason") == "tools_only_violation"
     assert result.get("fallback_retry_attempted") is True
+
+
+def test_coding_agent_force_fallback_retry_uses_retry_request_text(tmp_path: Path, monkeypatch) -> None:
+    ask_agent = _SequenceAskAgent(
+        [
+            {
+                "answer": "first",
+                "trace": [
+                    {"tool_name": "read_file", "status": "ok", "output_preview": '{"file_path":"README.md"}'},
+                    {"tool_name": "apply_patch", "status": "error"},
+                    {"tool_name": "apply_patch", "status": "error"},
+                ],
+                "warnings": [],
+            }
+        ]
+    )
+    agent = _build_agent_with_ask(tmp_path, monkeypatch, ask_agent)
+    monkeypatch.setattr(agent, "_git_status_paths", lambda: set())  # type: ignore[method-assign]
+
+    result = agent.generate("update README section", index_dir=tmp_path / ".mana_index", k=4)
+    _ = result
+    assert len(ask_agent.calls) >= 2
+    assert any(
+        "apply_patch is unavailable or failed/no-op repeatedly" in str(call.get("question", ""))
+        for call in ask_agent.calls
+    )
+    warnings = result.get("warnings") or []
+    assert any("forced_write_file_retry_after_patch_noop" in str(item) for item in warnings)
+
+
+def test_coding_agent_noop_patch_then_write_change_avoids_blocked(tmp_path: Path, monkeypatch) -> None:
+    ask_agent = _SequenceAskAgent(
+        [
+            {
+                "answer": "first",
+                "trace": [
+                    {"tool_name": "read_file", "status": "ok", "output_preview": '{"file_path":"README.md"}'},
+                    {"tool_name": "apply_patch", "status": "error"},
+                    {"tool_name": "apply_patch", "status": "error"},
+                ],
+                "warnings": [],
+            },
+            {
+                "answer": "write done",
+                "trace": [
+                    {"tool_name": "write_file", "status": "ok"},
+                ],
+                "warnings": [],
+            },
+        ]
+    )
+    agent = _build_agent_with_ask(tmp_path, monkeypatch, ask_agent)
+    states = iter([set(), set(), {"README.md"}])
+    monkeypatch.setattr(agent, "_git_status_paths", lambda: next(states, {"README.md"}))  # type: ignore[method-assign]
+
+    result = agent.generate("update README section", index_dir=tmp_path / ".mana_index", k=4)
+    assert result["progress"]["phase"] != "blocked"
+    assert result["changed_files"] == ["README.md"]
+
+
+def test_coding_agent_true_blocker_after_bounded_noop_retries(tmp_path: Path, monkeypatch) -> None:
+    ask_agent = _SequenceAskAgent(
+        [
+            {
+                "answer": "first",
+                "trace": [
+                    {"tool_name": "read_file", "status": "ok", "output_preview": '{"file_path":"README.md"}'},
+                    {"tool_name": "apply_patch", "status": "error"},
+                    {"tool_name": "apply_patch", "status": "error"},
+                ],
+                "warnings": [],
+            },
+            {
+                "answer": "still no change",
+                "trace": [
+                    {"tool_name": "apply_patch", "status": "error"},
+                    {"tool_name": "write_file", "status": "ok"},
+                ],
+                "warnings": [],
+            },
+        ]
+    )
+    agent = _build_agent_with_ask(tmp_path, monkeypatch, ask_agent)
+    monkeypatch.setattr(agent, "_git_status_paths", lambda: set())  # type: ignore[method-assign]
+
+    result = agent.generate("update README section", index_dir=tmp_path / ".mana_index", k=4)
+    assert result["progress"]["phase"] == "blocked"
+    assert "mutation_exhausted_true_blocker" in str(result["progress"]["why"])
+    warnings = result.get("warnings") or []
+    assert any("mutation_exhausted_true_blocker" in str(item) for item in warnings)
+
+
+def test_coding_agent_conversational_noop_retries_before_terminal(tmp_path: Path, monkeypatch) -> None:
+    ask_agent = _SequenceAskAgent(
+        [
+            {
+                "answer": "If you want, I can proceed with edits.",
+                "trace": [
+                    {"tool_name": "read_file", "status": "ok", "output_preview": '{"file_path":"README.md"}'},
+                ],
+                "warnings": [],
+            },
+            {
+                "answer": "completed edit",
+                "trace": [
+                    {"tool_name": "write_file", "status": "ok"},
+                ],
+                "warnings": [],
+            },
+        ]
+    )
+    agent = _build_agent_with_ask(tmp_path, monkeypatch, ask_agent)
+    states = iter([set(), set(), {"README.md"}])
+    monkeypatch.setattr(agent, "_git_status_paths", lambda: next(states, {"README.md"}))  # type: ignore[method-assign]
+
+    result = agent.generate("please update readme.md", index_dir=tmp_path / ".mana_index", k=4)
+    assert len(ask_agent.calls) >= 2
+    assert result["changed_files"] == ["README.md"]
+    warnings = result.get("warnings") or []
+    assert any("edit_intent_conversational_noop_detected" in str(item) for item in warnings)
 
 
 def test_plan_checklist_falls_back_when_planner_json_is_invalid(tmp_path: Path, monkeypatch) -> None:
