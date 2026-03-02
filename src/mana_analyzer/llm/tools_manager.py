@@ -18,10 +18,12 @@ from mana_analyzer.llm.prompts import HEAD_TOOLS_PLANNER_PROMPT, TOOLSMANAGER_PR
 from mana_analyzer.llm.tool_worker_process import ToolRunRequest, ToolRunResponse, ToolWorkerClient
 from mana_analyzer.llm.tools_executor import (
     BatchToolRequest,
+    BatchExecutionResult,
     LocalToolsExecutor,
     ToolsExecutionConfig,
     ToolsExecutor,
 )
+from mana_analyzer.services.coding_memory_service import CodingMemoryService
 
 
 PlanDecision = Literal["continue", "revise", "finalize", "stop"]
@@ -83,6 +85,12 @@ class AutoExecuteResult(BaseModel):
     execution_duration_ms: float = 0.0
     execution_requests_ok: int = 0
     execution_requests_failed: int = 0
+    duplicate_request_skips: int = 0
+    duplicate_semantic_search_skips: int = 0
+    request_retry_attempts: int = 0
+    request_retry_exhausted: int = 0
+    edit_retry_mode_activations: int = 0
+    persisted_fingerprint_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ToolsManagerOrchestrator:
@@ -98,6 +106,7 @@ class ToolsManagerOrchestrator:
         base_url: str | None = None,
         execution_config: ToolsExecutionConfig | None = None,
         executor: ToolsExecutor | None = None,
+        coding_memory_service: CodingMemoryService | None = None,
     ) -> None:
         llm_kwargs: dict[str, Any] = {
             "api_key": api_key,
@@ -110,6 +119,7 @@ class ToolsManagerOrchestrator:
         self.repo_root = repo_root.resolve()
         self.execution_config = execution_config or ToolsExecutionConfig()
         self.executor = executor or LocalToolsExecutor(worker_client=worker_client)
+        self.coding_memory_service = coding_memory_service
 
     @staticmethod
     def _strip_code_fence(raw: str) -> str:
@@ -665,9 +675,10 @@ class ToolsManagerOrchestrator:
 
     @staticmethod
     def _fingerprint_request(question: str, policy: dict[str, Any], timeout_seconds: int) -> str:
+        normalized_question = re.sub(r"\s+", " ", str(question or "").strip()).lower()
         raw = json.dumps(
             {
-                "question": question,
+                "question": normalized_question,
                 "policy": policy,
                 "timeout_seconds": timeout_seconds,
             },
@@ -675,6 +686,129 @@ class ToolsManagerOrchestrator:
             ensure_ascii=False,
         )
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+    @staticmethod
+    def _normalize_fingerprint_key(text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "").strip()).lower()
+
+    @classmethod
+    def _semantic_request_fingerprint(cls, question: str) -> str | None:
+        normalized = cls._normalize_fingerprint_key(question)
+        if not normalized:
+            return None
+        if not any(token in normalized for token in ("semantic_search", "search", "find", "locate", "grep")):
+            return None
+        semantic_key = cls._normalize_semantic_key(normalized)
+        return hashlib.sha1(semantic_key.encode("utf-8")).hexdigest()[:12]
+
+    @classmethod
+    def _normalize_semantic_key(cls, text: str) -> str:
+        normalized = cls._normalize_fingerprint_key(text)
+        if not normalized:
+            return ""
+        query_match = re.search(r"query\s*[:=]\s*['\"]?([^'\"\n]+)['\"]?", normalized)
+        k_match = re.search(r"\bk\s*[:=]\s*(\d+)", normalized)
+        query = cls._normalize_fingerprint_key(query_match.group(1)) if query_match else ""
+        if query:
+            query = re.sub(r"\bk\s*[:=]\s*\d+.*$", "", query).strip()
+        k_val = str(k_match.group(1)).strip() if k_match else ""
+        if query or k_val:
+            return f"query={query}|k={k_val or '0'}"
+        return normalized
+
+    @classmethod
+    def _semantic_trace_fingerprints(cls, rows: Sequence[dict[str, Any]]) -> set[str]:
+        out: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("tool_name", "")).strip().lower() != "semantic_search":
+                continue
+            args_summary = cls._normalize_semantic_key(str(row.get("args_summary", "") or ""))
+            if not args_summary:
+                continue
+            out.add(hashlib.sha1(args_summary.encode("utf-8")).hexdigest()[:12])
+        return out
+
+    @staticmethod
+    def _looks_like_search_request_text(question: str) -> bool:
+        lowered = str(question or "").strip().lower()
+        if not lowered:
+            return False
+        patterns = (
+            "semantic_search",
+            "search",
+            "find",
+            "locate",
+            "grep",
+            "inspect repository",
+        )
+        return any(token in lowered for token in patterns)
+
+    @staticmethod
+    def _looks_like_edit_request_text(question: str) -> bool:
+        lowered = str(question or "").strip().lower()
+        if not lowered:
+            return False
+        patterns = (
+            "apply_patch",
+            "write_file",
+            "edit",
+            "modify",
+            "mutation",
+            "change file",
+            "update file",
+        )
+        return any(token in lowered for token in patterns)
+
+    @staticmethod
+    def _looks_like_apply_patch_failure_trace(row: dict[str, Any]) -> bool:
+        if str(row.get("tool_name", "")).strip().lower() != "apply_patch":
+            return False
+        status = str(row.get("status", "")).strip().lower()
+        preview = str(row.get("output_preview", "")).strip().lower()
+        if status in {"error", "timeout", "failed"}:
+            return True
+        if status == "ok" and not preview:
+            return True
+        if '"ok": false' in preview or "'ok': false" in preview or '"error"' in preview:
+            return True
+        return False
+
+    @staticmethod
+    def _build_failure_signature(*, question: str, code: str, detail: str) -> str:
+        normalized = {
+            "question": re.sub(r"\s+", " ", str(question or "").strip()).lower()[:320],
+            "code": str(code or "").strip().lower(),
+            "detail": re.sub(r"\s+", " ", str(detail or "").strip()).lower()[:320],
+        }
+        raw = json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+    def _mutation_retry_request(
+        self,
+        *,
+        request: str,
+        flow_context: str | None,
+        plan: ToolsPlan,
+        step: ToolsPlanStep | None,
+        pass_index: int,
+    ) -> ToolsManagerRequest:
+        base = self._deterministic_fallback_request(
+            request=request,
+            flow_context=flow_context,
+            plan=plan,
+            step=step,
+            pass_index=pass_index,
+        )
+        lines = [
+            str(base.question if base is not None else "").strip(),
+            "Mutation retry lock is active because prior apply_patch attempt failed or no-oped.",
+            "Do not start new broad semantic search.",
+            "Execute a direct mutation fallback now: use write_file with full content if apply_patch fails.",
+            "Verify changed_files evidence before any terminal response.",
+        ]
+        return ToolsManagerRequest(question="\n".join(line for line in lines if line.strip()))
 
     def _git_status_paths(self) -> set[str]:
         try:
@@ -713,6 +847,81 @@ class ToolsManagerOrchestrator:
             "decision": str(plan.decision or "continue"),
             "decision_reason": str(plan.decision_reason or ""),
         }
+
+    @staticmethod
+    def _planner_task_fingerprint(step: ToolsPlanStep | None) -> str:
+        if step is None:
+            return ""
+        raw = json.dumps(
+            {
+                "id": str(step.id or "").strip().lower(),
+                "title": re.sub(r"\s+", " ", str(step.title or "").strip()).lower(),
+                "tool_intent": str(step.tool_intent or "").strip().lower(),
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+    @classmethod
+    def _recent_step_repeat_count(
+        cls,
+        pass_logs: Sequence[dict[str, Any]],
+        *,
+        step_id: str,
+    ) -> int:
+        target = str(step_id or "").strip()
+        if not target:
+            return 0
+        count = 0
+        for row in reversed(list(pass_logs)):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("planner_step_id", "")).strip() != target:
+                break
+            if int(row.get("requests_count", 0) or 0) <= 0 and int(row.get("tool_steps", 0) or 0) <= 0:
+                break
+            count += 1
+        return count
+
+    @staticmethod
+    def _advance_plan_to_next_unfinished_step(plan: ToolsPlan) -> ToolsPlan | None:
+        current_id = str(plan.current_step_id or "").strip()
+        if not current_id:
+            return None
+        candidate: ToolsPlanStep | None = None
+        seen_current = False
+        for item in plan.steps:
+            if str(item.id or "").strip() == current_id:
+                seen_current = True
+                continue
+            if str(item.status or "").strip().lower() in {"done", "blocked"}:
+                continue
+            if seen_current:
+                candidate = item
+                break
+            if candidate is None:
+                candidate = item
+        if candidate is None:
+            return None
+        updated_steps: list[ToolsPlanStep] = []
+        for item in plan.steps:
+            if str(item.id or "").strip() == current_id and str(item.status or "").strip().lower() == "in_progress":
+                updated_steps.append(item.model_copy(update={"status": "done"}))
+            elif str(item.id or "").strip() == str(candidate.id or "").strip():
+                updated_steps.append(item.model_copy(update={"status": "in_progress"}))
+            else:
+                updated_steps.append(item)
+        return plan.model_copy(
+            update={
+                "steps": updated_steps,
+                "current_step_id": str(candidate.id or "").strip(),
+                "decision": "continue",
+                "decision_reason": (
+                    f"Auto-advanced from duplicate task {current_id} to next unresolved step {str(candidate.id or '').strip()}"
+                ),
+            }
+        )
 
     @staticmethod
     def _truncate_line(value: str, *, limit: int = 220) -> str:
@@ -1025,6 +1234,7 @@ class ToolsManagerOrchestrator:
         tool_policy: dict[str, Any],
         pass_cap: int,
         on_event: Callable[[Any], None] | None = None,
+        flow_id: str | None = None,
     ) -> AutoExecuteResult:
         pass_cap = max(1, min(int(pass_cap), 12))
         all_warnings: list[str] = []
@@ -1040,7 +1250,57 @@ class ToolsManagerOrchestrator:
         execution_started = time.perf_counter()
         execution_requests_ok = 0
         execution_requests_failed = 0
+        duplicate_request_skips = 0
+        duplicate_semantic_search_skips = 0
+        request_retry_attempts = 0
+        request_retry_exhausted = 0
+        edit_retry_mode_activations = 0
+        edit_retry_mode_pending = False
+        persisted_fingerprint_counts: dict[str, int] = {}
+        recent_failure_summaries: list[str] = []
+        seen_planner_task_fingerprints: set[str] = set()
         execution_backend = str(getattr(getattr(self, "execution_config", None), "backend", "local") or "local")
+        memory_service = getattr(self, "coding_memory_service", None)
+        flow_key = str(flow_id or "").strip()
+
+        seen_request_fingerprints: set[str] = set()
+        seen_semantic_search_fingerprints: set[str] = set()
+        seen_failure_signatures: set[str] = set()
+
+        if memory_service is not None and flow_key:
+            try:
+                seen_request_fingerprints = set(
+                    memory_service.get_tool_fingerprints(
+                        flow_id=flow_key,
+                        kind="request_fingerprint",
+                    )
+                )
+                seen_semantic_search_fingerprints = set(
+                    memory_service.get_tool_fingerprints(
+                        flow_id=flow_key,
+                        kind="semantic_search_fingerprint",
+                    )
+                )
+                seen_failure_signatures = set(
+                    memory_service.get_tool_fingerprints(
+                        flow_id=flow_key,
+                        kind="mutation_failure_signature",
+                    )
+                )
+                seen_planner_task_fingerprints = set(
+                    memory_service.get_tool_fingerprints(
+                        flow_id=flow_key,
+                        kind="planner_task_fingerprint",
+                    )
+                )
+            except Exception as exc:
+                all_warnings.append(f"toolsmanager persistent fingerprint load failed: {exc}")
+            persisted_fingerprint_counts = {
+                "request_fingerprint": len(seen_request_fingerprints),
+                "semantic_search_fingerprint": len(seen_semantic_search_fingerprints),
+                "mutation_failure_signature": len(seen_failure_signatures),
+                "planner_task_fingerprint": len(seen_planner_task_fingerprints),
+            }
 
         plan, plan_warnings, _source = self._plan_with_source(
             request=request,
@@ -1060,6 +1320,22 @@ class ToolsManagerOrchestrator:
 
         for pass_index in range(1, pass_cap + 1):
             step = self._resolve_step(plan)
+            step_repeat_count = self._recent_step_repeat_count(
+                all_pass_logs,
+                step_id=str(getattr(step, "id", "") or ""),
+            )
+            task_fingerprint = self._planner_task_fingerprint(step)
+            if (
+                step is not None
+                and not changed_files
+                and not edit_retry_mode_pending
+                and (step_repeat_count >= 1 or (task_fingerprint and task_fingerprint in seen_planner_task_fingerprints))
+            ):
+                advanced_plan = self._advance_plan_to_next_unfinished_step(plan)
+                if advanced_plan is not None:
+                    all_warnings.append("planner_duplicate_task_advanced")
+                    plan = advanced_plan
+                    step = self._resolve_step(plan)
             planner_row = self._planner_decision_row(plan, pass_index)
             planner_decisions.append(planner_row)
 
@@ -1181,6 +1457,12 @@ class ToolsManagerOrchestrator:
                 )
                 break
 
+            batch_warning_context = list(all_warnings)
+            if recent_failure_summaries:
+                batch_warning_context.append(
+                    "recent_request_failures: " + " | ".join(recent_failure_summaries[-3:])
+                )
+
             batch, batch_warnings = self._build_batch(
                 request=request,
                 flow_context=flow_context,
@@ -1188,7 +1470,7 @@ class ToolsManagerOrchestrator:
                 pass_index=pass_index,
                 pass_cap=pass_cap,
                 pass_logs=all_pass_logs,
-                warnings=all_warnings,
+                warnings=batch_warning_context,
                 changed_files=changed_files,
                 latest_answer=latest_answer,
             )
@@ -1198,27 +1480,54 @@ class ToolsManagerOrchestrator:
                 terminal_reason = "invalid_request_batch"
                 break
 
+            edit_retry_mode_active = bool(edit_retry_mode_pending)
+            if edit_retry_mode_active:
+                edit_retry_mode_pending = False
+
             if plan.decision == "continue" and not batch.requests:
-                fallback_request = self._deterministic_fallback_request(
-                    request=request,
-                    flow_context=flow_context,
-                    plan=plan,
-                    step=step,
-                    pass_index=pass_index,
+                fallback_request = (
+                    self._mutation_retry_request(
+                        request=request,
+                        flow_context=flow_context,
+                        plan=plan,
+                        step=step,
+                        pass_index=pass_index,
+                    )
+                    if edit_retry_mode_active
+                    else self._deterministic_fallback_request(
+                        request=request,
+                        flow_context=flow_context,
+                        plan=plan,
+                        step=step,
+                        pass_index=pass_index,
+                    )
                 )
                 if fallback_request is not None:
                     batch = ToolsManagerBatch(
                         planner_step_id=str(batch.planner_step_id or plan.current_step_id or ""),
-                        batch_reason="deterministic_empty_batch_fallback",
+                        batch_reason=(
+                            "edit_retry_mode_forced_mutation"
+                            if edit_retry_mode_active
+                            else "deterministic_empty_batch_fallback"
+                        ),
                         requests=[fallback_request],
                         continue_after=bool(batch.continue_after),
                         expected_progress=(
                             str(batch.expected_progress or "").strip()
-                            or "Execute deterministic fallback request for current planner step."
+                            or (
+                                "Execute deterministic mutation retry for current planner step."
+                                if edit_retry_mode_active
+                                else "Execute deterministic fallback request for current planner step."
+                            )
                         ),
                     )
                     all_warnings.append(
-                        f"toolsmanager emitted empty request batch on pass {int(pass_index)}; using deterministic fallback request"
+                        (
+                            f"toolsmanager emitted empty request batch on pass {int(pass_index)}; "
+                            "edit_retry_mode active so forcing mutation retry request"
+                            if edit_retry_mode_active
+                            else f"toolsmanager emitted empty request batch on pass {int(pass_index)}; using deterministic fallback request"
+                        )
                     )
                 else:
                     all_warnings.append(
@@ -1229,7 +1538,12 @@ class ToolsManagerOrchestrator:
             tool_steps_this_pass = 0
             warnings_before = len(all_warnings)
             executed_requests = 0
+            retries_this_pass = 0
+            retries_exhausted_this_pass = 0
+            duplicate_skips_this_pass = 0
             batch_requests: list[BatchToolRequest] = []
+            request_lookup: dict[int, BatchToolRequest] = {}
+            pass_trace_rows: list[dict[str, Any]] = []
 
             for request_index, item in enumerate(batch.requests):
                 merged_policy = self._merge_policy(tool_policy, item.tool_policy_override)
@@ -1237,67 +1551,158 @@ class ToolsManagerOrchestrator:
                 question = str(item.question or "").strip()
                 if not question:
                     continue
-                request_fingerprints.append(self._fingerprint_request(question, merged_policy, clipped_timeout))
+
+                if edit_retry_mode_active and self._looks_like_search_request_text(question):
+                    if not self._looks_like_edit_request_text(question):
+                        duplicate_semantic_search_skips += 1
+                        duplicate_skips_this_pass += 1
+                        all_warnings.append("duplicate_semantic_search_skipped")
+                        continue
+
+                semantic_fingerprint = self._semantic_request_fingerprint(question)
+                if semantic_fingerprint and semantic_fingerprint in seen_semantic_search_fingerprints:
+                    duplicate_semantic_search_skips += 1
+                    duplicate_skips_this_pass += 1
+                    all_warnings.append("duplicate_semantic_search_skipped")
+                    continue
+
+                request_fingerprint = self._fingerprint_request(question, merged_policy, clipped_timeout)
+                if request_fingerprint in seen_request_fingerprints:
+                    duplicate_request_skips += 1
+                    duplicate_skips_this_pass += 1
+                    all_warnings.append("duplicate_request_skipped")
+                    continue
+
+                seen_request_fingerprints.add(request_fingerprint)
+                request_fingerprints.append(request_fingerprint)
+                if semantic_fingerprint:
+                    seen_semantic_search_fingerprints.add(semantic_fingerprint)
+
                 toolsmanager_requests_count += 1
-                batch_requests.append(
-                    BatchToolRequest(
-                        request_index=request_index,
-                        request=ToolRunRequest(
-                            question=question,
-                            index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
-                            index_dirs=[str(Path(p).resolve()) for p in (index_dirs or []) if str(p).strip()] or None,
-                            k=int(k),
-                            max_steps=int(max_steps),
-                            timeout_seconds=clipped_timeout,
-                            tool_policy=merged_policy,
-                            system_prompt=None,
-                        ),
+                req = BatchToolRequest(
+                    request_index=request_index,
+                    request=ToolRunRequest(
+                        question=question,
+                        index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
+                        index_dirs=[str(Path(p).resolve()) for p in (index_dirs or []) if str(p).strip()] or None,
+                        flow_id=flow_key or None,
+                        k=int(k),
+                        max_steps=int(max_steps),
+                        timeout_seconds=clipped_timeout,
+                        tool_policy=merged_policy,
+                        system_prompt=None,
+                    ),
+                )
+                batch_requests.append(req)
+                request_lookup[int(request_index)] = req
+
+            if plan.decision == "continue" and batch.requests and not batch_requests:
+                fallback_request = self._mutation_retry_request(
+                    request=request,
+                    flow_context=flow_context,
+                    plan=plan,
+                    step=step,
+                    pass_index=pass_index,
+                )
+                merged_policy = self._merge_policy(tool_policy, fallback_request.tool_policy_override)
+                clipped_timeout = self._clip_timeout(fallback_request.timeout_seconds, session_timeout=timeout_seconds)
+                fallback_fp = self._fingerprint_request(fallback_request.question, merged_policy, clipped_timeout)
+                if fallback_fp not in seen_request_fingerprints:
+                    seen_request_fingerprints.add(fallback_fp)
+                    request_fingerprints.append(fallback_fp)
+                    toolsmanager_requests_count += 1
+                    batch_requests = [
+                        BatchToolRequest(
+                            request_index=0,
+                            request=ToolRunRequest(
+                                question=fallback_request.question,
+                                index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
+                                index_dirs=[str(Path(p).resolve()) for p in (index_dirs or []) if str(p).strip()] or None,
+                                flow_id=flow_key or None,
+                                k=int(k),
+                                max_steps=int(max_steps),
+                                timeout_seconds=clipped_timeout,
+                                tool_policy=merged_policy,
+                                system_prompt=None,
+                            ),
+                        )
+                    ]
+                    request_lookup = {0: batch_requests[0]}
+                    batch = ToolsManagerBatch(
+                        planner_step_id=str(batch.planner_step_id or plan.current_step_id or ""),
+                        batch_reason="deterministic_duplicate_suppression_fallback",
+                        requests=[fallback_request],
+                        continue_after=bool(batch.continue_after),
+                        expected_progress="Execute deterministic fallback after duplicate suppression.",
                     )
-                )
+                    all_warnings.append(
+                        "toolsmanager duplicate suppression removed entire batch; forcing deterministic fallback request"
+                    )
+                else:
+                    all_warnings.append(
+                        "toolsmanager duplicate suppression removed entire batch and fallback was also duplicate"
+                    )
 
+            executor = getattr(self, "executor", LocalToolsExecutor(worker_client=self.worker_client))
             executor_failed = False
-            try:
-                executor = getattr(self, "executor", LocalToolsExecutor(worker_client=self.worker_client))
-                batch_results = executor.run_batch(
-                    run_id=execution_run_id,
-                    requests=batch_requests,
-                    on_event=on_event,
-                )
-            except Exception as exc:  # pragma: no cover - executor guardrail
-                batch_results = []
-                executor_failed = True
-                all_warnings.append(f"toolsmanager executor error: job_failed: {exc}")
-                execution_requests_failed += len(batch_requests)
+            batch_results: list[BatchExecutionResult] = []
+            if batch_requests:
+                try:
+                    batch_results = executor.run_batch(
+                        run_id=execution_run_id,
+                        requests=batch_requests,
+                        on_event=on_event,
+                    )
+                except Exception as exc:  # pragma: no cover - executor guardrail
+                    batch_results = []
+                    executor_failed = True
+                    all_warnings.append(f"toolsmanager executor error: job_failed: {exc}")
+                    execution_requests_failed += len(batch_requests)
 
+            failed_request_reasons: dict[int, tuple[str, str]] = {}
             if not executor_failed:
                 seen_indexes = {int(item.request_index) for item in batch_results}
                 for req in batch_requests:
                     if int(req.request_index) not in seen_indexes:
                         execution_requests_failed += 1
-                        all_warnings.append(
-                            f"toolsmanager executor error: result_decode_failed: missing result for request index {int(req.request_index)}"
+                        msg = (
+                            "result_decode_failed: missing result for request index "
+                            f"{int(req.request_index)}"
                         )
+                        all_warnings.append(f"toolsmanager executor error: {msg}")
+                        failed_request_reasons[int(req.request_index)] = ("result_decode_failed", msg)
 
             for item in sorted(batch_results, key=lambda row: int(row.request_index)):
+                idx = int(item.request_index)
+                if idx not in request_lookup:
+                    execution_requests_failed += 1
+                    all_warnings.append(
+                        f"toolsmanager executor error: result_decode_failed: unexpected request index {idx}"
+                    )
+                    continue
                 if not item.ok:
                     execution_requests_failed += 1
                     code = str(item.error_code or "job_failed")
                     detail = str(item.error_message or "request failed")
                     all_warnings.append(f"toolsmanager executor error: {code}: {detail}")
+                    failed_request_reasons[idx] = (code, detail)
                     continue
                 if not isinstance(item.response, dict):
                     execution_requests_failed += 1
-                    all_warnings.append(
-                        "toolsmanager executor error: result_decode_failed: response payload missing"
-                    )
+                    msg = "result_decode_failed: response payload missing"
+                    all_warnings.append(f"toolsmanager executor error: {msg}")
+                    failed_request_reasons[idx] = ("result_decode_failed", msg)
                     continue
                 try:
                     response = ToolRunResponse.model_validate(item.response)
                 except Exception as exc:
                     execution_requests_failed += 1
-                    all_warnings.append(f"toolsmanager executor error: result_decode_failed: {exc}")
+                    msg = f"result_decode_failed: {exc}"
+                    all_warnings.append(f"toolsmanager executor error: {msg}")
+                    failed_request_reasons[idx] = ("result_decode_failed", msg)
                     continue
 
+                failed_request_reasons.pop(idx, None)
                 execution_requests_ok += 1
                 executed_requests += 1
                 if response.answer:
@@ -1310,12 +1715,182 @@ class ToolsManagerOrchestrator:
                 if isinstance(response.trace, list):
                     rows = [row for row in response.trace if isinstance(row, dict)]
                     all_trace.extend(rows)
+                    pass_trace_rows.extend(rows)
                     tool_steps_this_pass += len(rows)
                 if isinstance(response.sources, list):
                     all_sources.extend([row for row in response.sources if isinstance(row, dict)])
 
+            if failed_request_reasons:
+                retry_requests = [
+                    request_lookup[idx]
+                    for idx in sorted(failed_request_reasons)
+                    if idx in request_lookup
+                ]
+                if retry_requests:
+                    retry_lookup = {int(req.request_index): req for req in retry_requests}
+                    retries_this_pass = len(retry_requests)
+                    request_retry_attempts += retries_this_pass
+                    all_warnings.append(
+                        f"toolsmanager_request_retry_once; retrying {len(retry_requests)} failed request(s)"
+                    )
+                    retry_results: list[BatchExecutionResult] = []
+                    retry_executor_failed = False
+                    try:
+                        retry_results = executor.run_batch(
+                            run_id=execution_run_id,
+                            requests=retry_requests,
+                            on_event=on_event,
+                        )
+                    except Exception as exc:  # pragma: no cover - executor guardrail
+                        retry_results = []
+                        retry_executor_failed = True
+                        all_warnings.append(f"toolsmanager executor retry error: job_failed: {exc}")
+                        execution_requests_failed += len(retry_requests)
+
+                    retry_failures = dict(failed_request_reasons)
+                    if not retry_executor_failed:
+                        seen_retry_indexes = {int(item.request_index) for item in retry_results}
+                        for req in retry_requests:
+                            idx = int(req.request_index)
+                            if idx not in seen_retry_indexes:
+                                execution_requests_failed += 1
+                                msg = f"result_decode_failed: missing retry result for request index {idx}"
+                                all_warnings.append(f"toolsmanager executor retry error: {msg}")
+                                retry_failures[idx] = ("result_decode_failed", msg)
+
+                        for item in sorted(retry_results, key=lambda row: int(row.request_index)):
+                            idx = int(item.request_index)
+                            if idx not in retry_lookup:
+                                execution_requests_failed += 1
+                                msg = f"result_decode_failed: unexpected retry result index {idx}"
+                                all_warnings.append(f"toolsmanager executor retry error: {msg}")
+                                continue
+                            if not item.ok:
+                                execution_requests_failed += 1
+                                code = str(item.error_code or "job_failed")
+                                detail = str(item.error_message or "request failed")
+                                all_warnings.append(f"toolsmanager executor retry error: {code}: {detail}")
+                                retry_failures[idx] = (code, detail)
+                                continue
+                            if not isinstance(item.response, dict):
+                                execution_requests_failed += 1
+                                msg = "result_decode_failed: retry response payload missing"
+                                all_warnings.append(f"toolsmanager executor retry error: {msg}")
+                                retry_failures[idx] = ("result_decode_failed", msg)
+                                continue
+                            try:
+                                response = ToolRunResponse.model_validate(item.response)
+                            except Exception as exc:
+                                execution_requests_failed += 1
+                                msg = f"result_decode_failed: {exc}"
+                                all_warnings.append(f"toolsmanager executor retry error: {msg}")
+                                retry_failures[idx] = ("result_decode_failed", msg)
+                                continue
+
+                            retry_failures.pop(idx, None)
+                            execution_requests_ok += 1
+                            executed_requests += 1
+                            if response.answer:
+                                latest_answer = str(response.answer)
+                            if isinstance(response.warnings, list):
+                                for warning in response.warnings:
+                                    text = str(warning).strip()
+                                    if text:
+                                        all_warnings.append(text)
+                            if isinstance(response.trace, list):
+                                rows = [row for row in response.trace if isinstance(row, dict)]
+                                all_trace.extend(rows)
+                                pass_trace_rows.extend(rows)
+                                tool_steps_this_pass += len(rows)
+                            if isinstance(response.sources, list):
+                                all_sources.extend([row for row in response.sources if isinstance(row, dict)])
+
+                    if retry_failures:
+                        retries_exhausted_this_pass = len(retry_failures)
+                        request_retry_exhausted += retries_exhausted_this_pass
+                        for idx, (code, detail) in retry_failures.items():
+                            req = request_lookup.get(int(idx))
+                            question = str(req.request.question if req is not None else "")
+                            signature = self._build_failure_signature(
+                                question=question,
+                                code=code,
+                                detail=detail,
+                            )
+                            if signature not in seen_failure_signatures:
+                                seen_failure_signatures.add(signature)
+                                summary = f"{code}: {self._truncate_line(detail, limit=140)}"
+                                recent_failure_summaries.append(summary)
+                                all_warnings.append(f"toolsmanager_retry_exhausted_signature={signature}:{summary}")
+                            if memory_service is not None and flow_key:
+                                try:
+                                    memory_service.record_tool_fingerprint(
+                                        flow_id=flow_key,
+                                        kind="mutation_failure_signature",
+                                        fingerprint=signature,
+                                    )
+                                except Exception:
+                                    pass
+
             changed_now = sorted(self._git_status_paths().difference(before))
             changed_files = changed_now
+
+            semantic_trace_fps = self._semantic_trace_fingerprints(pass_trace_rows)
+            if semantic_trace_fps:
+                seen_semantic_search_fingerprints.update(semantic_trace_fps)
+
+            if memory_service is not None and flow_key:
+                try:
+                    if request_fingerprints:
+                        memory_service.record_tool_fingerprints(
+                            flow_id=flow_key,
+                            kind="request_fingerprint",
+                            fingerprints=request_fingerprints,
+                        )
+                    if semantic_trace_fps:
+                        memory_service.record_tool_fingerprints(
+                            flow_id=flow_key,
+                            kind="semantic_search_fingerprint",
+                            fingerprints=sorted(semantic_trace_fps),
+                        )
+                    step_fingerprint = self._planner_task_fingerprint(step)
+                    if step_fingerprint and (executed_requests > 0 or tool_steps_this_pass > 0):
+                        seen_planner_task_fingerprints.add(step_fingerprint)
+                        memory_service.record_tool_fingerprint(
+                            flow_id=flow_key,
+                            kind="planner_task_fingerprint",
+                            fingerprint=step_fingerprint,
+                        )
+                    memory_service.prune_tool_fingerprints(
+                        flow_id=flow_key,
+                        kind="request_fingerprint",
+                    )
+                    memory_service.prune_tool_fingerprints(
+                        flow_id=flow_key,
+                        kind="semantic_search_fingerprint",
+                    )
+                    memory_service.prune_tool_fingerprints(
+                        flow_id=flow_key,
+                        kind="mutation_failure_signature",
+                    )
+                    memory_service.prune_tool_fingerprints(
+                        flow_id=flow_key,
+                        kind="planner_task_fingerprint",
+                    )
+                except Exception as exc:
+                    all_warnings.append(f"toolsmanager persistent fingerprint write failed: {exc}")
+
+            apply_patch_attempted = any(
+                str(row.get("tool_name", "")).strip().lower() == "apply_patch"
+                for row in pass_trace_rows
+            )
+            apply_patch_failed = any(self._looks_like_apply_patch_failure_trace(row) for row in pass_trace_rows)
+            if changed_now:
+                edit_retry_mode_pending = False
+            elif apply_patch_attempted and (apply_patch_failed or not changed_now):
+                edit_retry_mode_pending = True
+                edit_retry_mode_activations += 1
+                all_warnings.append("edit_retry_mode_activated")
+
             warnings_delta = max(0, len(all_warnings) - warnings_before)
             all_pass_logs.append(
                 {
@@ -1332,6 +1907,10 @@ class ToolsManagerOrchestrator:
                     "warnings_delta": warnings_delta,
                     "continue_after": bool(batch.continue_after),
                     "execution_backend": execution_backend,
+                    "duplicate_skips": duplicate_skips_this_pass,
+                    "request_retry_attempts": retries_this_pass,
+                    "request_retry_exhausted": retries_exhausted_this_pass,
+                    "edit_retry_mode_active": bool(edit_retry_mode_active),
                 }
             )
 
@@ -1348,6 +1927,12 @@ class ToolsManagerOrchestrator:
                 terminal_reason = "pass_cap_reached"
                 break
 
+            plan_warning_context = list(all_warnings)
+            if recent_failure_summaries:
+                plan_warning_context.append(
+                    "recent_request_failures: " + " | ".join(recent_failure_summaries[-3:])
+                )
+
             plan, new_plan_warnings, _source = self._plan_with_source(
                 request=request,
                 flow_context=flow_context,
@@ -1355,7 +1940,7 @@ class ToolsManagerOrchestrator:
                 pass_cap=pass_cap,
                 previous_plan=plan,
                 pass_logs=all_pass_logs,
-                warnings=all_warnings,
+                warnings=plan_warning_context,
                 changed_files=changed_files,
                 latest_answer=latest_answer,
             )
@@ -1368,6 +1953,13 @@ class ToolsManagerOrchestrator:
                 planner_decisions=planner_decisions,
                 toolsmanager_requests_count=toolsmanager_requests_count,
             )
+
+        persisted_fingerprint_counts = {
+            "request_fingerprint": len(seen_request_fingerprints),
+            "semantic_search_fingerprint": len(seen_semantic_search_fingerprints),
+            "mutation_failure_signature": len(seen_failure_signatures),
+            "planner_task_fingerprint": len(seen_planner_task_fingerprints),
+        }
 
         return AutoExecuteResult(
             answer=latest_answer,
@@ -1386,6 +1978,12 @@ class ToolsManagerOrchestrator:
             execution_duration_ms=round((time.perf_counter() - execution_started) * 1000.0, 3),
             execution_requests_ok=execution_requests_ok,
             execution_requests_failed=execution_requests_failed,
+            duplicate_request_skips=duplicate_request_skips,
+            duplicate_semantic_search_skips=duplicate_semantic_search_skips,
+            request_retry_attempts=request_retry_attempts,
+            request_retry_exhausted=request_retry_exhausted,
+            edit_retry_mode_activations=edit_retry_mode_activations,
+            persisted_fingerprint_counts=persisted_fingerprint_counts,
         )
 
 

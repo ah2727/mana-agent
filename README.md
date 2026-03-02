@@ -148,12 +148,14 @@ Drop a `settings.toml` into your project root to pin extra options such as `inde
 | `index <path>` | Walks the given directory, parses files, creates embedding chunks, and stores them in a FAISS index. |
 | `search <query>` | Performs semantic similarity search against the local index and prints the top matches with file/line context. |
 | `ask <question>` | Retrieval-augmented generation: fetches relevant chunks, builds a prompt, calls the LLM, and returns an answer with citations. |
-| `chat` | Starts a REPL where you can ask multiple questions; the session retains context and can invoke tool-aware agents. |
-| `flow <path>` | Prints coding-flow memory summary (objective, checklist, open tasks, decisions, changed files); supports `--flow-id` and `--format json`. |
-| `profile` | Runs the indexing pipeline with `cProfile` and writes a performance report to `profile.txt`. |
-| `lint` | Executes the static analysis checks and prints a summary of warnings/errors. |
-| `dependency-graph` | Generates a dependency graph of the indexed project; use `--format dot|graphml|json`. |
-| `security-scan` | Runs `safety` against the project's dependencies and reports known vulnerabilities. |
+| `flow [project_path]` | Prints coding-flow memory summary (objective/checklist/tasks/decisions/files); supports `--flow-id`, `--format text|json`, `--max-turns`, and `--max-tasks`. |
+| `analyze <path>` | Runs static analysis (optional LLM enrichment) and can include structure/tech-summary outputs with configurable fail thresholds. |
+| `deps <path>` | Detects dependencies/frameworks and can export JSON, DOT, and GraphML artifacts. |
+| `graph <path>` | Emits dependency graph summary and optional DOT/GraphML files. |
+| `describe <path>` | Produces repository summaries (LLM optional), with include/exclude filters and JSON/Markdown output modes. |
+| `report <path>` | Generates combined project report artifacts with security/structure/dependency coverage and profile controls. |
+| `scan` | Runs `pip list --outdated` + `safety check` against a requirements file; optional JSON artifact and non-zero exit on vulns. |
+| `chat` | Starts interactive chat; supports tool-aware, coding-agent, dir-mode, and execution-backend options. |
 
 ### `index` — build or refresh an index
 `mana-analyzer index` walks the requested path, uses language-aware chunkers, and writes vectors into the resolved index directory (default: `~/.cache/mana_analyzer`). Pass `--rebuild` to ignore timestamps and force a full re-embedding, `--ephemeral-index` to stage a temporary store that is deleted once the command completes, and `--json` to serialize the summary for automation.
@@ -162,6 +164,19 @@ All commands share common options:
 - `--index-dir <dir>` – location of the FAISS index (default: `~/.cache/mana_analyzer`).
 - `--log-level <LEVEL>` – Python logging level (`DEBUG`, `INFO`, `WARNING`, …).
 - `--max-workers <N>` – number of parallel workers for indexing (defaults to the number of CPU cores).
+
+### `flow` — inspect persisted coding flow state
+`mana-analyzer flow` reads coding-memory state from `<project>/.mana_index/chat_memory.sqlite3` and prints a flow summary. By default it shows the active flow for `project_path` (or current directory).
+
+Examples:
+
+```bash
+# Active flow summary in text
+mana-analyzer flow .
+
+# Specific flow as JSON with custom limits
+mana-analyzer flow . --flow-id <flow_id> --format json --max-turns 10 --max-tasks 40
+```
 
 ---
 
@@ -227,14 +242,8 @@ If Redis/RQ is unavailable at runtime, the CLI falls back to the local executor 
 
 ## Coding Flows & Debugging
 
-When `chat` runs with `--coding-agent --coding-memory`, the coding agent persists flow state in
-`<project>/.mana_index/chat_memory.sqlite3` so follow-up turns can reuse objective/context/checklists.
-
-The flow summary surfaces key fields from `FlowSummary`, including
-`open_tasks`, `recent_decisions`, `last_changed_files`, `unresolved_static_findings`,
-`checklist`, `transitions`, and `last_blocked_reason`.
-
-Use the new command to inspect flow state outside chat:
+When chat runs with coding-memory enabled, flow state is persisted at
+`<project>/.mana_index/chat_memory.sqlite3` and can be inspected via `mana-analyzer flow`.
 
 ```bash
 # Active flow summary

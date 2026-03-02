@@ -125,12 +125,43 @@ class CodingMemoryService:
                     snapshot_json TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS coding_flow_tool_fingerprints (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    flow_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    hit_count INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(flow_id, kind, fingerprint)
+                );
+
+                CREATE TABLE IF NOT EXISTS coding_flow_read_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    flow_id TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    start_line INTEGER NOT NULL,
+                    end_line INTEGER NOT NULL,
+                    line_count INTEGER NOT NULL,
+                    content_text TEXT NOT NULL,
+                    file_size_bytes INTEGER NOT NULL,
+                    file_mtime_ns INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(flow_id, file_path, mode, start_line, end_line)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_coding_flows_status_updated
                   ON coding_flows(status, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_coding_turns_flow_created
                   ON coding_flow_turns(flow_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_coding_tasks_flow_created
                   ON coding_flow_tasks(flow_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_coding_flow_tool_fingerprints_flow_kind
+                  ON coding_flow_tool_fingerprints(flow_id, kind, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_coding_flow_read_cache_flow_file
+                  ON coding_flow_read_cache(flow_id, file_path, updated_at DESC);
                 """
             )
             cols = {
@@ -500,6 +531,197 @@ class CodingMemoryService:
                 VALUES (?, ?, ?)
                 """,
                 (flow_id, _utc_now(), json.dumps(payload)),
+            )
+
+    def get_tool_fingerprints(
+        self,
+        *,
+        flow_id: str,
+        kind: str,
+        limit: int = 2000,
+    ) -> set[str]:
+        """Return persisted fingerprint values for a flow/kind pair."""
+        resolved_flow = str(flow_id or "").strip()
+        resolved_kind = str(kind or "").strip().lower()
+        if not resolved_flow or not resolved_kind:
+            return set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT fingerprint
+                FROM coding_flow_tool_fingerprints
+                WHERE flow_id = ? AND kind = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (resolved_flow, resolved_kind, max(1, int(limit))),
+            ).fetchall()
+        return {str(row["fingerprint"]).strip() for row in rows if str(row["fingerprint"]).strip()}
+
+    def record_tool_fingerprint(self, *, flow_id: str, kind: str, fingerprint: str) -> None:
+        """Persist or bump a single tool fingerprint for a flow."""
+        resolved_flow = str(flow_id or "").strip()
+        resolved_kind = str(kind or "").strip().lower()
+        resolved_fp = str(fingerprint or "").strip().lower()
+        if not resolved_flow or not resolved_kind or not resolved_fp:
+            return
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO coding_flow_tool_fingerprints (
+                    flow_id, kind, fingerprint, created_at, updated_at, hit_count
+                ) VALUES (?, ?, ?, ?, ?, 1)
+                ON CONFLICT(flow_id, kind, fingerprint)
+                DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    hit_count = coding_flow_tool_fingerprints.hit_count + 1
+                """,
+                (resolved_flow, resolved_kind, resolved_fp, now, now),
+            )
+
+    def record_tool_fingerprints(
+        self,
+        *,
+        flow_id: str,
+        kind: str,
+        fingerprints: list[str] | set[str] | tuple[str, ...],
+    ) -> None:
+        """Persist multiple fingerprints for a flow/kind pair."""
+        for item in fingerprints:
+            self.record_tool_fingerprint(flow_id=flow_id, kind=kind, fingerprint=str(item))
+
+    def prune_tool_fingerprints(self, *, flow_id: str, kind: str, keep: int = 4000) -> None:
+        """Prune stale fingerprints, keeping only the most recent rows."""
+        resolved_flow = str(flow_id or "").strip()
+        resolved_kind = str(kind or "").strip().lower()
+        if not resolved_flow or not resolved_kind:
+            return
+        keep_count = max(1, int(keep))
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM coding_flow_tool_fingerprints
+                WHERE flow_id = ?
+                  AND kind = ?
+                  AND id NOT IN (
+                    SELECT id
+                    FROM coding_flow_tool_fingerprints
+                    WHERE flow_id = ? AND kind = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                  )
+                """,
+                (resolved_flow, resolved_kind, resolved_flow, resolved_kind, keep_count),
+            )
+
+    def get_read_cache_rows(self, flow_id: str, file_path: str) -> list[dict[str, Any]]:
+        """Return cached read rows for a flow/file pair ordered by newest first."""
+        resolved_flow = str(flow_id or "").strip()
+        resolved_path = str(file_path or "").strip()
+        if not resolved_flow or not resolved_path:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT flow_id, file_path, mode, start_line, end_line, line_count,
+                       content_text, file_size_bytes, file_mtime_ns, created_at, updated_at
+                FROM coding_flow_read_cache
+                WHERE flow_id = ? AND file_path = ?
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (resolved_flow, resolved_path),
+            ).fetchall()
+        return [{str(key): row[key] for key in row.keys()} for row in rows]
+
+    def upsert_read_cache_row(
+        self,
+        *,
+        flow_id: str,
+        file_path: str,
+        mode: str,
+        start_line: int,
+        end_line: int,
+        line_count: int,
+        content_text: str,
+        file_size_bytes: int,
+        file_mtime_ns: int,
+    ) -> None:
+        """Insert or update one cached read row."""
+        resolved_flow = str(flow_id or "").strip()
+        resolved_path = str(file_path or "").strip()
+        resolved_mode = str(mode or "").strip().lower()
+        if not resolved_flow or not resolved_path or resolved_mode not in {"line", "full"}:
+            return
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO coding_flow_read_cache (
+                    flow_id, file_path, mode, start_line, end_line, line_count,
+                    content_text, file_size_bytes, file_mtime_ns, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(flow_id, file_path, mode, start_line, end_line)
+                DO UPDATE SET
+                    line_count = excluded.line_count,
+                    content_text = excluded.content_text,
+                    file_size_bytes = excluded.file_size_bytes,
+                    file_mtime_ns = excluded.file_mtime_ns,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    resolved_flow,
+                    resolved_path,
+                    resolved_mode,
+                    int(start_line),
+                    int(end_line),
+                    int(line_count),
+                    str(content_text),
+                    int(file_size_bytes),
+                    int(file_mtime_ns),
+                    now,
+                    now,
+                ),
+            )
+
+    def delete_read_cache_for_file(self, flow_id: str, file_path: str) -> None:
+        """Delete all cached read rows for one flow/file pair."""
+        resolved_flow = str(flow_id or "").strip()
+        resolved_path = str(file_path or "").strip()
+        if not resolved_flow or not resolved_path:
+            return
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM coding_flow_read_cache WHERE flow_id = ? AND file_path = ?",
+                (resolved_flow, resolved_path),
+            )
+
+    def prune_read_cache(self, flow_id: str, *, keep_per_file: int = 20) -> None:
+        """Keep only the newest cached read rows per file for a flow."""
+        resolved_flow = str(flow_id or "").strip()
+        if not resolved_flow:
+            return
+        keep_count = max(1, int(keep_per_file))
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM coding_flow_read_cache
+                WHERE flow_id = ?
+                  AND id NOT IN (
+                    SELECT id
+                    FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY file_path
+                                   ORDER BY updated_at DESC, id DESC
+                               ) AS row_rank
+                        FROM coding_flow_read_cache
+                        WHERE flow_id = ?
+                    )
+                    WHERE row_rank <= ?
+                  )
+                """,
+                (resolved_flow, resolved_flow, keep_count),
             )
 
     def get_flow_summary(self, flow_id: str) -> FlowSummary | None:

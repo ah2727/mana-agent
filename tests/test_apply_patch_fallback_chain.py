@@ -257,6 +257,64 @@ def test_attempt_order_and_single_attempt_per_non_git_strategy(tmp_path: Path, m
     assert strategies.index("perl") < strategies.index("python") < strategies.index("write_file")
 
 
+def test_strategy_hint_python_skips_git_and_perl(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "src" / "demo.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("old\nkeep\n", encoding="utf-8")
+
+    diff = (
+        "diff --git a/src/demo.txt b/src/demo.txt\n"
+        "--- a/src/demo.txt\n"
+        "+++ b/src/demo.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-old\n"
+        "+new\n"
+        " keep\n"
+    )
+
+    _set_which(monkeypatch, git=True, perl=True)
+    result = safe_apply_patch(repo_root=tmp_path, diff=diff, strategy_hint="python", strict_strategy=False)
+
+    assert result["ok"] is True
+    assert result["strategy_requested"] == "python"
+    assert result["strategy"] == "write_file"
+    strategies = [item["strategy"] for item in result["attempts"]]
+    assert "git" not in strategies
+    assert "perl" not in strategies
+    assert "python" in strategies
+    assert "write_file" in strategies
+
+
+def test_strict_strategy_python_does_not_fall_forward(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "src" / "demo.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("old\nkeep\n", encoding="utf-8")
+
+    diff = (
+        "diff --git a/src/demo.txt b/src/demo.txt\n"
+        "--- a/src/demo.txt\n"
+        "+++ b/src/demo.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-old\n"
+        "+new\n"
+        " keep\n"
+    )
+
+    _set_which(monkeypatch, git=True, perl=True)
+    monkeypatch.setattr(
+        apply_patch_mod,
+        "_compute_python_fallback",
+        lambda **_kwargs: (False, {}, "forced python failure"),
+    )
+
+    result = safe_apply_patch(repo_root=tmp_path, diff=diff, strategy_hint="python", strict_strategy=True)
+    assert result["ok"] is False
+    assert result["strategy_requested"] == "python"
+    assert result["strategy"] == "python"
+    strategies = [item["strategy"] for item in result["attempts"]]
+    assert strategies == ["python"]
+
+
 def test_fallback_preserves_no_trailing_newline_marker(tmp_path: Path, monkeypatch) -> None:
     target = tmp_path / "src" / "demo.txt"
     target.parent.mkdir(parents=True, exist_ok=True)

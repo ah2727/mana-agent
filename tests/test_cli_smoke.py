@@ -382,6 +382,36 @@ def test_analyze_fail_on_merged_findings(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 1
 
 
+def test_analyze_full_structure_writes_markdown_artifact(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr(
+        "mana_analyzer.commands.cli.build_analyze_service",
+        lambda: FakeAnalyzeService([Finding("missing-docstring", "warning", "msg", "/tmp/a.py", 1, 0)]),
+    )
+    monkeypatch.setattr("mana_analyzer.commands.cli.StructureService", FakeStructureService)
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_describe_service", lambda *_args, **_kwargs: FakeDescribeService())
+
+    result = runner.invoke(app, ["analyze", str(tmp_path), "--full-structure", "--output-format", "both"])
+    assert result.exit_code == 0
+
+    out_dir = tmp_path / ".mana_logs"
+    md_files = sorted(out_dir.glob("*-analyze.md"))
+    json_files = sorted(out_dir.glob("*-analyze.json"))
+
+    assert md_files, "expected analyze markdown artifact"
+    assert json_files, "expected analyze json artifact"
+
+    markdown = md_files[-1].read_text(encoding="utf-8")
+    payload = json.loads(json_files[-1].read_text(encoding="utf-8"))
+
+    assert "Analyze Findings" in markdown
+    assert "missing-docstring" in markdown
+    assert "Project Structure Analysis" in markdown
+    assert "Repository Summary" in markdown
+    assert payload["findings"][0]["rule_id"] == "missing-docstring"
+    assert payload["summarization"]["architecture_summary"] == "arch"
+
+
 def test_ask_dir_mode_no_auto_index_missing(monkeypatch, tmp_path: Path) -> None:
     class _AskServiceNoIndexes(FakeAskService):
         def ask_dir_mode(self, index_dirs, question: str, k: int, root_dir: str) -> AskResponse:

@@ -500,6 +500,12 @@ class CodingAgent:
 
     def set_tools_manager_orchestrator(self, orchestrator: ToolsManagerOrchestrator | None) -> None:
         self.tools_manager_orchestrator = orchestrator
+        if (
+            orchestrator is not None
+            and getattr(orchestrator, "coding_memory_service", None) is None
+            and self.coding_memory_service is not None
+        ):
+            orchestrator.coding_memory_service = self.coding_memory_service
 
     @staticmethod
     def _normalize_prechecklist(checklist: FlowChecklist, *, source: str) -> dict[str, Any]:
@@ -680,6 +686,7 @@ class CodingAgent:
                 tool_policy=tool_policy,
                 pass_cap=max(1, int(pass_cap)),
                 on_event=self._log_worker_event,
+                flow_id=active_flow_id,
             )
         except ToolWorkerProcessError as exc:
             warnings.append(f"toolsmanager worker failure: {exc.code}: {exc}")
@@ -817,6 +824,12 @@ class CodingAgent:
             "tool_execution_duration_ms": orchestrated.execution_duration_ms,
             "tool_execution_requests_ok": orchestrated.execution_requests_ok,
             "tool_execution_requests_failed": orchestrated.execution_requests_failed,
+            "duplicate_request_skips": orchestrated.duplicate_request_skips,
+            "duplicate_semantic_search_skips": orchestrated.duplicate_semantic_search_skips,
+            "request_retry_attempts": orchestrated.request_retry_attempts,
+            "request_retry_exhausted": orchestrated.request_retry_exhausted,
+            "edit_retry_mode_activations": orchestrated.edit_retry_mode_activations,
+            "persisted_fingerprint_counts": orchestrated.persisted_fingerprint_counts,
             "prechecklist": prechecklist,
             "prechecklist_source": prechecklist_source,
             "prechecklist_warning": prechecklist_warning,
@@ -1061,6 +1074,36 @@ class CodingAgent:
         if payload is not None and isinstance(payload.get("answer"), str):
             return str(payload["answer"]).strip()
         return (answer or "").strip()
+
+    @classmethod
+    def _trace_read_metrics(cls, trace: list[dict[str, Any]]) -> dict[str, int]:
+        metrics = {
+            "read_used": 0,
+            "read_cache_hits": 0,
+            "read_cache_misses": 0,
+            "read_full_mode_used": 0,
+            "read_full_mode_blocked": 0,
+            "read_cache_invalidations": 0,
+        }
+        for row in trace:
+            if str(row.get("tool_name", "")) != "read_file":
+                continue
+            payload = cls._extract_payload(str(row.get("output_preview", "") or "")) or {}
+            if not payload:
+                continue
+            if bool(payload.get("cache_invalidated", False)):
+                metrics["read_cache_invalidations"] += 1
+            if bool(payload.get("cache_hit", False)):
+                metrics["read_cache_hits"] += 1
+            elif not str(payload.get("error", "")).strip():
+                metrics["read_cache_misses"] += 1
+                metrics["read_used"] += 1
+            if str(payload.get("mode", "")).strip() == "full":
+                if str(payload.get("error", "")).strip():
+                    metrics["read_full_mode_blocked"] += 1
+                else:
+                    metrics["read_full_mode_used"] += 1
+        return metrics
 
     @staticmethod
     def _tool_ok_from_trace_row(row: dict[str, Any]) -> bool | None:
@@ -1328,6 +1371,10 @@ class CodingAgent:
                 dynamic_read_policy.get("read_line_window", self._DEFAULT_READ_LINE_WINDOW)
                 or self._DEFAULT_READ_LINE_WINDOW
             ),
+            "read_mode_preference": "full_preferred",
+            "read_full_file_max_lines": 5000,
+            "read_full_file_max_chars": 250000,
+            "read_cache_scope": "flow" if (self.coding_memory_enabled and self.coding_memory_service is not None) else "run",
             "dynamic_read_budget_used": bool(dynamic_read_policy.get("dynamic_read_budget_used", False)),
             "dynamic_read_budget_fallback_used": bool(
                 dynamic_read_policy.get("dynamic_read_budget_fallback_used", False)
@@ -1585,6 +1632,7 @@ class CodingAgent:
         if decision.phase == "blocked":
             status = "warning"
         trace_rows = [item for item in trace if isinstance(item, dict)]
+        read_metrics = self._trace_read_metrics(trace_rows)
         warning_text = "\n".join(str(item) for item in warnings).lower()
         tools_only_fallback = (
             ("tools_only_violation" in warning_text)
@@ -1607,11 +1655,20 @@ class CodingAgent:
                     "search_used": counters.get("semantic_search", 0),
                     "read_budget": int(tool_policy.get("read_budget", self.read_budget) or self.read_budget),
                     "read_budget_cap": int(tool_policy.get("read_budget_cap", self.read_budget) or self.read_budget),
-                    "read_used": counters.get("read_file", 0),
+                    "read_used": read_metrics.get("read_used", 0),
                     "read_line_window": int(
                         tool_policy.get("read_line_window", self._DEFAULT_READ_LINE_WINDOW)
                         or self._DEFAULT_READ_LINE_WINDOW
                     ),
+                    "read_mode_preference": str(tool_policy.get("read_mode_preference", "full_preferred") or "full_preferred"),
+                    "read_full_file_max_lines": int(tool_policy.get("read_full_file_max_lines", 5000) or 5000),
+                    "read_full_file_max_chars": int(tool_policy.get("read_full_file_max_chars", 250000) or 250000),
+                    "read_cache_scope": str(tool_policy.get("read_cache_scope", "run") or "run"),
+                    "read_cache_hits": read_metrics.get("read_cache_hits", 0),
+                    "read_cache_misses": read_metrics.get("read_cache_misses", 0),
+                    "read_full_mode_used": read_metrics.get("read_full_mode_used", 0),
+                    "read_full_mode_blocked": read_metrics.get("read_full_mode_blocked", 0),
+                    "read_cache_invalidations": read_metrics.get("read_cache_invalidations", 0),
                     "dynamic_read_budget_used": bool(tool_policy.get("dynamic_read_budget_used", False)),
                     "dynamic_read_budget_fallback_used": bool(
                         tool_policy.get("dynamic_read_budget_fallback_used", False)
@@ -1657,6 +1714,7 @@ class CodingAgent:
                 callbacks=callbacks,
                 flow_context=flow_context,
                 tool_policy=tool_policy,
+                flow_id=self._current_flow_id or flow_id,
             )
 
         result, _, _ = self._generate_common(
@@ -1689,6 +1747,7 @@ class CodingAgent:
                 callbacks=callbacks,
                 flow_context=flow_context,
                 tool_policy=tool_policy,
+                flow_id=self._current_flow_id or flow_id,
             )
 
         result, _, _ = self._generate_common(
@@ -1710,6 +1769,7 @@ class CodingAgent:
         callbacks: Sequence[Any] | None,
         flow_context: str | None = None,
         tool_policy: dict[str, Any] | None = None,
+        flow_id: str | None = None,
     ) -> str:
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
         if self.tool_worker_client is not None:
@@ -1721,6 +1781,7 @@ class CodingAgent:
                 timeout_seconds=timeout_seconds,
                 tool_policy=tool_policy,
                 system_prompt=effective_prompt,
+                flow_id=flow_id,
             )
             try:
                 try:
@@ -1780,6 +1841,7 @@ class CodingAgent:
                     callbacks=callbacks,
                     system_prompt=effective_prompt,
                     tool_policy=tool_policy,
+                    flow_id=flow_id,
                 )
             )
         return self._call_ask_like(request, system_prompt=effective_prompt)
@@ -1795,6 +1857,7 @@ class CodingAgent:
         callbacks: Sequence[Any] | None,
         flow_context: str | None = None,
         tool_policy: dict[str, Any] | None = None,
+        flow_id: str | None = None,
     ) -> str:
         resolved = [str(Path(p).resolve()) for p in index_dirs if str(p).strip()]
         if not resolved:
@@ -1809,6 +1872,7 @@ class CodingAgent:
                 timeout_seconds=timeout_seconds,
                 tool_policy=tool_policy,
                 system_prompt=effective_prompt,
+                flow_id=flow_id,
             )
             try:
                 try:
@@ -1868,6 +1932,7 @@ class CodingAgent:
                     callbacks=callbacks,
                     system_prompt=effective_prompt,
                     tool_policy=tool_policy,
+                    flow_id=flow_id,
                 )
             )
         if hasattr(self.ask_agent, "run"):
@@ -1888,6 +1953,7 @@ class CodingAgent:
                     callbacks=callbacks,
                     system_prompt=effective_prompt,
                     tool_policy=tool_policy,
+                    flow_id=flow_id,
                 )
             )
         return self._call_ask_like(request, system_prompt=effective_prompt)

@@ -31,9 +31,10 @@ class _FakeAskAgent:
         callbacks: list[object] | None = None,
         system_prompt: str | None = None,
         tool_policy: dict | None = None,
+        flow_id: str | None = None,
     ) -> str:
         _ = (index_dir, k, max_steps, timeout_seconds, callbacks, system_prompt)
-        self.calls.append({"question": question, "tool_policy": tool_policy or {}})
+        self.calls.append({"question": question, "tool_policy": tool_policy or {}, "flow_id": flow_id})
         return json.dumps(self.response_payload)
 
     def run_multi(
@@ -46,9 +47,10 @@ class _FakeAskAgent:
         callbacks: list[object] | None = None,
         system_prompt: str | None = None,
         tool_policy: dict | None = None,
+        flow_id: str | None = None,
     ) -> str:
         _ = (index_dirs, k, max_steps, timeout_seconds, callbacks, system_prompt)
-        self.calls.append({"question": question, "tool_policy": tool_policy or {}})
+        self.calls.append({"question": question, "tool_policy": tool_policy or {}, "flow_id": flow_id})
         return json.dumps(self.response_payload)
 
 
@@ -77,9 +79,10 @@ class _SequenceAskAgent(_FakeAskAgent):
         callbacks: list[object] | None = None,
         system_prompt: str | None = None,
         tool_policy: dict | None = None,
+        flow_id: str | None = None,
     ) -> str:
         _ = (index_dir, k, max_steps, timeout_seconds, callbacks, system_prompt)
-        self.calls.append({"question": question, "tool_policy": tool_policy or {}})
+        self.calls.append({"question": question, "tool_policy": tool_policy or {}, "flow_id": flow_id})
         return json.dumps(self._next_payload())
 
     def run_multi(
@@ -92,9 +95,10 @@ class _SequenceAskAgent(_FakeAskAgent):
         callbacks: list[object] | None = None,
         system_prompt: str | None = None,
         tool_policy: dict | None = None,
+        flow_id: str | None = None,
     ) -> str:
         _ = (index_dirs, k, max_steps, timeout_seconds, callbacks, system_prompt)
-        self.calls.append({"question": question, "tool_policy": tool_policy or {}})
+        self.calls.append({"question": question, "tool_policy": tool_policy or {}, "flow_id": flow_id})
         return json.dumps(self._next_payload())
 
 
@@ -327,6 +331,57 @@ def test_coding_agent_progress_budgets_include_dynamic_read_metadata(tmp_path: P
     assert budgets["dynamic_read_budget_fallback_used"] is False
 
 
+def test_coding_agent_tool_policy_includes_full_read_preferences(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload, full_auto_mode=True)
+    monkeypatch.setattr(
+        agent,
+        "_dynamic_read_policy_for_request",
+        lambda request, flow_context=None: {
+            "read_budget": 4,
+            "read_line_window": 700,
+            "dynamic_read_budget_used": True,
+            "dynamic_read_budget_fallback_used": False,
+            "dynamic_read_budget_reason": "focused file inspection",
+        },
+    )
+
+    policy = agent._tool_policy_for_request("update README.md and prompts")
+    assert policy["read_mode_preference"] == "full_preferred"
+    assert policy["read_full_file_max_lines"] == 5000
+    assert policy["read_full_file_max_chars"] == 250000
+    assert policy["read_cache_scope"] == "flow"
+
+
+def test_coding_agent_progress_budgets_use_cache_aware_read_metrics(tmp_path: Path, monkeypatch) -> None:
+    payload = {
+        "answer": "ok",
+        "trace": [
+            {
+                "tool_name": "read_file",
+                "status": "ok",
+                "duration_ms": 1.0,
+                "output_preview": '{"file_path":"README.md","mode":"full","cache_hit":false,"cache_source":"disk"}',
+            },
+            {
+                "tool_name": "read_file",
+                "status": "ok",
+                "duration_ms": 1.0,
+                "output_preview": '{"file_path":"README.md","mode":"line","cache_hit":true,"cache_source":"flow_full"}',
+            },
+        ],
+        "warnings": [],
+    }
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    result = agent.generate("update README.md", index_dir=tmp_path / ".mana_index", k=4)
+    budgets = result["progress"]["budgets"]
+    assert budgets["read_used"] == 1
+    assert budgets["read_cache_hits"] == 1
+    assert budgets["read_cache_misses"] == 1
+    assert budgets["read_full_mode_used"] == 1
+    assert budgets["read_cache_scope"] == "flow"
+
+
 def test_coding_agent_repo_only_default_disables_internet_without_explicit_user_request(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -350,6 +405,16 @@ def test_flow_checklist_persists_and_resumes_across_turns(tmp_path: Path, monkey
     summary = agent.flow_summary(first["flow_id"])
     assert isinstance(summary, dict)
     assert isinstance(summary.get("checklist"), dict)
+
+
+def test_coding_agent_propagates_flow_id_to_ask_agent_run(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    result = agent.generate("Implement A", index_dir=tmp_path / ".mana_index", k=4)
+    fake = agent.ask_agent
+    assert isinstance(fake, _FakeAskAgent)
+    assert fake.calls
+    assert fake.calls[0]["flow_id"] == result["flow_id"]
 
 
 def test_dir_mode_coding_agent_flow_context_included(tmp_path: Path, monkeypatch) -> None:
@@ -664,6 +729,75 @@ def test_generate_auto_execute_delegates_to_tools_manager_orchestrator(tmp_path:
     assert result["answer"] == "auto-complete"
     assert result["auto_execute_passes"] == 1
     assert result["auto_execute_terminal_reason"] == "manager_stop"
+
+
+def test_generate_auto_execute_propagates_flow_id_to_tools_manager(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+
+    class _Orchestrator:
+        def __init__(self) -> None:
+            self.seen_flow_id = None
+
+        def run(self, **kwargs):
+            self.seen_flow_id = kwargs.get("flow_id")
+            return AutoExecuteResult(
+                answer="auto-complete",
+                trace=[],
+                warnings=[],
+                changed_files=[],
+                plan={"objective": "Implement request", "steps": []},
+                passes=1,
+                terminal_reason="manager_stop",
+                toolsmanager_requests_count=1,
+                pass_logs=[{"pass_index": 1, "requests_count": 1}],
+            )
+
+    orchestrator = _Orchestrator()
+    agent.set_tools_manager_orchestrator(orchestrator)
+    result = agent.generate_auto_execute(
+        "Implement planner",
+        index_dir=tmp_path / ".mana_index",
+        k=4,
+        pass_cap=3,
+        flow_id="flow-xyz",
+    )
+    assert orchestrator.seen_flow_id == "flow-xyz"
+    assert result["flow_id"] == "flow-xyz"
+
+
+def test_generate_auto_execute_returns_optional_dedup_retry_telemetry(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+
+    class _Orchestrator:
+        def run(self, **_kwargs):
+            return AutoExecuteResult(
+                answer="auto-complete",
+                trace=[],
+                warnings=[],
+                changed_files=[],
+                plan={"objective": "Implement request", "steps": []},
+                passes=1,
+                terminal_reason="manager_stop",
+                toolsmanager_requests_count=1,
+                pass_logs=[],
+                duplicate_request_skips=2,
+                duplicate_semantic_search_skips=3,
+                request_retry_attempts=1,
+                request_retry_exhausted=1,
+                edit_retry_mode_activations=1,
+                persisted_fingerprint_counts={"request_fingerprint": 4},
+            )
+
+    agent.set_tools_manager_orchestrator(_Orchestrator())
+    result = agent.generate_auto_execute("Implement planner", index_dir=tmp_path / ".mana_index", k=4, pass_cap=3)
+    assert result["duplicate_request_skips"] == 2
+    assert result["duplicate_semantic_search_skips"] == 3
+    assert result["request_retry_attempts"] == 1
+    assert result["request_retry_exhausted"] == 1
+    assert result["edit_retry_mode_activations"] == 1
+    assert result["persisted_fingerprint_counts"] == {"request_fingerprint": 4}
 
 
 def test_generate_auto_execute_preserves_flow_id_continuity(tmp_path: Path, monkeypatch) -> None:

@@ -14,6 +14,7 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field, ValidationError
 
 from mana_analyzer.llm.ask_agent import AskAgent
+from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
 from mana_analyzer.tools import (
     build_apply_patch_tool,
@@ -40,6 +41,7 @@ class ToolRunRequest(BaseModel):
     question: str
     index_dir: str | None = None
     index_dirs: list[str] | None = None
+    flow_id: str | None = None
     k: int = 8
     max_steps: int = 6
     timeout_seconds: int = 30
@@ -268,6 +270,7 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
         base_url=payload.base_url,
         search_service=search_service,
         project_root=Path(payload.project_root),
+        coding_memory_service=CodingMemoryService(project_root=Path(payload.project_root)),
     )
     ask_agent.tools.extend(
         [
@@ -296,6 +299,7 @@ def _run_tool_request(
         result = ask_agent.run_multi(
             question=req.question,
             index_dirs=[Path(p) for p in req.index_dirs],
+            flow_id=req.flow_id,
             k=req.k,
             max_steps=req.max_steps,
             timeout_seconds=req.timeout_seconds,
@@ -309,6 +313,7 @@ def _run_tool_request(
         result = ask_agent.run(
             question=req.question,
             index_dir=Path(req.index_dir),
+            flow_id=req.flow_id,
             k=req.k,
             max_steps=req.max_steps,
             timeout_seconds=req.timeout_seconds,

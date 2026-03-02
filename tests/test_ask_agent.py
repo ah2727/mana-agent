@@ -8,6 +8,7 @@ from langchain_core.tools import StructuredTool
 
 from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_analyzer.llm.ask_agent import AskAgent
+from mana_analyzer.services.coding_memory_service import CodingMemoryService
 
 
 class _FakeSearchService:
@@ -103,6 +104,53 @@ def test_ask_agent_records_timeout(tmp_path: Path, monkeypatch) -> None:
     assert traces[-1].status == "timeout"
 
 
+def test_ask_agent_run_command_rewrites_python_to_local_venv_python3(tmp_path: Path, monkeypatch) -> None:
+    agent = _build_agent(tmp_path)
+    venv_python = tmp_path / ".venv" / "bin" / "python3"
+    venv_python.parent.mkdir(parents=True, exist_ok=True)
+    venv_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    venv_python.chmod(0o755)
+
+    tools, _traces, _, _ = agent._build_tools(k_default=4, timeout_seconds=1)
+    run_command = [item for item in tools if item.name == "run_command"][0]
+
+    captured: dict[str, str] = {}
+
+    def _fake_run(cmd, **kwargs):  # noqa: ANN001
+        captured["cmd"] = str(cmd)
+        _ = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr("mana_analyzer.llm.ask_agent.subprocess.run", _fake_run)
+    payload = json.loads(run_command.invoke({"cmd": "python -V"}))
+
+    assert payload["interpreter_rewritten"] is True
+    assert payload["original_cmd"] == "python -V"
+    assert payload["executed_cmd"].startswith(str(venv_python))
+    assert captured["cmd"].startswith(str(venv_python))
+
+
+def test_ask_agent_run_command_rewrites_python_to_python3_without_local_venv(tmp_path: Path, monkeypatch) -> None:
+    agent = _build_agent(tmp_path)
+    tools, _traces, _, _ = agent._build_tools(k_default=4, timeout_seconds=1)
+    run_command = [item for item in tools if item.name == "run_command"][0]
+
+    captured: dict[str, str] = {}
+
+    def _fake_run(cmd, **kwargs):  # noqa: ANN001
+        captured["cmd"] = str(cmd)
+        _ = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr("mana_analyzer.llm.ask_agent.subprocess.run", _fake_run)
+    payload = json.loads(run_command.invoke({"cmd": "python -m pytest -q"}))
+
+    assert payload["interpreter_rewritten"] is True
+    assert payload["executed_cmd"].startswith("python3 ")
+    assert payload["original_cmd"] == "python -m pytest -q"
+    assert captured["cmd"].startswith("python3 ")
+
+
 def test_ask_agent_read_file_uses_policy_line_window(tmp_path: Path) -> None:
     source_file = tmp_path / "src.py"
     source_file.write_text("\n".join(f"line-{idx}" for idx in range(1, 1500)), encoding="utf-8")
@@ -125,6 +173,146 @@ def test_ask_agent_read_file_line_window_is_safely_clamped(tmp_path: Path) -> No
     payload = json.loads(read_file.invoke({"path": str(source_file), "start_line": 1, "end_line": 5000}))
     assert int(payload["start_line"]) == 1
     assert int(payload["end_line"]) == 201
+
+
+def test_ask_agent_read_file_full_mode_returns_entire_small_file(tmp_path: Path) -> None:
+    source_file = tmp_path / "small.py"
+    source_file.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    agent = _build_agent(tmp_path)
+    tools, _traces, _, _ = agent._build_tools(k_default=4, timeout_seconds=1)
+    read_file = [item for item in tools if item.name == "read_file"][0]
+
+    payload = json.loads(read_file.invoke({"path": str(source_file), "mode": "full"}))
+    assert payload["mode"] == "full"
+    assert payload["cache_hit"] is False
+    assert payload["cache_source"] == "disk"
+    assert payload["full_file_cached"] is True
+    assert payload["line_count"] == 3
+    assert payload["content"] == "a = 1\nb = 2\nc = 3\n"
+
+
+def test_ask_agent_read_file_full_mode_oversized_returns_structured_error(tmp_path: Path) -> None:
+    source_file = tmp_path / "big.py"
+    source_file.write_text("\n".join(f"line-{idx}" for idx in range(6001)), encoding="utf-8")
+    agent = _build_agent(tmp_path)
+    tools, _traces, _, _ = agent._build_tools(k_default=4, timeout_seconds=1)
+    read_file = [item for item in tools if item.name == "read_file"][0]
+
+    payload = json.loads(read_file.invoke({"path": str(source_file), "mode": "full"}))
+    assert "use mode='line'" in payload["error"]
+    assert payload["mode"] == "full"
+    assert payload["line_count"] == 6001
+    assert payload["max_lines"] == AskAgent.READ_FULL_FILE_MAX_LINES
+
+
+def test_ask_agent_read_file_full_mode_hits_persistent_flow_cache_on_repeat(tmp_path: Path) -> None:
+    source_file = tmp_path / "cached.py"
+    source_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    service = CodingMemoryService(project_root=tmp_path)
+
+    first = _build_agent(tmp_path)
+    first.coding_memory_service = service
+    tools1, _traces1, _, _ = first._build_tools(k_default=4, timeout_seconds=1, flow_id="flow-cache-1")
+    read_file1 = [item for item in tools1 if item.name == "read_file"][0]
+    first_payload = json.loads(read_file1.invoke({"path": str(source_file), "mode": "full"}))
+
+    second = _build_agent(tmp_path)
+    second.coding_memory_service = service
+    tools2, _traces2, _, _ = second._build_tools(k_default=4, timeout_seconds=1, flow_id="flow-cache-1")
+    read_file2 = [item for item in tools2 if item.name == "read_file"][0]
+    second_payload = json.loads(read_file2.invoke({"path": str(source_file), "mode": "full"}))
+
+    assert first_payload["cache_hit"] is False
+    assert second_payload["cache_hit"] is True
+    assert second_payload["cache_source"] == "flow_full"
+
+
+def test_ask_agent_read_file_line_mode_uses_full_cache_slice(tmp_path: Path) -> None:
+    source_file = tmp_path / "slice.py"
+    source_file.write_text("\n".join(f"line-{idx}" for idx in range(1, 8)) + "\n", encoding="utf-8")
+    service = CodingMemoryService(project_root=tmp_path)
+    agent = _build_agent(tmp_path)
+    agent.coding_memory_service = service
+    telemetry = {
+        "read_cache_hits": 0,
+        "read_cache_misses": 0,
+        "read_full_mode_used": 0,
+        "read_full_mode_blocked": 0,
+        "read_cache_invalidations": 0,
+    }
+    ephemeral: dict[str, list[dict[str, object]]] = {}
+    tools, _traces, _, _ = agent._build_tools(
+        k_default=4,
+        timeout_seconds=1,
+        flow_id="flow-cache-2",
+        ephemeral_read_cache=ephemeral,
+        read_telemetry=telemetry,
+    )
+    read_file = [item for item in tools if item.name == "read_file"][0]
+
+    full_payload = json.loads(read_file.invoke({"path": str(source_file), "mode": "full"}))
+    line_payload = json.loads(
+        read_file.invoke({"path": str(source_file), "mode": "line", "start_line": 2, "end_line": 4})
+    )
+
+    assert full_payload["cache_hit"] is False
+    assert line_payload["cache_hit"] is True
+    assert line_payload["cache_source"] == "flow_full"
+    assert line_payload["content"] == "line-2\nline-3\nline-4"
+    assert telemetry["read_cache_hits"] == 1
+
+
+def test_ask_agent_read_file_cache_invalidates_when_file_changes(tmp_path: Path) -> None:
+    source_file = tmp_path / "stale.py"
+    source_file.write_text("old-1\nold-2\n", encoding="utf-8")
+    service = CodingMemoryService(project_root=tmp_path)
+    agent = _build_agent(tmp_path)
+    agent.coding_memory_service = service
+    telemetry = {
+        "read_cache_hits": 0,
+        "read_cache_misses": 0,
+        "read_full_mode_used": 0,
+        "read_full_mode_blocked": 0,
+        "read_cache_invalidations": 0,
+    }
+    tools, _traces, _, _ = agent._build_tools(
+        k_default=4,
+        timeout_seconds=1,
+        flow_id="flow-cache-3",
+        read_telemetry=telemetry,
+    )
+    read_file = [item for item in tools if item.name == "read_file"][0]
+
+    first_payload = json.loads(read_file.invoke({"path": str(source_file), "mode": "full"}))
+    source_file.write_text("new-1\nnew-2\nnew-3\n", encoding="utf-8")
+    second_payload = json.loads(read_file.invoke({"path": str(source_file), "mode": "full"}))
+
+    assert first_payload["cache_hit"] is False
+    assert second_payload["cache_hit"] is False
+    assert second_payload["cache_invalidated"] is True
+    assert telemetry["read_cache_invalidations"] == 1
+    assert second_payload["content"] == "new-1\nnew-2\nnew-3\n"
+
+
+def test_ask_agent_read_file_without_flow_id_uses_only_ephemeral_cache(tmp_path: Path) -> None:
+    source_file = tmp_path / "ephemeral.py"
+    source_file.write_text("x\ny\n", encoding="utf-8")
+    service = CodingMemoryService(project_root=tmp_path)
+
+    first = _build_agent(tmp_path)
+    first.coding_memory_service = service
+    tools1, _traces1, _, _ = first._build_tools(k_default=4, timeout_seconds=1)
+    read_file1 = [item for item in tools1 if item.name == "read_file"][0]
+    payload1 = json.loads(read_file1.invoke({"path": str(source_file), "mode": "full"}))
+
+    second = _build_agent(tmp_path)
+    second.coding_memory_service = service
+    tools2, _traces2, _, _ = second._build_tools(k_default=4, timeout_seconds=1)
+    read_file2 = [item for item in tools2 if item.name == "read_file"][0]
+    payload2 = json.loads(read_file2.invoke({"path": str(source_file), "mode": "full"}))
+
+    assert payload1["cache_hit"] is False
+    assert payload2["cache_hit"] is False
 
 
 def test_ask_agent_collects_trace_and_sources(tmp_path: Path) -> None:

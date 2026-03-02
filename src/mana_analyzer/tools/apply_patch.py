@@ -171,6 +171,7 @@ class ApplyPatchResult:
     stdout: str = ""
     stderr: str = ""
     error: str = ""
+    strategy_requested: str = "auto"
     strategy: str = ""
     attempts: list[dict[str, Any]] = field(default_factory=list)
 
@@ -701,9 +702,27 @@ def safe_apply_patch(
     diff: str,
     allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES,
     check_only: bool = False,
+    strategy_hint: str = "auto",
+    strict_strategy: bool = False,
 ) -> dict[str, Any]:
+    requested_strategy = str(strategy_hint or "auto").strip().lower() or "auto"
+    strict_strategy = bool(strict_strategy)
+    supported_strategies = ("auto", "git", "perl", "python", "write_file")
+    if requested_strategy not in supported_strategies:
+        return ApplyPatchResult(
+            ok=False,
+            touched_files=[],
+            strategy_requested=requested_strategy,
+            error=f"Error: invalid strategy_hint '{requested_strategy}'. Expected one of {supported_strategies}.",
+        ).to_dict()
+
     if not diff.strip():
-        return ApplyPatchResult(ok=False, touched_files=[], error="Error: empty diff").to_dict()
+        return ApplyPatchResult(
+            ok=False,
+            touched_files=[],
+            strategy_requested=requested_strategy,
+            error="Error: empty diff",
+        ).to_dict()
 
     # Common LLM behavior: wrap in ```diff fences.
     diff = _strip_markdown_fences(diff)
@@ -715,6 +734,7 @@ def safe_apply_patch(
         return ApplyPatchResult(
             ok=False,
             touched_files=[],
+            strategy_requested=requested_strategy,
             error="Error: patch is not a git-unified diff. " + GIT_UNIFIED_DIFF_GUIDANCE,
         ).to_dict()
 
@@ -723,6 +743,7 @@ def safe_apply_patch(
         return ApplyPatchResult(
             ok=False,
             touched_files=[],
+            strategy_requested=requested_strategy,
             error="Error: patch missing 'diff --git' header. " + GIT_UNIFIED_DIFF_GUIDANCE,
         ).to_dict()
 
@@ -735,168 +756,292 @@ def safe_apply_patch(
         return ApplyPatchResult(
             ok=False,
             touched_files=sorted(touched),
+            strategy_requested=requested_strategy,
             error=f"Blocked: patch deletes files (not allowed): {sorted(deleted)}",
         ).to_dict()
 
     ok, touched_files, err = _validate_touched_paths(repo_root, touched, allowed_prefixes)
     if not ok:
-        return ApplyPatchResult(ok=False, touched_files=[], error=err).to_dict()
+        return ApplyPatchResult(
+            ok=False,
+            touched_files=[],
+            strategy_requested=requested_strategy,
+            error=err,
+        ).to_dict()
 
     parsed_files, parse_err = _parse_unified_diff_strict(diff)
     if parse_err:
-        return ApplyPatchResult(ok=False, touched_files=touched_files, error=parse_err).to_dict()
-
-    attempts: list[dict[str, Any]] = []
-
-    # Strategy 1: git apply (preserve -p0/-p1/-p2 behavior)
-    if shutil.which("git") is None:
-        attempts.append(_attempt("git", "check", False, "git not found on PATH"))
-    else:
-        last_stderr = ""
-        for p in (0, 1, 2):
-            check_cmd = ["git", "apply", f"-p{p}", "--check", "-"]
-            proc = _run(check_cmd, cwd=repo_root, stdin_text=diff)
-            check_ok = proc.returncode == 0
-            attempts.append(_attempt("git", f"check-p{p}", check_ok, proc.stderr or "ok"))
-            if not check_ok:
-                last_stderr = proc.stderr or last_stderr
-                continue
-
-            if check_only:
-                return ApplyPatchResult(
-                    ok=True,
-                    touched_files=touched_files,
-                    strip_level=p,
-                    check_only=True,
-                    stdout=proc.stdout,
-                    stderr=proc.stderr,
-                    strategy="git",
-                    attempts=attempts,
-                ).to_dict()
-
-            apply_cmd = ["git", "apply", f"-p{p}", "--whitespace=nowarn", "-"]
-            proc2 = _run(apply_cmd, cwd=repo_root, stdin_text=diff)
-            apply_ok = proc2.returncode == 0
-            attempts.append(_attempt("git", f"apply-p{p}", apply_ok, proc2.stderr or "ok"))
-            if apply_ok:
-                logger.info("Applied patch with git -p%d touching %d files", p, len(touched_files))
-                return ApplyPatchResult(
-                    ok=True,
-                    touched_files=touched_files,
-                    strip_level=p,
-                    check_only=False,
-                    stdout=proc2.stdout,
-                    stderr=proc2.stderr,
-                    strategy="git",
-                    attempts=attempts,
-                ).to_dict()
-
-            # If git check passed but git apply failed, move to next strategy.
-            last_stderr = proc2.stderr or last_stderr
-            break
-
-        if last_stderr:
-            attempts.append(_attempt("git", "summary", False, last_stderr.strip()[:400]))
-
-    # Strategy 2: perl fallback applier
-    perl_phase = "check" if check_only else "apply"
-    if shutil.which("perl") is None:
-        attempts.append(_attempt("perl", perl_phase, False, "perl not found on PATH"))
-    else:
-        perl_snapshots: dict[str, _FileSnapshot] | None = None
-        if not check_only:
-            perl_order: list[str] = []
-            perl_seen: set[str] = set()
-            for item in parsed_files:
-                rel = _target_rel_path(item)
-                if rel in perl_seen:
-                    continue
-                perl_seen.add(rel)
-                perl_order.append(rel)
-            perl_snapshots = _snapshot_files(repo_root, perl_order)
-        perl_ok, perl_detail, perl_stdout, perl_stderr = _run_perl_fallback(
-            repo_root=repo_root,
-            parsed_files=parsed_files,
-            check_only=check_only,
-        )
-        if (not check_only) and (not perl_ok) and perl_snapshots is not None:
-            rollback_err = _rollback_files(repo_root, perl_snapshots)
-            if rollback_err:
-                perl_detail = f"{perl_detail}; rollback failed: {rollback_err}"
-            else:
-                perl_detail = f"{perl_detail}; rollback applied"
-        attempts.append(_attempt("perl", perl_phase, perl_ok, perl_detail))
-        if perl_ok:
-            return ApplyPatchResult(
-                ok=True,
-                touched_files=touched_files,
-                check_only=check_only,
-                stdout=perl_stdout,
-                stderr=perl_stderr,
-                strategy="perl",
-                attempts=attempts,
-            ).to_dict()
-
-    # Strategy 3: python fallback compute-only
-    python_phase = "check" if check_only else "compute"
-    py_ok, computed, py_detail = _compute_python_fallback(repo_root=repo_root, parsed_files=parsed_files)
-    attempts.append(_attempt("python", python_phase, py_ok, py_detail))
-
-    if not py_ok:
         return ApplyPatchResult(
             ok=False,
             touched_files=touched_files,
-            check_only=check_only,
-            strategy="python",
-            attempts=attempts,
-            error=f"Error: patch fallback chain exhausted. {py_detail}",
+            strategy_requested=requested_strategy,
+            error=parse_err,
         ).to_dict()
 
-    if check_only:
+    attempts: list[dict[str, Any]] = []
+    strategy_order = ["git", "perl", "python", "write_file"]
+    if requested_strategy == "auto":
+        run_order = list(strategy_order)
+    else:
+        start = strategy_order.index(requested_strategy)
+        run_order = [requested_strategy] if strict_strategy else strategy_order[start:]
+
+    if check_only and requested_strategy == "write_file" and strict_strategy:
         return ApplyPatchResult(
-            ok=True,
+            ok=False,
             touched_files=touched_files,
             check_only=True,
-            strategy="python",
-            attempts=attempts,
-            stdout="python fallback check succeeded",
-        ).to_dict()
-
-    # Strategy 4: write_file transactional persistence
-    write_order: list[str] = []
-    seen_order: set[str] = set()
-    for item in parsed_files:
-        rel = _target_rel_path(item)
-        if rel in seen_order:
-            continue
-        seen_order.add(rel)
-        write_order.append(rel)
-    write_ok, write_detail, write_stdout, write_stderr = _apply_via_write_file(
-        repo_root=repo_root,
-        computed=computed,
-        allowed_prefixes=allowed_prefixes,
-        order=write_order,
-    )
-    attempts.append(_attempt("write_file", "apply", write_ok, write_detail))
-
-    if write_ok:
-        return ApplyPatchResult(
-            ok=True,
-            touched_files=touched_files,
-            check_only=False,
+            strategy_requested=requested_strategy,
             strategy="write_file",
             attempts=attempts,
-            stdout=write_stdout,
-            stderr=write_stderr,
+            error="Error: strict write_file strategy cannot run in check_only mode.",
+        ).to_dict()
+
+    if "write_file" in run_order and "python" not in run_order:
+        write_idx = run_order.index("write_file")
+        run_order.insert(write_idx, "python")
+
+    computed: dict[str, str] = {}
+    python_available = False
+
+    if "git" in run_order:
+        if shutil.which("git") is None:
+            attempts.append(_attempt("git", "check", False, "git not found on PATH"))
+            if strict_strategy and requested_strategy == "git":
+                return ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    check_only=check_only,
+                    strategy_requested=requested_strategy,
+                    strategy="git",
+                    attempts=attempts,
+                    error="Error: patch fallback chain exhausted. git not found on PATH",
+                ).to_dict()
+        else:
+            last_stderr = ""
+            for p in (0, 1, 2):
+                check_cmd = ["git", "apply", f"-p{p}", "--check", "-"]
+                proc = _run(check_cmd, cwd=repo_root, stdin_text=diff)
+                check_ok = proc.returncode == 0
+                attempts.append(_attempt("git", f"check-p{p}", check_ok, proc.stderr or "ok"))
+                if not check_ok:
+                    last_stderr = proc.stderr or last_stderr
+                    continue
+
+                if check_only:
+                    return ApplyPatchResult(
+                        ok=True,
+                        touched_files=touched_files,
+                        strip_level=p,
+                        check_only=True,
+                        stdout=proc.stdout,
+                        stderr=proc.stderr,
+                        strategy_requested=requested_strategy,
+                        strategy="git",
+                        attempts=attempts,
+                    ).to_dict()
+
+                apply_cmd = ["git", "apply", f"-p{p}", "--whitespace=nowarn", "-"]
+                proc2 = _run(apply_cmd, cwd=repo_root, stdin_text=diff)
+                apply_ok = proc2.returncode == 0
+                attempts.append(_attempt("git", f"apply-p{p}", apply_ok, proc2.stderr or "ok"))
+                if apply_ok:
+                    logger.info("Applied patch with git -p%d touching %d files", p, len(touched_files))
+                    return ApplyPatchResult(
+                        ok=True,
+                        touched_files=touched_files,
+                        strip_level=p,
+                        check_only=False,
+                        stdout=proc2.stdout,
+                        stderr=proc2.stderr,
+                        strategy_requested=requested_strategy,
+                        strategy="git",
+                        attempts=attempts,
+                    ).to_dict()
+
+                last_stderr = proc2.stderr or last_stderr
+                break
+
+            if last_stderr:
+                attempts.append(_attempt("git", "summary", False, last_stderr.strip()[:400]))
+                if strict_strategy and requested_strategy == "git":
+                    return ApplyPatchResult(
+                        ok=False,
+                        touched_files=touched_files,
+                        check_only=check_only,
+                        strategy_requested=requested_strategy,
+                        strategy="git",
+                        attempts=attempts,
+                        error=f"Error: patch fallback chain exhausted. {last_stderr.strip()[:400]}",
+                    ).to_dict()
+
+    if "perl" in run_order:
+        perl_phase = "check" if check_only else "apply"
+        if shutil.which("perl") is None:
+            attempts.append(_attempt("perl", perl_phase, False, "perl not found on PATH"))
+            if strict_strategy and requested_strategy == "perl":
+                return ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    check_only=check_only,
+                    strategy_requested=requested_strategy,
+                    strategy="perl",
+                    attempts=attempts,
+                    error="Error: patch fallback chain exhausted. perl not found on PATH",
+                ).to_dict()
+        else:
+            perl_snapshots: dict[str, _FileSnapshot] | None = None
+            if not check_only:
+                perl_order: list[str] = []
+                perl_seen: set[str] = set()
+                for item in parsed_files:
+                    rel = _target_rel_path(item)
+                    if rel in perl_seen:
+                        continue
+                    perl_seen.add(rel)
+                    perl_order.append(rel)
+                perl_snapshots = _snapshot_files(repo_root, perl_order)
+            perl_ok, perl_detail, perl_stdout, perl_stderr = _run_perl_fallback(
+                repo_root=repo_root,
+                parsed_files=parsed_files,
+                check_only=check_only,
+            )
+            if (not check_only) and (not perl_ok) and perl_snapshots is not None:
+                rollback_err = _rollback_files(repo_root, perl_snapshots)
+                if rollback_err:
+                    perl_detail = f"{perl_detail}; rollback failed: {rollback_err}"
+                else:
+                    perl_detail = f"{perl_detail}; rollback applied"
+            attempts.append(_attempt("perl", perl_phase, perl_ok, perl_detail))
+            if perl_ok:
+                return ApplyPatchResult(
+                    ok=True,
+                    touched_files=touched_files,
+                    check_only=check_only,
+                    stdout=perl_stdout,
+                    stderr=perl_stderr,
+                    strategy_requested=requested_strategy,
+                    strategy="perl",
+                    attempts=attempts,
+                ).to_dict()
+            if strict_strategy and requested_strategy == "perl":
+                return ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    check_only=check_only,
+                    strategy_requested=requested_strategy,
+                    strategy="perl",
+                    attempts=attempts,
+                    error=f"Error: patch fallback chain exhausted. {perl_detail}",
+                ).to_dict()
+
+    if "python" in run_order:
+        python_phase = "check" if check_only else "compute"
+        py_ok, computed, py_detail = _compute_python_fallback(repo_root=repo_root, parsed_files=parsed_files)
+        attempts.append(_attempt("python", python_phase, py_ok, py_detail))
+        python_available = py_ok
+        if not py_ok:
+            if strict_strategy and requested_strategy == "python":
+                return ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    check_only=check_only,
+                    strategy_requested=requested_strategy,
+                    strategy="python",
+                    attempts=attempts,
+                    error=f"Error: patch fallback chain exhausted. {py_detail}",
+                ).to_dict()
+            if "write_file" not in run_order:
+                return ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    check_only=check_only,
+                    strategy_requested=requested_strategy,
+                    strategy="python",
+                    attempts=attempts,
+                    error=f"Error: patch fallback chain exhausted. {py_detail}",
+                ).to_dict()
+        elif check_only:
+            return ApplyPatchResult(
+                ok=True,
+                touched_files=touched_files,
+                check_only=True,
+                strategy_requested=requested_strategy,
+                strategy="python",
+                attempts=attempts,
+                stdout="python fallback check succeeded",
+            ).to_dict()
+
+    if "write_file" in run_order:
+        if check_only:
+            return ApplyPatchResult(
+                ok=python_available,
+                touched_files=touched_files,
+                check_only=True,
+                strategy_requested=requested_strategy,
+                strategy="python" if python_available else "write_file",
+                attempts=attempts,
+                error="" if python_available else "Error: write_file strategy requires python compute step.",
+                stdout="python fallback check succeeded" if python_available else "",
+            ).to_dict()
+
+        if not python_available:
+            return ApplyPatchResult(
+                ok=False,
+                touched_files=touched_files,
+                check_only=False,
+                strategy_requested=requested_strategy,
+                strategy="python",
+                attempts=attempts,
+                error="Error: patch fallback chain exhausted. python compute prerequisite failed.",
+            ).to_dict()
+
+        write_order: list[str] = []
+        seen_order: set[str] = set()
+        for item in parsed_files:
+            rel = _target_rel_path(item)
+            if rel in seen_order:
+                continue
+            seen_order.add(rel)
+            write_order.append(rel)
+        write_ok, write_detail, write_stdout, write_stderr = _apply_via_write_file(
+            repo_root=repo_root,
+            computed=computed,
+            allowed_prefixes=allowed_prefixes,
+            order=write_order,
+        )
+        attempts.append(_attempt("write_file", "apply", write_ok, write_detail))
+
+        if write_ok:
+            return ApplyPatchResult(
+                ok=True,
+                touched_files=touched_files,
+                check_only=False,
+                strategy_requested=requested_strategy,
+                strategy="write_file",
+                attempts=attempts,
+                stdout=write_stdout,
+                stderr=write_stderr,
+            ).to_dict()
+
+        return ApplyPatchResult(
+            ok=False,
+            touched_files=touched_files,
+            check_only=False,
+            strategy_requested=requested_strategy,
+            strategy="write_file",
+            attempts=attempts,
+            error=f"Error: patch fallback chain exhausted. {write_detail}",
         ).to_dict()
 
     return ApplyPatchResult(
         ok=False,
         touched_files=touched_files,
-        check_only=False,
-        strategy="write_file",
+        check_only=check_only,
+        strategy_requested=requested_strategy,
+        strategy=requested_strategy if requested_strategy != "auto" else "",
         attempts=attempts,
-        error=f"Error: patch fallback chain exhausted. {write_detail}",
+        error="Error: patch fallback chain exhausted. No runnable strategy selected.",
     ).to_dict()
 
 
@@ -910,6 +1055,8 @@ def build_apply_patch_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
         diff: str | None = None,
         patch: str | None = None,
         check_only: bool = False,
+        strategy_hint: str = "auto",
+        strict_strategy: bool = False,
     ) -> dict[str, Any]:
         # Compatibility: some tool-calling models send `patch` instead of `diff`.
         effective_diff = diff if diff is not None else patch
@@ -918,6 +1065,7 @@ def build_apply_patch_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
                 ok=False,
                 touched_files=[],
                 check_only=check_only,
+                strategy_requested=str(strategy_hint or "auto"),
                 error="Error: missing patch content (expected `diff` or `patch`). " + GIT_UNIFIED_DIFF_GUIDANCE,
             ).to_dict()
         return safe_apply_patch(
@@ -925,6 +1073,8 @@ def build_apply_patch_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
             diff=effective_diff,
             allowed_prefixes=allowed_prefixes,
             check_only=check_only,
+            strategy_hint=str(strategy_hint or "auto"),
+            strict_strategy=bool(strict_strategy),
         )
 
     return StructuredTool.from_function(
@@ -935,6 +1085,7 @@ def build_apply_patch_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
             "Refuses absolute paths, traversal, and paths escaping the repository root. "
             "NO-DELETE: blocks patches that delete files. "
             "Internal fallback chain: git apply -> perl fallback -> python fallback compute -> write_file persistence. "
+            "Optional strategy controls: strategy_hint=auto|git|perl|python|write_file and strict_strategy=true|false. "
             "With check_only=true, validation runs through git/perl/python without writing files. "
             + GIT_UNIFIED_DIFF_GUIDANCE
         ),

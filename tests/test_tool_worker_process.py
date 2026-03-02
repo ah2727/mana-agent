@@ -394,3 +394,27 @@ def test_run_tool_request_once_respects_tools_only_override(monkeypatch) -> None
 
     response = twp.run_tool_request_once(init_payload=init_payload, request=req)
     assert response.answer == "ok"
+
+
+def test_run_tool_request_forwards_flow_id_to_ask_agent() -> None:
+    seen: dict[str, object] = {}
+
+    class _FakeAskAgent:
+        def run(self, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(
+                answer="ok",
+                sources=[],
+                mode="agent-tools",
+                trace=[SimpleNamespace(to_dict=lambda: {"tool_name": "read_file", "status": "ok"})],
+                warnings=[],
+            )
+
+    response = twp._run_tool_request(
+        ask_agent=_FakeAskAgent(),  # type: ignore[arg-type]
+        req=twp.ToolRunRequest(question="q", index_dir="/tmp/.mana_index", flow_id="flow-worker-1"),
+        tools_only_strict_default=False,
+        callbacks=None,
+    )
+    assert response.answer == "ok"
+    assert seen["flow_id"] == "flow-worker-1"

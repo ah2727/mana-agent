@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 import shlex
 import subprocess
 import ast
 import re
 from time import perf_counter
-from typing import Any, Sequence, Optional
+from typing import Any, Literal, Sequence, Optional
 from collections import defaultdict
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -20,6 +21,7 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_analyzer.llm.prompts import ASK_AGENT_SYSTEM_PROMPT
 from mana_analyzer.llm.run_logger import LlmRunLogger
+from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,7 @@ class _SemanticSearchInput(BaseModel):
 
 class _ReadFileInput(BaseModel):
     path: str = Field(description="Absolute or project-relative file path")
+    mode: Literal["line", "full"] = Field(default="line")
     start_line: int = Field(default=1, ge=1)
     end_line: int = Field(default=200, ge=1)
 
@@ -41,6 +44,9 @@ class _RunCommandInput(BaseModel):
 
 
 class AskAgent:
+    READ_FULL_FILE_MAX_LINES = 5000
+    READ_FULL_FILE_MAX_CHARS = 250000
+
     _BLOCKED_PATTERNS = [
         "rm ",
         "mv ",
@@ -64,6 +70,7 @@ class AskAgent:
         search_service: SearchService,
         project_root: str | Path,
         base_url: str | None = None,
+        coding_memory_service: CodingMemoryService | None = None,
     ) -> None:
         kwargs = {"api_key": api_key, "model": model}
         if base_url:
@@ -72,6 +79,7 @@ class AskAgent:
         self.model = model
         self.search_service = search_service
         self.project_root = Path(project_root).resolve()
+        self.coding_memory_service = coding_memory_service
         self._resolved_index = self.project_root / ".mana_index"
         self._resolved_indexes = [self._resolved_index]
         self.run_logger = LlmRunLogger()
@@ -82,6 +90,30 @@ class AskAgent:
     def _is_blocked_command(self, cmd: str) -> bool:
         lowered = f"{cmd.lower()} "
         return any(pattern in lowered for pattern in self._BLOCKED_PATTERNS)
+
+    def _rewrite_python_command(self, cmd: str) -> tuple[str, bool]:
+        raw = str(cmd or "").strip()
+        if not raw:
+            return raw, False
+        try:
+            parts = shlex.split(raw)
+        except Exception:
+            return raw, False
+        if not parts:
+            return raw, False
+        head = str(parts[0]).strip()
+        if not head:
+            return raw, False
+        head_name = Path(head).name.lower()
+        if head_name != "python":
+            return raw, False
+        venv_python = (self.project_root / ".venv" / "bin" / "python3").resolve()
+        if venv_python.exists() and os.access(venv_python, os.X_OK):
+            parts[0] = str(venv_python)
+        else:
+            parts[0] = "python3"
+        rewritten = shlex.join(parts)
+        return rewritten, rewritten != raw
 
     @staticmethod
     def _coerce_tool_payload(content: Any) -> dict[str, Any] | None:
@@ -189,11 +221,253 @@ class AskAgent:
             return "\n".join(parts).strip()
         return str(content).strip()
 
+    @staticmethod
+    def _normalize_read_mode(mode: str | None) -> Literal["line", "full"]:
+        return "full" if str(mode or "").strip().lower() == "full" else "line"
+
+    def _resolve_read_path(self, path: str) -> Path:
+        requested = Path(path)
+        resolved = requested if requested.is_absolute() else (self.project_root / requested)
+        resolved = resolved.resolve()
+        if self.project_root not in resolved.parents and resolved != self.project_root:
+            raise ValueError("path is outside project root")
+        if not resolved.exists():
+            raise FileNotFoundError(str(resolved))
+        return resolved
+
+    @staticmethod
+    def _normalize_line_request(start_line: int, end_line: int, line_window: int) -> tuple[int, int]:
+        start = max(int(start_line or 1), 1)
+        end = max(int(end_line or start), start)
+        end = min(end, start + max(200, min(int(line_window or 400), 2000)))
+        return start, end
+
+    @staticmethod
+    def _read_cache_row_key(row: dict[str, Any]) -> tuple[str, int, int]:
+        return (
+            str(row.get("mode", "")).strip().lower(),
+            int(row.get("start_line", 0) or 0),
+            int(row.get("end_line", 0) or 0),
+        )
+
+    def _get_persistent_read_cache_rows(self, flow_id: str | None, file_path: str) -> list[dict[str, Any]]:
+        resolved_flow = str(flow_id or "").strip()
+        service = getattr(self, "coding_memory_service", None)
+        if not resolved_flow or service is None:
+            return []
+        try:
+            return service.get_read_cache_rows(resolved_flow, file_path)
+        except Exception:
+            logger.debug("Failed to load persistent read cache rows", exc_info=True)
+            return []
+
+    def _invalidate_read_cache_for_file(
+        self,
+        *,
+        flow_id: str | None,
+        file_path: str,
+        ephemeral_read_cache: dict[str, list[dict[str, Any]]] | None,
+    ) -> None:
+        if ephemeral_read_cache is not None:
+            ephemeral_read_cache.pop(file_path, None)
+        resolved_flow = str(flow_id or "").strip()
+        service = getattr(self, "coding_memory_service", None)
+        if resolved_flow and service is not None:
+            try:
+                service.delete_read_cache_for_file(resolved_flow, file_path)
+            except Exception:
+                logger.debug("Failed to invalidate persistent read cache", exc_info=True)
+
+    def _store_read_cache_row(
+        self,
+        *,
+        flow_id: str | None,
+        row: dict[str, Any],
+        ephemeral_read_cache: dict[str, list[dict[str, Any]]] | None,
+    ) -> None:
+        file_path = str(row.get("file_path", "")).strip()
+        if not file_path:
+            return
+        if ephemeral_read_cache is not None:
+            existing = list(ephemeral_read_cache.get(file_path, []))
+            row_key = self._read_cache_row_key(row)
+            existing = [item for item in existing if self._read_cache_row_key(item) != row_key]
+            existing.insert(0, dict(row))
+            ephemeral_read_cache[file_path] = existing[:20]
+        resolved_flow = str(flow_id or "").strip()
+        service = getattr(self, "coding_memory_service", None)
+        if resolved_flow and service is not None:
+            try:
+                service.upsert_read_cache_row(
+                    flow_id=resolved_flow,
+                    file_path=file_path,
+                    mode=str(row.get("mode", "line")),
+                    start_line=int(row.get("start_line", 1) or 1),
+                    end_line=int(row.get("end_line", 0) or 0),
+                    line_count=int(row.get("line_count", 0) or 0),
+                    content_text=str(row.get("content_text", "")),
+                    file_size_bytes=int(row.get("file_size_bytes", 0) or 0),
+                    file_mtime_ns=int(row.get("file_mtime_ns", 0) or 0),
+                )
+                service.prune_read_cache(resolved_flow, keep_per_file=20)
+            except Exception:
+                logger.debug("Failed to persist read cache row", exc_info=True)
+
+    def _build_cached_read_payload(
+        self,
+        *,
+        row: dict[str, Any],
+        requested_mode: Literal["line", "full"],
+        start_line: int,
+        end_line: int,
+        cache_source: Literal["flow_full", "flow_range"],
+    ) -> dict[str, Any]:
+        file_path = str(row.get("file_path", "")).strip()
+        file_line_count = max(0, int(row.get("line_count", 0) or 0))
+        row_mode = self._normalize_read_mode(str(row.get("mode", "line")))
+        if requested_mode == "full":
+            return {
+                "file_path": file_path,
+                "mode": "full",
+                "start_line": 1,
+                "end_line": file_line_count,
+                "line_count": file_line_count,
+                "content": str(row.get("content_text", "")),
+                "cache_hit": True,
+                "cache_source": cache_source,
+                "cache_invalidated": False,
+                "full_file_cached": row_mode == "full",
+            }
+
+        actual_end = min(max(int(end_line), int(start_line)), file_line_count)
+        if row_mode == "full":
+            lines = str(row.get("content_text", "")).splitlines()
+            segment = lines[int(start_line) - 1 : actual_end]
+        else:
+            row_start = max(1, int(row.get("start_line", 1) or 1))
+            row_end = max(row_start, int(row.get("end_line", row_start) or row_start))
+            row_lines = str(row.get("content_text", "")).splitlines()
+            slice_start = max(int(start_line), row_start) - row_start
+            slice_end = min(actual_end, row_end) - row_start + 1
+            segment = row_lines[slice_start:max(slice_start, slice_end)]
+        return {
+            "file_path": file_path,
+            "mode": "line",
+            "start_line": int(start_line),
+            "end_line": actual_end,
+            "line_count": file_line_count,
+            "content": "\n".join(segment),
+            "cache_hit": True,
+            "cache_source": cache_source,
+            "cache_invalidated": False,
+            "full_file_cached": row_mode == "full",
+        }
+
+    def _lookup_read_cache(
+        self,
+        *,
+        resolved: Path,
+        requested_mode: Literal["line", "full"],
+        start_line: int,
+        end_line: int,
+        flow_id: str | None,
+        ephemeral_read_cache: dict[str, list[dict[str, Any]]] | None,
+        invalidate_stale: bool,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        file_path = str(resolved)
+        rows = list((ephemeral_read_cache or {}).get(file_path, []))
+        rows.extend(self._get_persistent_read_cache_rows(flow_id, file_path))
+        if not rows:
+            return None, False
+        stat = resolved.stat()
+        stale = any(
+            int(row.get("file_size_bytes", -1) or -1) != int(stat.st_size)
+            or int(row.get("file_mtime_ns", -1) or -1) != int(stat.st_mtime_ns)
+            for row in rows
+        )
+        if stale:
+            if invalidate_stale:
+                self._invalidate_read_cache_for_file(
+                    flow_id=flow_id,
+                    file_path=file_path,
+                    ephemeral_read_cache=ephemeral_read_cache,
+                )
+            return None, True
+
+        full_row = next(
+            (
+                row
+                for row in rows
+                if self._normalize_read_mode(str(row.get("mode", ""))) == "full"
+            ),
+            None,
+        )
+        if full_row is not None:
+            return (
+                self._build_cached_read_payload(
+                    row=full_row,
+                    requested_mode=requested_mode,
+                    start_line=start_line,
+                    end_line=end_line,
+                    cache_source="flow_full",
+                ),
+                False,
+            )
+        if requested_mode == "line":
+            for row in rows:
+                if self._normalize_read_mode(str(row.get("mode", ""))) != "line":
+                    continue
+                row_start = max(1, int(row.get("start_line", 1) or 1))
+                row_end = max(row_start, int(row.get("end_line", row_start) or row_start))
+                if row_start <= int(start_line) and row_end >= int(end_line):
+                    return (
+                        self._build_cached_read_payload(
+                            row=row,
+                            requested_mode="line",
+                            start_line=start_line,
+                            end_line=end_line,
+                            cache_source="flow_range",
+                        ),
+                        False,
+                    )
+        return None, False
+
+    def _can_serve_read_from_cache(
+        self,
+        *,
+        path: str,
+        mode: str | None,
+        start_line: int,
+        end_line: int,
+        flow_id: str | None,
+        ephemeral_read_cache: dict[str, list[dict[str, Any]]] | None,
+        line_window: int,
+    ) -> bool:
+        try:
+            resolved = self._resolve_read_path(path)
+        except Exception:
+            return False
+        requested_mode = self._normalize_read_mode(mode)
+        normalized_start, normalized_end = self._normalize_line_request(start_line, end_line, line_window)
+        payload, _ = self._lookup_read_cache(
+            resolved=resolved,
+            requested_mode=requested_mode,
+            start_line=normalized_start,
+            end_line=normalized_end,
+            flow_id=flow_id,
+            ephemeral_read_cache=ephemeral_read_cache,
+            invalidate_stale=False,
+        )
+        return payload is not None
+
     def _build_tools(
         self,
         k_default: int,
         timeout_seconds: int,
         read_line_window: int = 400,
+        flow_id: str | None = None,
+        ephemeral_read_cache: dict[str, list[dict[str, Any]]] | None = None,
+        read_telemetry: dict[str, int] | None = None,
     ) -> tuple[list[BaseTool], list[ToolInvocationTrace], list[SearchHit], list[str]]:
         traces: list[ToolInvocationTrace] = []
         sources: list[SearchHit] = []
@@ -242,29 +516,121 @@ class AskAgent:
                     )
                 )
 
-        def read_file(path: str, start_line: int = 1, end_line: int = 200) -> str:
+        def read_file(path: str, mode: str = "line", start_line: int = 1, end_line: int = 200) -> str:
             started = perf_counter()
             status = "ok"
             output_preview = ""
-            args_summary = f"path={path!r} start={start_line} end={end_line}"
+            args_summary = f"path={path!r} mode={mode!r} start={start_line} end={end_line}"
             try:
-                requested = Path(path)
-                resolved = requested if requested.is_absolute() else (self.project_root / requested)
-                resolved = resolved.resolve()
-                if self.project_root not in resolved.parents and resolved != self.project_root:
-                    raise ValueError("path is outside project root")
-                if not resolved.exists():
-                    raise FileNotFoundError(str(resolved))
-                lines = resolved.read_text(encoding="utf-8").splitlines()
-                start = max(start_line, 1)
-                end = max(end_line, start)
-                end = min(end, start + safe_read_line_window)
+                resolved = self._resolve_read_path(path)
+                requested_mode = self._normalize_read_mode(mode)
+                start, end = self._normalize_line_request(start_line, end_line, safe_read_line_window)
+                cached_payload, invalidated = self._lookup_read_cache(
+                    resolved=resolved,
+                    requested_mode=requested_mode,
+                    start_line=start,
+                    end_line=end,
+                    flow_id=flow_id,
+                    ephemeral_read_cache=ephemeral_read_cache,
+                    invalidate_stale=True,
+                )
+                if invalidated and read_telemetry is not None:
+                    read_telemetry["read_cache_invalidations"] = int(read_telemetry.get("read_cache_invalidations", 0)) + 1
+                if cached_payload is not None:
+                    if read_telemetry is not None:
+                        read_telemetry["read_cache_hits"] = int(read_telemetry.get("read_cache_hits", 0)) + 1
+                        if requested_mode == "full":
+                            read_telemetry["read_full_mode_used"] = int(read_telemetry.get("read_full_mode_used", 0)) + 1
+                    encoded = json.dumps(cached_payload)
+                    output_preview = encoded
+                    return encoded
+
+                stat = resolved.stat()
+                content_text = resolved.read_text(encoding="utf-8")
+                lines = content_text.splitlines()
+                line_count = len(lines)
+                char_count = len(content_text)
+                if read_telemetry is not None:
+                    read_telemetry["read_cache_misses"] = int(read_telemetry.get("read_cache_misses", 0)) + 1
+
+                if requested_mode == "full":
+                    if line_count > self.READ_FULL_FILE_MAX_LINES or char_count > self.READ_FULL_FILE_MAX_CHARS:
+                        if read_telemetry is not None:
+                            read_telemetry["read_full_mode_blocked"] = int(read_telemetry.get("read_full_mode_blocked", 0)) + 1
+                        result = {
+                            "error": "full mode exceeds safe read caps; use mode='line'",
+                            "file_path": str(resolved),
+                            "mode": "full",
+                            "line_count": line_count,
+                            "char_count": char_count,
+                            "max_lines": self.READ_FULL_FILE_MAX_LINES,
+                            "max_chars": self.READ_FULL_FILE_MAX_CHARS,
+                            "cache_invalidated": bool(invalidated),
+                        }
+                        encoded = json.dumps(result)
+                        output_preview = encoded
+                        return encoded
+                    cache_row = {
+                        "file_path": str(resolved),
+                        "mode": "full",
+                        "start_line": 1,
+                        "end_line": line_count,
+                        "line_count": line_count,
+                        "content_text": content_text,
+                        "file_size_bytes": int(stat.st_size),
+                        "file_mtime_ns": int(stat.st_mtime_ns),
+                    }
+                    self._store_read_cache_row(
+                        flow_id=flow_id,
+                        row=cache_row,
+                        ephemeral_read_cache=ephemeral_read_cache,
+                    )
+                    if read_telemetry is not None:
+                        read_telemetry["read_full_mode_used"] = int(read_telemetry.get("read_full_mode_used", 0)) + 1
+                    result = {
+                        "file_path": str(resolved),
+                        "mode": "full",
+                        "start_line": 1,
+                        "end_line": line_count,
+                        "line_count": line_count,
+                        "content": content_text,
+                        "cache_hit": False,
+                        "cache_source": "disk",
+                        "cache_invalidated": bool(invalidated),
+                        "full_file_cached": True,
+                    }
+                    encoded = json.dumps(result)
+                    output_preview = encoded
+                    return encoded
+
+                actual_end = min(end, len(lines))
                 segment = lines[start - 1 : end]
+                cache_row = {
+                    "file_path": str(resolved),
+                    "mode": "line",
+                    "start_line": start,
+                    "end_line": actual_end,
+                    "line_count": line_count,
+                    "content_text": "\n".join(segment),
+                    "file_size_bytes": int(stat.st_size),
+                    "file_mtime_ns": int(stat.st_mtime_ns),
+                }
+                self._store_read_cache_row(
+                    flow_id=flow_id,
+                    row=cache_row,
+                    ephemeral_read_cache=ephemeral_read_cache,
+                )
                 result = {
                     "file_path": str(resolved),
+                    "mode": "line",
                     "start_line": start,
-                    "end_line": min(end, len(lines)),
+                    "end_line": actual_end,
+                    "line_count": line_count,
                     "content": "\n".join(segment),
+                    "cache_hit": False,
+                    "cache_source": "disk",
+                    "cache_invalidated": bool(invalidated),
+                    "full_file_cached": False,
                 }
                 encoded = json.dumps(result)
                 output_preview = encoded
@@ -289,12 +655,17 @@ class AskAgent:
             status = "ok"
             output_preview = ""
             args_summary = f"cmd={cmd!r}"
+            executed_cmd = str(cmd or "")
+            rewritten = False
             try:
                 if self._is_blocked_command(cmd):
                     raise PermissionError("command blocked by safety policy")
-                shlex.split(cmd)
+                executed_cmd, rewritten = self._rewrite_python_command(cmd)
+                if self._is_blocked_command(executed_cmd):
+                    raise PermissionError("command blocked by safety policy")
+                shlex.split(executed_cmd)
                 completed = subprocess.run(
-                    cmd,
+                    executed_cmd,
                     cwd=self.project_root,
                     shell=True,
                     check=False,
@@ -306,6 +677,9 @@ class AskAgent:
                     "returncode": completed.returncode,
                     "stdout": completed.stdout[:4000],
                     "stderr": completed.stderr[:4000],
+                    "original_cmd": str(cmd or ""),
+                    "executed_cmd": executed_cmd,
+                    "interpreter_rewritten": bool(rewritten),
                 }
                 encoded = json.dumps(payload)
                 output_preview = json.dumps(
@@ -313,6 +687,8 @@ class AskAgent:
                         "returncode": completed.returncode,
                         "stdout": completed.stdout,
                         "stderr": completed.stderr,
+                        "executed_cmd": executed_cmd,
+                        "interpreter_rewritten": bool(rewritten),
                     }
                 )
                 return encoded
@@ -345,7 +721,12 @@ class AskAgent:
             StructuredTool.from_function(
                 func=read_file,
                 name="read_file",
-                description="Read a file snippet and return JSON with file path and content.",
+                description=(
+                    "Read a repository file and return JSON metadata plus content. "
+                    "Use mode='full' once for small/medium files you expect to revisit; "
+                    "later reads may be served from flow cache. "
+                    "Use mode='line' for targeted slices or when full mode is blocked."
+                ),
                 args_schema=_ReadFileInput,
             ),
             StructuredTool.from_function(
@@ -375,6 +756,7 @@ class AskAgent:
         system_prompt: str | None = None,
         tool_policy: dict[str, Any] | None = None,
         tool_use: bool = True,
+        flow_id: str | None = None,
     ) -> AskResponseWithTrace:
         # tool_use kept for compatibility; this AskAgent is tool-based by design.
         return self.run(
@@ -387,6 +769,7 @@ class AskAgent:
             callbacks=callbacks,
             system_prompt=system_prompt,
             tool_policy=tool_policy,
+            flow_id=flow_id,
         )
 
     def run(
@@ -400,6 +783,7 @@ class AskAgent:
         callbacks: Sequence[BaseCallbackHandler] | None = None,
         system_prompt: str | None = None,  # ✅ NEW
         tool_policy: dict[str, Any] | None = None,
+        flow_id: str | None = None,
     ) -> AskResponseWithTrace:
         started = perf_counter()
 
@@ -419,11 +803,22 @@ class AskAgent:
         search_repeat_limit = int(policy.get("search_repeat_limit", 1) or 1)
         search_seen: dict[str, int] = defaultdict(int)
         max_semantic_k = int(policy.get("max_semantic_k", 50) or 50)
+        read_telemetry: dict[str, int] = {
+            "read_cache_hits": 0,
+            "read_cache_misses": 0,
+            "read_full_mode_used": 0,
+            "read_full_mode_blocked": 0,
+            "read_cache_invalidations": 0,
+        }
+        ephemeral_read_cache: dict[str, list[dict[str, Any]]] = {}
 
         tools, traces, sources, warnings = self._build_tools(
             k_default=k,
             timeout_seconds=timeout_seconds,
             read_line_window=read_line_window,
+            flow_id=flow_id,
+            ephemeral_read_cache=ephemeral_read_cache,
+            read_telemetry=read_telemetry,
         )
         tool_map = {tool.name: tool for tool in tools}
 
@@ -440,6 +835,7 @@ class AskAgent:
         seen_tool_args: dict[tuple[str, str], int] = defaultdict(int)
         tool_counts: dict[str, int] = defaultdict(int)
         unique_read_files: set[str] = set()
+        disk_read_count = 0
 
         final_answer = ""
         for _ in range(max_steps):
@@ -465,7 +861,7 @@ class AskAgent:
                     content = json.dumps({"error": f"unknown tool: {name}"})
                 elif allowed_tools and name not in allowed_tools:
                     content = json.dumps({"error": f"tool blocked by policy: {name}"})
-                elif seen_tool_args[tool_sig] > 2:
+                elif name != "read_file" and seen_tool_args[tool_sig] > 2:
                     content = json.dumps(
                         {
                             "error": (
@@ -505,10 +901,24 @@ class AskAgent:
                             )
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
-                    if name == "read_file" and read_budget > 0 and tool_counts["read_file"] >= read_budget:
-                        content = json.dumps({"error": "read_file budget exhausted"})
-                        messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
-                        continue
+                    if name == "read_file":
+                        read_args = args if isinstance(args, dict) else {}
+                        if (
+                            read_budget > 0
+                            and disk_read_count >= read_budget
+                            and not self._can_serve_read_from_cache(
+                                path=str(read_args.get("path", "")),
+                                mode=str(read_args.get("mode", "line")),
+                                start_line=int(read_args.get("start_line", 1) or 1),
+                                end_line=int(read_args.get("end_line", 200) or 200),
+                                flow_id=flow_id,
+                                ephemeral_read_cache=ephemeral_read_cache,
+                                line_window=read_line_window,
+                            )
+                        ):
+                            content = json.dumps({"error": "read_file budget exhausted"})
+                            messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                            continue
                     if name in {"apply_patch", "write_file"} and require_read_files > 0:
                         if len(unique_read_files) < require_read_files:
                             content = json.dumps(
@@ -546,6 +956,8 @@ class AskAgent:
                         file_path = str(payload.get("file_path", "")).strip()
                         if file_path:
                             unique_read_files.add(file_path)
+                        if not bool(payload.get("cache_hit", False)) and not str(payload.get("error", "")).strip():
+                            disk_read_count += 1
                 if name == "search_internet":
                     detail = self._search_error_detail(content)
                     if detail:
@@ -593,7 +1005,13 @@ class AskAgent:
                     "k": k,
                     "max_steps": max_steps,
                     "timeout_seconds": timeout_seconds,
+                    "flow_id": flow_id,
                     "read_line_window": read_line_window,
+                    "read_cache_hits": int(read_telemetry.get("read_cache_hits", 0)),
+                    "read_cache_misses": int(read_telemetry.get("read_cache_misses", 0)),
+                    "read_full_mode_used": int(read_telemetry.get("read_full_mode_used", 0)),
+                    "read_full_mode_blocked": int(read_telemetry.get("read_full_mode_blocked", 0)),
+                    "read_cache_invalidations": int(read_telemetry.get("read_cache_invalidations", 0)),
                     "tool_calls": len(traces),
                     "trace": [item.to_dict() for item in traces],
                     "sources_count": len(result.sources),
@@ -613,6 +1031,7 @@ class AskAgent:
         max_steps: int = 6,
         timeout_seconds: int = 30,
         callbacks: Sequence[Any] | None = None,
+        flow_id: str | None = None,
         **kwargs: Any,
     ):
         """
@@ -642,6 +1061,7 @@ class AskAgent:
                 index_dirs=resolved_indexes,
                 callbacks=callbacks,
                 tool_policy=tool_policy,
+                flow_id=flow_id,
                 **kwargs,
             )
 
@@ -697,6 +1117,7 @@ class AskAgent:
             index_dirs=resolved_indexes,
             callbacks=callbacks,
             tool_policy=tool_policy,
+            flow_id=flow_id,
             **kwargs,
         )
 

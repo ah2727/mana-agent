@@ -1994,6 +1994,18 @@ def _resolve_report_artifact_paths(target_path: str | Path) -> tuple[Path, Path]
     return json_path, md_path
 
 
+def _resolve_analyze_artifact_paths(target_path: str | Path) -> tuple[Path, Path]:
+    _log_call("_resolve_analyze_artifact_paths", target_path=str(target_path))
+    target = Path(target_path).resolve()
+    project_root = target if target.is_dir() else target.parent
+    stamp = datetime.now().strftime("%Y%m%d-%H")
+    stem = f"{project_root.name}-{stamp}-analyze"
+    out_dir = _resolve_report_artifact_dir(project_root)
+    json_path, md_path = out_dir / f"{stem}.json", out_dir / f"{stem}.md"
+    _log_return("_resolve_analyze_artifact_paths", json=str(json_path), markdown=str(md_path))
+    return json_path, md_path
+
+
 def _resolve_out_path(arg: str | None, default_path: Path, *, suffix: str) -> Path:
     _log_call("_resolve_out_path", arg=arg, default=str(default_path), suffix=suffix)
     if not arg:
@@ -2057,6 +2069,22 @@ def _render_repository_summary_markdown(summary_payload: dict) -> str:
             else:
                 lines.append(f"- `{file_path}` ({language})")
 
+    return "\n".join(lines).rstrip()
+
+
+def _render_findings_markdown(findings: list[Finding]) -> str:
+    lines = ["# Analyze Findings", ""]
+    if not findings:
+        lines.append("No findings.")
+        return "\n".join(lines).rstrip()
+
+    lines.append(f"- Total findings: {len(findings)}")
+    lines.append("")
+    lines.append("## Findings")
+    for finding in findings:
+        lines.append(
+            f"- [{finding.severity}] `{finding.rule_id}` `{finding.file_path}:{finding.line}:{finding.column}` {finding.message}"
+        )
     return "\n".join(lines).rstrip()
 
 
@@ -2615,14 +2643,30 @@ def analyze(
 
         summary_payload = summary_report.to_dict()
         payload = report.to_dict()
+        payload["findings"] = [finding.to_dict() for finding in findings]
         payload["summarization"] = summary_payload
         markdown = (
-            structure_service.render_markdown(report).rstrip()
+            _render_findings_markdown(findings)
+            + "\n\n"
+            + structure_service.render_markdown(report).rstrip()
             + "\n\n"
             + _render_repository_summary_markdown(summary_payload)
         )
         if output_format not in {"json", "markdown", "both"}:
             raise typer.BadParameter("--output-format must be one of: json, markdown, both")
+        out_json, out_md = _resolve_analyze_artifact_paths(path)
+        try:
+            if output_format in {"json", "both"}:
+                out_json.parent.mkdir(parents=True, exist_ok=True)
+                out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                logger.info("Wrote analyze JSON", extra={"out_json": str(out_json)})
+            if output_format in {"markdown", "both"}:
+                out_md.parent.mkdir(parents=True, exist_ok=True)
+                out_md.write_text(markdown, encoding="utf-8")
+                logger.info("Wrote analyze Markdown", extra={"out_md": str(out_md)})
+        except Exception as exc:
+            _log_exception("analyze_write_artifacts", exc, out_json=str(out_json), out_md=str(out_md))
+            raise
         if output_format in {"json", "both"}:
             _emit_json(payload, output_file=output_file)
         if output_format in {"markdown", "both"}:
@@ -4089,6 +4133,11 @@ def chat(
                 repo_root=root,
                 execution_config=tools_execution_config,
                 executor=tools_executor_instance,
+                coding_memory_service=(
+                    getattr(coding_agent_instance, "coding_memory_service", None)
+                    if coding_agent_instance is not None
+                    else None
+                ),
             )
             if coding_agent_instance is not None and hasattr(coding_agent_instance, "set_tools_manager_orchestrator"):
                 coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
@@ -4228,6 +4277,7 @@ def chat(
                     tool_policy=_base_auto_execute_tool_policy(user_question),
                     pass_cap=auto_execute_max_passes,
                     on_event=CodingAgent._log_worker_event,
+                    flow_id=active_flow_id,
                 )
 
             result_obj, debug_tail = _run_with_live_buffer(
@@ -4453,6 +4503,18 @@ def chat(
                     "checklist": None,
                     "next_step": payload.get("terminal_reason", ""),
                     "flow_id": active_flow_id,
+                    "duplicate_request_skips": int(payload.get("duplicate_request_skips", 0) or 0),
+                    "duplicate_semantic_search_skips": int(
+                        payload.get("duplicate_semantic_search_skips", 0) or 0
+                    ),
+                    "request_retry_attempts": int(payload.get("request_retry_attempts", 0) or 0),
+                    "request_retry_exhausted": int(payload.get("request_retry_exhausted", 0) or 0),
+                    "edit_retry_mode_activations": int(payload.get("edit_retry_mode_activations", 0) or 0),
+                    "persisted_fingerprint_counts": (
+                        dict(payload.get("persisted_fingerprint_counts", {}))
+                        if isinstance(payload.get("persisted_fingerprint_counts"), dict)
+                        else {}
+                    ),
                 },
             )
             session_turns.append(turn_record)
@@ -5056,6 +5118,37 @@ def chat(
                         "checklist": (result or {}).get("checklist") if isinstance(result, dict) else None,
                         "next_step": (result or {}).get("next_step") if isinstance(result, dict) else None,
                         "flow_id": active_flow_id,
+                        "duplicate_request_skips": (
+                            int((result or {}).get("duplicate_request_skips", 0) or 0)
+                            if isinstance(result, dict)
+                            else 0
+                        ),
+                        "duplicate_semantic_search_skips": (
+                            int((result or {}).get("duplicate_semantic_search_skips", 0) or 0)
+                            if isinstance(result, dict)
+                            else 0
+                        ),
+                        "request_retry_attempts": (
+                            int((result or {}).get("request_retry_attempts", 0) or 0)
+                            if isinstance(result, dict)
+                            else 0
+                        ),
+                        "request_retry_exhausted": (
+                            int((result or {}).get("request_retry_exhausted", 0) or 0)
+                            if isinstance(result, dict)
+                            else 0
+                        ),
+                        "edit_retry_mode_activations": (
+                            int((result or {}).get("edit_retry_mode_activations", 0) or 0)
+                            if isinstance(result, dict)
+                            else 0
+                        ),
+                        "persisted_fingerprint_counts": (
+                            dict((result or {}).get("persisted_fingerprint_counts", {}))
+                            if isinstance(result, dict)
+                            and isinstance((result or {}).get("persisted_fingerprint_counts"), dict)
+                            else {}
+                        ),
                     },
                 )
                 session_turns.append(turn_record)

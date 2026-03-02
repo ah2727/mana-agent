@@ -10,6 +10,7 @@ from mana_analyzer.llm.tools_manager import (
     ToolsPlan,
 )
 from mana_analyzer.llm.tools_executor import BatchExecutionResult
+from mana_analyzer.services.coding_memory_service import CodingMemoryService
 
 
 class _NoopWorker:
@@ -207,6 +208,95 @@ def test_tools_manager_empty_batch_uses_deterministic_request_fallback(tmp_path:
     assert result.pass_logs[0]["requests_count"] == 1
     assert result.pass_logs[0]["batch_reason"] == "deterministic_empty_batch_fallback"
     assert any("deterministic fallback request" in str(item).lower() for item in result.warnings)
+
+
+def test_tools_manager_batch_requests_include_flow_id(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+
+    class _Executor:
+        def __init__(self) -> None:
+            self.seen_flow_ids: list[str | None] = []
+
+        def run_batch(self, *, run_id, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            self.seen_flow_ids.extend([req.request.flow_id for req in requests])
+            return [
+                BatchExecutionResult(
+                    request_index=req.request_index,
+                    ok=True,
+                    response={
+                        "answer": "ok",
+                        "sources": [],
+                        "mode": "agent-tools",
+                        "trace": [{"tool_name": "read_file", "status": "ok"}],
+                        "warnings": [],
+                    },
+                )
+                for req in requests
+            ]
+
+    executor = _Executor()
+    orchestrator.executor = executor  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        orchestrator,
+        "_plan_with_source",
+        lambda **_kwargs: (
+            ToolsPlan(
+                objective="Run",
+                steps=[
+                    {
+                        "id": "s1",
+                        "title": "Inspect README",
+                        "tool_intent": "inspect",
+                        "args_hint": "read README.md",
+                        "status": "in_progress",
+                    }
+                ],
+                current_step_id="s1",
+                decision="continue",
+                decision_reason="inspect target file",
+                stop_conditions=["done"],
+                finalize_action="answer",
+            ),
+            [],
+            "planner",
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="inspect",
+                requests=[
+                    {
+                        "question": "Inspect README.md",
+                        "timeout_seconds": 20,
+                    }
+                ],
+                continue_after=False,
+                expected_progress="Inspect target file",
+            ),
+            [],
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())  # type: ignore[method-assign]
+
+    result = orchestrator.run(
+        request="Inspect README",
+        flow_context=None,
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+        flow_id="flow-tools-1",
+    )
+    assert result.passes == 1
+    assert executor.seen_flow_ids == ["flow-tools-1"]
 
 
 def test_tools_manager_invalid_request_batch_terminal_reason(tmp_path: Path, monkeypatch) -> None:
@@ -757,7 +847,9 @@ def test_tools_manager_mixed_batch_failures_are_warnings_not_crash(tmp_path: Pat
     )
     assert result.toolsmanager_requests_count == 2
     assert result.execution_requests_ok == 1
-    assert result.execution_requests_failed == 1
+    assert result.execution_requests_failed >= 1
+    assert result.request_retry_attempts == 1
+    assert result.request_retry_exhausted == 1
     assert any("job_timeout" in str(item) for item in result.warnings)
 
 
@@ -796,3 +888,506 @@ def test_deterministic_fallback_edit_directive_mentions_write_retry_and_change_e
     assert "write_file" in text
     assert "changed_files" in text
     assert "conversational terminal" in text
+
+
+def test_tools_manager_skips_duplicate_request_fingerprints_across_passes(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    orchestrator.coding_memory_service = CodingMemoryService(project_root=tmp_path)
+
+    continue_plan = ToolsPlan(
+        objective="Run",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Inspect",
+                "tool_intent": "inspect",
+                "args_hint": "read files",
+                "success_signal": "done",
+                "fallback": "",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (continue_plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="inspect",
+                requests=[{"question": "Inspect the same files again"}],
+                continue_after=True,
+                expected_progress="inspect",
+            ),
+            [],
+        ),
+    )
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            return [
+                BatchExecutionResult(
+                    request_index=int(req.request_index),
+                    ok=True,
+                    response={"answer": "ok", "sources": [], "mode": "agent-tools", "trace": [], "warnings": []},
+                    backend="local",
+                )
+                for req in requests
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        flow_id="flow-dup-1",
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=2,
+    )
+    assert result.duplicate_request_skips >= 1
+    assert any("duplicate_request_skipped" in str(item) for item in result.warnings)
+
+
+def test_tools_manager_skips_duplicate_semantic_search_across_turns_with_same_flow(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    orchestrator.coding_memory_service = CodingMemoryService(project_root=tmp_path)
+
+    continue_plan = ToolsPlan(
+        objective="Run",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Search",
+                "tool_intent": "search",
+                "args_hint": "semantic search",
+                "success_signal": "done",
+                "fallback": "",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (continue_plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="search",
+                requests=[{"question": "Run semantic_search query=foo k=2"}],
+                continue_after=True,
+                expected_progress="search",
+            ),
+            [],
+        ),
+    )
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, requests, on_event)
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response={
+                        "answer": "ok",
+                        "sources": [],
+                        "mode": "agent-tools",
+                        "trace": [{"tool_name": "semantic_search", "status": "ok", "args_summary": "query=foo k=2"}],
+                        "warnings": [],
+                    },
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    first = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        flow_id="flow-search-1",
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+    assert first.duplicate_semantic_search_skips == 0
+
+    second = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        flow_id="flow-search-1",
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+    assert second.duplicate_semantic_search_skips >= 1
+    assert any("duplicate_semantic_search_skipped" in str(item) for item in second.warnings)
+
+
+def test_tools_manager_duplicate_suppression_forces_deterministic_fallback_request(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    service = CodingMemoryService(project_root=tmp_path)
+    orchestrator.coding_memory_service = service
+
+    continue_plan = ToolsPlan(
+        objective="Run",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Inspect",
+                "tool_intent": "inspect",
+                "args_hint": "",
+                "success_signal": "",
+                "fallback": "",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (continue_plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="inspect",
+                requests=[{"question": "Inspect same file"}],
+                continue_after=True,
+                expected_progress="inspect",
+            ),
+            [],
+        ),
+    )
+
+    fp = orchestrator._fingerprint_request("Inspect same file", {}, 30)
+    service.record_tool_fingerprint(flow_id="flow-dup-2", kind="request_fingerprint", fingerprint=fp)
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            assert len(requests) == 1
+            return [
+                BatchExecutionResult(
+                    request_index=int(requests[0].request_index),
+                    ok=True,
+                    response={"answer": "ok", "sources": [], "mode": "agent-tools", "trace": [], "warnings": []},
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        flow_id="flow-dup-2",
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+    assert result.pass_logs
+    assert result.pass_logs[0]["batch_reason"] == "deterministic_duplicate_suppression_fallback"
+
+
+def test_tools_manager_edit_retry_mode_suppresses_new_search_after_patch_noop(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    orchestrator.coding_memory_service = CodingMemoryService(project_root=tmp_path)
+
+    continue_plan = ToolsPlan(
+        objective="Run",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Edit",
+                "tool_intent": "edit",
+                "args_hint": "",
+                "success_signal": "",
+                "fallback": "",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (continue_plan, [], "planner"))
+    calls = {"n": 0}
+
+    def _build_batch(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return (
+                ToolsManagerBatch(
+                    planner_step_id="s1",
+                    batch_reason="edit",
+                    requests=[{"question": "apply_patch README"}],
+                    continue_after=True,
+                    expected_progress="edit",
+                ),
+                [],
+            )
+        return (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="search",
+                requests=[{"question": "semantic_search README"}],
+                continue_after=True,
+                expected_progress="search",
+            ),
+            [],
+        )
+
+    monkeypatch.setattr(orchestrator, "_build_batch", _build_batch)
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            question = str(requests[0].request.question)
+            if "apply_patch" in question:
+                return [
+                    BatchExecutionResult(
+                        request_index=int(requests[0].request_index),
+                        ok=True,
+                        response={
+                            "answer": "no-op",
+                            "sources": [],
+                            "mode": "agent-tools",
+                            "trace": [
+                                {
+                                    "tool_name": "apply_patch",
+                                    "status": "ok",
+                                    "output_preview": '{"ok": false, "error": "no changes"}',
+                                }
+                            ],
+                            "warnings": [],
+                        },
+                        backend="local",
+                    )
+                ]
+            return [
+                BatchExecutionResult(
+                    request_index=int(requests[0].request_index),
+                    ok=True,
+                    response={"answer": "ok", "sources": [], "mode": "agent-tools", "trace": [], "warnings": []},
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        flow_id="flow-edit-1",
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=2,
+    )
+    assert any("edit_retry_mode_activated" in str(item) for item in result.warnings)
+    assert result.pass_logs
+    assert len(result.pass_logs) >= 2
+    assert bool(result.pass_logs[1].get("edit_retry_mode_active", False)) is True
+
+
+def test_tools_manager_failed_request_retries_once_and_records_signature(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    orchestrator.coding_memory_service = CodingMemoryService(project_root=tmp_path)
+
+    continue_plan = ToolsPlan(
+        objective="Run",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Inspect",
+                "tool_intent": "inspect",
+                "args_hint": "",
+                "success_signal": "",
+                "fallback": "",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (continue_plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="inspect",
+                requests=[{"question": "inspect once"}],
+                continue_after=True,
+                expected_progress="inspect",
+            ),
+            [],
+        ),
+    )
+
+    class _Executor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, requests, on_event)
+            self.calls += 1
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=False,
+                    error_code="job_failed",
+                    error_message=f"boom-{self.calls}",
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        flow_id="flow-retry-1",
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+    assert result.request_retry_attempts == 1
+    assert result.request_retry_exhausted == 1
+    assert any("toolsmanager_request_retry_once" in str(item) for item in result.warnings)
+    assert any("toolsmanager_retry_exhausted_signature=" in str(item) for item in result.warnings)
+
+
+def test_tools_manager_auto_advances_duplicate_planner_task_to_next_step(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    orchestrator.coding_memory_service = CodingMemoryService(project_root=tmp_path)
+
+    continue_plan = ToolsPlan(
+        objective="Run",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Inspect files",
+                "tool_intent": "inspect",
+                "args_hint": "",
+                "success_signal": "",
+                "fallback": "",
+                "status": "in_progress",
+            },
+            {
+                "id": "s2",
+                "title": "Edit files",
+                "tool_intent": "edit",
+                "args_hint": "",
+                "success_signal": "",
+                "fallback": "",
+                "status": "pending",
+            },
+        ],
+        current_step_id="s1",
+        decision="continue",
+        decision_reason="start with inspection",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (continue_plan, [], "planner"))
+
+    def _build_batch(**kwargs):
+        plan = kwargs["plan"]
+        if str(plan.current_step_id) == "s1":
+            return (
+                ToolsManagerBatch(
+                    planner_step_id="s1",
+                    batch_reason="inspect",
+                    requests=[{"question": "Inspect files"}],
+                    continue_after=True,
+                    expected_progress="inspect",
+                ),
+                [],
+            )
+        return (
+            ToolsManagerBatch(
+                planner_step_id="s2",
+                batch_reason="edit",
+                requests=[{"question": "Edit files"}],
+                continue_after=True,
+                expected_progress="edit",
+            ),
+            [],
+        )
+
+    monkeypatch.setattr(orchestrator, "_build_batch", _build_batch)
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            question = str(requests[0].request.question)
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response={
+                        "answer": question,
+                        "sources": [],
+                        "mode": "agent-tools",
+                        "trace": [{"tool_name": "read_file" if "Inspect" in question else "apply_patch", "status": "ok"}],
+                        "warnings": [],
+                    },
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="execute",
+        flow_context=None,
+        flow_id="flow-task-advance",
+        index_dir=tmp_path / ".mana_index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=2,
+    )
+    assert len(result.pass_logs) == 2
+    assert result.pass_logs[0]["planner_step_id"] == "s1"
+    assert result.pass_logs[1]["planner_step_id"] == "s2"
+    assert any("planner_duplicate_task_advanced" in str(item) for item in result.warnings)
