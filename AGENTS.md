@@ -1,60 +1,23 @@
 # Agent Instructions
 
-## Git Diff / Patch Rules
+## Mutation Rules
 
-Use this workflow for creating and applying git patches.
+Use repository mutation tools directly. Do not use `git diff` / `git apply` workflows for code edits.
 
-### Create patch files with `git diff`
+### Preferred edit flow
 
-- Unstaged changes:
-  - `git diff > unstaged-changes.patch`
-- Staged changes:
-  - `git diff --cached > staged-changes.patch`
-- Staged + unstaged:
-  - `git diff HEAD > all-changes.patch`
-- Between two commits:
-  - `git diff <commit1> <commit2> > between-commits.patch`
-- Between branches:
-  - `git diff main..feature-branch > branch-diff.patch`
-- Single path:
-  - `git diff -- path/to/file > file-changes.patch`
+1. Validate intent and target files.
+2. Apply edits with `apply_patch`.
+3. If patch attempts fail or no-op, switch to `write_file` fallback immediately.
+4. Verify real file changes.
+5. Stop with a clear blocker summary if both mutation paths fail.
 
-If commit metadata must be preserved (author/date/message), use
-`git format-patch` and apply with `git am` instead of `git apply`.
+### Required constraints
 
-### Apply patch files with `git apply`
-
-Always run this sequence:
-
-1. Dry run:
-   - `git apply --check patch_file.patch`
-2. Preview scope:
-   - `git apply --stat patch_file.patch`
-3. Apply:
-   - `git apply patch_file.patch`
-4. Review:
-   - `git diff`
-5. Commit:
-   - `git add -A && git commit -m "Apply patch"`
-
-### Common `git apply` options
-
-- `--3way` for three-way merge attempts when context drifted.
-- `--reject` to apply partial hunks and leave `.rej` files.
-- `--whitespace=fix` to auto-fix whitespace issues.
-- `-R` / `--reverse` to undo an already applied patch.
-- `--directory=<dir>` when patch paths are rooted differently.
-- `--exclude=<pattern>` / `--include=<pattern>` for selective apply.
-- `--verbose` for per-file diagnostics.
-- `--fuzz=<n>` for looser context matching.
-
-### `git apply` vs `git am`
-
-- Use `git apply` for `git diff` patches (working tree changes, no commit metadata).
-- Use `git am` for `git format-patch` output (preserves commit metadata).
-- Rule of thumb:
-  - Starts with `From <hash>` => `git am`
-  - Starts with `diff --git` => `git apply`
+- Never rely on `git diff`, `git apply`, or `git format-patch` as the edit path.
+- Keep edits inside repo path constraints and allowed prefixes.
+- Preserve anti-loop behavior: no repeated patch-only loops.
+- Prefer minimal, scoped changes and explicit verification.
 
 ### Anti-loop requirement
 

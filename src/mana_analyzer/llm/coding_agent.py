@@ -51,7 +51,7 @@ Rules:
 - Start with a short execution plan (files to inspect, intended edits, verification).
 - Prefer repository-local tools first (semantic_search/read_file/run_command) before internet lookup.
 - Keep internet search calls minimal; do not repeat near-identical search queries.
-- Prefer apply_patch (unified diff) for edits to existing files.
+- Prefer apply_patch (unified diff payload) for edits to existing files.
 - Use write_file only for new files or when explicitly asked to overwrite.
 - You may modify any file under the repository root when needed for the request.
 - After changes, aim for clean static checks; avoid unused imports and obvious style issues.
@@ -59,7 +59,7 @@ Rules:
 
 PATCH TOOL STRICT FORMAT:
 
-When you call apply_patch, the patch MUST be a git-unified diff that `git apply` accepts.
+When you call apply_patch, the patch MUST be a unified diff payload.
 
 REQUIRED structure:
 - Starts with: diff --git a/<path> b/<path>
@@ -68,18 +68,14 @@ REQUIRED structure:
 - Paths must be repo-relative (no /absolute, no C:\\, no ..)
 
 FORBIDDEN:
-- Do NOT output "*** Begin Patch", "*** Update File", "*** End Patch" (not valid for git apply).
+- Do NOT output "*** Begin Patch", "*** Update File", "*** End Patch" (not accepted by this tool).
 - Do NOT wrap the diff in ``` fences unless asked.
 
 Workflow:
 1) First call apply_patch(check_only=true) with the unified diff.
 2) If ok=true, call apply_patch(check_only=false) with the same diff.
-3) apply_patch internally tries a fallback chain:
-   - git apply
-   - perl fallback applier
-   - python fallback compute
-   - write_file persistence
-4) After each mutation attempt (apply_patch/write_file), verify file-change evidence (changed_files, git status, or diff).
+3) apply_patch uses python compute and can persist via write_file.
+4) After each mutation attempt (apply_patch/write_file), verify file-change evidence (changed_files or updated file content).
 5) If mutation reports success but files did not change, treat as no-op and retry with corrected patch/full content.
 6) If apply_patch still fails twice OR repeated mutation attempts produce no repo changes, STOP patch-only loops and use explicit write_file fallback:
    - read_file the target
