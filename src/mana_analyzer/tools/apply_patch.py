@@ -8,7 +8,7 @@ Key properties:
 - Refuses patches that touch files outside repo_root.
 - Optionally restricts touched paths to allowed prefixes.
 - Applies patch using a deterministic strategy chain:
-  python compute -> write_file persistence.
+  shell (git apply / patch) -> python compute -> write_file persistence.
 - Intended usage: run patch validation (`check_only=true`) first, then apply.
 - NO-DELETE: explicitly blocks patches that delete files (/dev/null targets).
 """
@@ -16,6 +16,8 @@ Key properties:
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional, Sequence
@@ -97,12 +99,14 @@ def _strip_markdown_fences(text: str) -> str:
     This keeps the tool tolerant without changing the semantics of the patch.
     """
     s = text.strip()
-    if not s.startswith("```"):
-        return text
-    lines = s.splitlines()
-    if len(lines) < 2:
-        return text
-    if not lines[-1].strip().startswith("```"):
+    if not s.startswith("
+```"):
+return text
+lines = s.splitlines()
+if len(lines) < 2:
+return text
+if not lines[-1].strip().startswith("
+```"):
         return text
     # drop first and last fence line
     inner = "\n".join(lines[1:-1])
@@ -429,6 +433,45 @@ def _apply_hunks_to_lines(*, base_lines: Sequence[str], hunks: Sequence[_DiffHun
     return True, out, ""
 
 
+def _apply_via_shell(repo_root: Path, diff: str, check_only: bool) -> tuple[bool, str, str]:
+    """
+    Shims OS-level tools (git apply / patch) to apply patches dynamically.
+    """
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".patch", encoding="utf-8") as tmp:
+        tmp.write(diff)
+        tmp_path = tmp.name
+
+    try:
+        # Attempt 1: git apply
+        cmd_git = ["git", "apply", "--ignore-space-change", "--ignore-whitespace"]
+        if check_only:
+            cmd_git.append("--check")
+        cmd_git.append(tmp_path)
+        
+        res_git = subprocess.run(cmd_git, cwd=repo_root, capture_output=True, text=True)
+        if res_git.returncode == 0:
+            return True, "git apply succeeded\n" + res_git.stdout, res_git.stderr
+            
+        # Attempt 2: patch
+        cmd_patch = ["patch", "-p1", "--no-backup-if-mismatch"]
+        if check_only:
+            cmd_patch.append("--dry-run")
+        cmd_patch.extend(["-i", tmp_path])
+        
+        res_patch = subprocess.run(cmd_patch, cwd=repo_root, capture_output=True, text=True)
+        if res_patch.returncode == 0:
+            return True, "patch -p1 succeeded\n" + res_patch.stdout, res_patch.stderr
+            
+        err_msg = (
+            f"Shell tool strategies failed.\n"
+            f"git apply error: {res_git.stderr.strip() or res_git.stdout.strip()}\n"
+            f"patch error: {res_patch.stderr.strip() or res_patch.stdout.strip()}"
+        )
+        return False, "", err_msg
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
 def _compute_python_fallback(
     *,
     repo_root: Path,
@@ -527,7 +570,7 @@ def safe_apply_patch(
 ) -> dict[str, Any]:
     requested_strategy = str(strategy_hint or "auto").strip().lower() or "auto"
     strict_strategy = bool(strict_strategy)
-    supported_strategies = ("auto", "python", "write_file")
+    supported_strategies = ("auto", "shell", "python", "write_file")
     
     if requested_strategy not in supported_strategies:
         return ApplyPatchResult(
@@ -589,11 +632,11 @@ def safe_apply_patch(
             error=err,
         ).to_dict()
 
-    # Parse once; python engine and write_file fallback both rely on this parse.
-    parsed_files, parse_err = _parse_unified_diff_strict(diff)
-
     attempts: list[dict[str, Any]] = []
-    strategy_order = ["python", "write_file"]
+    
+    # Core execution order: we shim shell execution in front so the LLM tools 
+    # run natively if possible, falling back deterministically.
+    strategy_order = ["shell", "python", "write_file"]
     
     if requested_strategy == "auto":
         run_order = list(strategy_order)
@@ -616,9 +659,42 @@ def safe_apply_patch(
         write_idx = run_order.index("write_file")
         run_order.insert(write_idx, "python")
 
+    # 1. Shell OS Tools approach
+    if "shell" in run_order:
+        phase = "check" if check_only else "apply"
+        shell_ok, shell_stdout, shell_stderr = _apply_via_shell(repo_root, diff, check_only)
+        attempts.append(_attempt("shell", phase, shell_ok, shell_stderr if not shell_ok else shell_stdout))
+        
+        if shell_ok:
+            return ApplyPatchResult(
+                ok=True,
+                touched_files=touched_files,
+                check_only=check_only,
+                strategy_requested=requested_strategy,
+                strategy="shell",
+                attempts=attempts,
+                stdout=shell_stdout,
+                stderr=shell_stderr,
+            ).to_dict()
+            
+        elif strict_strategy and requested_strategy == "shell":
+            return ApplyPatchResult(
+                ok=False,
+                touched_files=touched_files,
+                check_only=check_only,
+                strategy_requested=requested_strategy,
+                strategy="shell",
+                attempts=attempts,
+                error=f"Error: strict shell strategy failed.\n{shell_stderr}",
+            ).to_dict()
+
+    # If shell fails, or was skipped, we proceed to parse the diff for python fallback.
+    parsed_files, parse_err = _parse_unified_diff_strict(diff)
+
     computed: dict[str, str] = {}
     python_available = False
 
+    # 2. Deterministic Python compute
     if "python" in run_order:
         python_phase = "check" if check_only else "compute"
         if parse_err:
@@ -682,6 +758,7 @@ def safe_apply_patch(
                     stdout="python fallback check succeeded",
                 ).to_dict()
 
+    # 3. Persistence via Write-file fallback
     if "write_file" in run_order:
         if check_only:
             return ApplyPatchResult(
@@ -795,9 +872,9 @@ def build_apply_patch_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
             "Safely apply a unified diff patch inside the repository. "
             "Refuses absolute paths, traversal, and paths escaping the repository root. "
             "NO-DELETE: blocks patches that delete files. "
-            "Internal strategy chain: python compute -> write_file persistence. "
-            "Optional strategy controls: strategy_hint=auto|python|write_file and strict_strategy=true|false. "
-            "With check_only=true, validation runs through python without writing files. "
+            "Internal strategy chain: shell OS tools -> python compute -> write_file persistence. "
+            "Optional strategy controls: strategy_hint=auto|shell|python|write_file and strict_strategy=true|false. "
+            "With check_only=true, validation runs through tools without writing files. "
             + PATCH_FORMAT_GUIDANCE
         ),
     )

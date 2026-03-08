@@ -10,12 +10,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Literal, Sequence, TypeVar
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 
-from mana_analyzer.llm.prompts import HEAD_TOOLS_PLANNER_PROMPT, TOOLSMANAGER_PROMPT
 from mana_analyzer.llm.tool_worker_process import ToolRunRequest, ToolRunResponse, ToolWorkerClient
 from mana_analyzer.llm.tools_executor import (
     BatchToolRequest,
@@ -110,13 +107,7 @@ class ToolsManagerOrchestrator:
         executor: ToolsExecutor | None = None,
         coding_memory_service: CodingMemoryService | None = None,
     ) -> None:
-        self._llm_config = {
-            "api_key": api_key,
-            "model": model,
-            "base_url": base_url,
-            "temperature": 0.0, # پیش‌فرض برای کارهای فنی
-        }
-        self._setup_llm()
+        _ = (api_key, model, base_url)
         self.worker_client = worker_client
         self.repo_root = repo_root.resolve()
         self.execution_config = execution_config or ToolsExecutionConfig()
@@ -133,22 +124,13 @@ class ToolsManagerOrchestrator:
         self.coding_memory_service = coding_memory_service
 
     def _setup_llm(self) -> None:
-        """مقداردهی کلاینت ChatOpenAI با تنظیمات ذخیره شده."""
-        llm_kwargs: dict[str, Any] = {
-            "api_key": self._llm_config["api_key"],
-            "model": self._llm_config["model"],
-            "temperature": self._llm_config["temperature"],
-        }
-        if self._llm_config["base_url"]:
-            llm_kwargs["base_url"] = self._llm_config["base_url"]
-        
-        self.llm = ChatOpenAI(**llm_kwargs)
+        """Deprecated: tools manager is deterministic and does not use an LLM."""
+        return None
 
     def update_model(self, new_model: str) -> None:
-        """تغییر مدل در زمان اجرا در صورت نیاز (مثلاً برای رفع خطای ۴۰۴)."""
-        logger.info(f"Updating ToolsManagerOrchestrator model to: {new_model}")
-        self._llm_config["model"] = new_model
-        self._setup_llm()
+        """No-op: tools manager has no model dependency."""
+        logger.info("Ignoring model update; ToolsManagerOrchestrator is deterministic-only.")
+        _ = new_model
 
     @retry(
         stop=stop_after_attempt(3),
@@ -161,7 +143,8 @@ class ToolsManagerOrchestrator:
         متد مرکزی برای تمام فراخوانی‌های LLM.
         این متد مجهز به Retry با Exponential Backoff است.
         """
-        return self.llm.invoke(messages)
+        _ = messages
+        raise RuntimeError("ToolsManagerOrchestrator no longer supports LLM calls")
 
     @staticmethod
     def _strip_code_fence(raw: str) -> str:
@@ -613,13 +596,8 @@ class ToolsManagerOrchestrator:
                 raise ValueError(f"request[{idx}] question must not be empty")
 
     def _invoke_model(self, *, system_prompt: str, human_prompt: str) -> str:
-        response = self._call_llm_with_retry(
-            [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=human_prompt),
-            ]
-        )
-        return str(getattr(response, "content", "") or "").strip()
+        _ = (system_prompt, human_prompt)
+        raise RuntimeError("ToolsManagerOrchestrator no longer supports model invocation")
 
     def _plan(
         self,

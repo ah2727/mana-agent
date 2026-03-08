@@ -43,52 +43,21 @@ from mana_analyzer.tools import build_apply_patch_tool, build_write_file_tool
 
 logger = logging.getLogger(__name__)
 
-CODING_SYSTEM_PROMPT = (
-    """\
-You are a coding agent operating inside a repository.
 
-Rules:
-- Start with a short execution plan (files to inspect, intended edits, verification).
-- Prefer repository-local tools first (semantic_search/read_file/run_command) before internet lookup.
-- Keep internet search calls minimal; do not repeat near-identical search queries.
-- Prefer apply_patch (unified diff payload) for edits to existing files.
-- Use write_file only for new files or when explicitly asked to overwrite.
-- You may modify any file under the repository root when needed for the request.
-- After changes, aim for clean static checks; avoid unused imports and obvious style issues.
-- When you create new public functions/classes, add docstrings and type hints.
+CODING_SYSTEM_PROMPT = """\
+You are an expert Coding Orchestrator Agent.
+Your primary role is to analyze requests, formulate a plan, and select the right tools for the job.
 
-PATCH TOOL STRICT FORMAT:
+## ORCHESTRATION & TOOL EXECUTION POLICY
+1. Core Decision Maker: You are the high-level planner. Decide WHAT needs to be done and output the complete tool calls required for the current step.
+2. Do Not Micromanage: The underlying ToolsManager is highly robust. If you request an `apply_patch` with strategy "auto", the ToolsManager will automatically attempt native shell commands (Git/patch), Python computation, and direct file writes.
+3. Trust the Fallbacks: DO NOT attempt to manually retry a failed file operation unless the tool explicitly reports a total, unrecoverable failure. 
+4. Batch Processing: Whenever possible, yield all parallel tool intents in a single response to minimize execution round-trips.
 
-When you call apply_patch, the patch MUST be a unified diff payload.
-
-REQUIRED structure:
-- Starts with: diff --git a/<path> b/<path>
-- Includes: --- a/<path> and +++ b/<path>
-- Includes at least one @@ hunk with context lines.
-- Paths must be repo-relative (no /absolute, no C:\\, no ..)
-
-FORBIDDEN:
-- Do NOT output "*** Begin Patch", "*** Update File", "*** End Patch" (not accepted by this tool).
-- Do NOT wrap the diff in ``` fences unless asked.
-
-Workflow:
-1) First call apply_patch(check_only=true) with the unified diff.
-2) If ok=true, call apply_patch(check_only=false) with the same diff.
-3) apply_patch uses python compute and can persist via write_file.
-4) After each mutation attempt (apply_patch/write_file), verify file-change evidence (changed_files or updated file content).
-5) If mutation reports success but files did not change, treat as no-op and retry with corrected patch/full content.
-6) If apply_patch still fails twice OR repeated mutation attempts produce no repo changes, STOP patch-only loops and use explicit write_file fallback:
-   - read_file the target
-   - generate full updated file content
-   - write_file in chunks with part_index, then finalize=true
-7) Keep retries bounded by anti-loop policy; if no-op persists after bounded retries, return blocked status with concrete reason.
-8) If user intent is an edit and you already know the target file/content change, execute the mutation in this turn and do not emit "if you want me to proceed" style confirmation text.
-
+## APPLY_PATCH RULES
+When modifying existing files, prefer the `apply_patch` tool.
+Always use `strategy_hint="auto"` unless you specifically know a file requires a complete overwrite, in which case you may use `write_file`.
 """
-    .strip()
-    + "\n\n"
-    + CODING_AGENT_LANGUAGE_TOOLING_PROMPT
-)
 
 
 class FlowStep(BaseModel):
@@ -551,14 +520,18 @@ class CodingAgent:
             ]
         )
         
-    def set_tools_manager_orchestrator(self, orchestrator: ToolsManagerOrchestrator | None) -> None:
-        self.tools_manager_orchestrator = orchestrator
-        if (
-            orchestrator is not None
-            and getattr(orchestrator, "coding_memory_service", None) is None
-            and self.coding_memory_service is not None
-        ):
-            orchestrator.coding_memory_service = self.coding_memory_service
+    def set_tools_manager_orchestrator(self, manager: 'ToolsManager'):
+        """
+        Bind the ToolsManager to the Core LLM Orchestrator.
+        """
+        self.tools_manager = manager
+        
+        # Configure the manager to use silent internal retries
+        # This prevents the LLM from being called multiple times for the same step
+        self.tools_manager.enable_internal_retries = True 
+        
+        # Enforce the new auto-shim strategy by default
+        self.tools_manager.default_patch_strategy = "auto"
 
     @staticmethod
     def _normalize_prechecklist(checklist: FlowChecklist, *, source: str) -> dict[str, Any]:
