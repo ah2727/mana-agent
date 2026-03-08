@@ -99,14 +99,12 @@ def _strip_markdown_fences(text: str) -> str:
     This keeps the tool tolerant without changing the semantics of the patch.
     """
     s = text.strip()
-    if not s.startswith("
-```"):
-return text
-lines = s.splitlines()
-if len(lines) < 2:
-return text
-if not lines[-1].strip().startswith("
-```"):
+    if not s.startswith("```"):
+        return text
+    lines = s.splitlines()
+    if len(lines) < 2:
+        return text
+    if lines[-1].strip() != "```":
         return text
     # drop first and last fence line
     inner = "\n".join(lines[1:-1])

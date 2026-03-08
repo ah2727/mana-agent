@@ -54,6 +54,10 @@ class ToolsManagerRequest(BaseModel):
     question: str
     tool_policy_override: dict[str, Any] | None = None
     timeout_seconds: int | None = None
+    tool_name: str = ""
+    tool_args: dict[str, Any] = Field(default_factory=dict)
+    mutating: bool = False
+    strategy_hint: str = ""
 
 
 class ToolsManagerBatch(BaseModel):
@@ -126,6 +130,39 @@ class ToolsManagerOrchestrator:
     def _setup_llm(self) -> None:
         """Deprecated: tools manager is deterministic and does not use an LLM."""
         return None
+
+    @staticmethod
+    def _normalize_request(req: ToolsManagerRequest) -> ToolsManagerRequest:
+        normalized_tool_name = str(req.tool_name or "").strip()
+        normalized_tool_args = dict(req.tool_args or {})
+        normalized_strategy = str(req.strategy_hint or "").strip().lower()
+        if normalized_tool_name and not req.question:
+            inferred = f"run tool {normalized_tool_name}"
+        else:
+            inferred = str(req.question or "")
+        return ToolsManagerRequest(
+            question=inferred,
+            tool_policy_override=dict(req.tool_policy_override or {}),
+            timeout_seconds=req.timeout_seconds,
+            tool_name=normalized_tool_name,
+            tool_args=normalized_tool_args,
+            mutating=bool(req.mutating),
+            strategy_hint=normalized_strategy,
+        )
+
+    @staticmethod
+    def _should_force_write_fallback(
+        *,
+        request: ToolsManagerRequest,
+        patch_attempts: int,
+        saw_no_change: bool,
+        failed: bool,
+    ) -> bool:
+        if str(request.tool_name or "") != "apply_patch":
+            return False
+        if str(request.strategy_hint or "") not in ("", "auto"):
+            return False
+        return failed or saw_no_change or patch_attempts >= 2
 
     def update_model(self, new_model: str) -> None:
         """No-op: tools manager has no model dependency."""
