@@ -9,6 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+# افزودن کتابخانه‌های مورد نیاز برای Retry
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field, ValidationError
@@ -72,7 +74,7 @@ class WorkerEvent(BaseModel):
 
 
 class WorkerEnvelope(BaseModel):
-    type: Literal["init", "run_tools", "health", "shutdown"]
+    type: Literal["init", "run_tools", "health", "shutdown", "update_model"]
     request_id: str
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -119,6 +121,18 @@ class ToolWorkerClient:
     def init_payload_dict(self) -> dict[str, Any]:
         return self._init_payload.model_dump()
 
+    def update_model(self, model_name: str) -> None:
+        """Update the model name and sync with the worker process."""
+        self._init_payload.model = model_name
+        if self._proc and self._proc.poll() is None:
+            try:
+                # سعی برای آپدیت درجا
+                self._request("update_model", {"model": model_name}, expect_event=False)
+                logger.info(f"Worker model updated to {model_name} in-place.")
+            except Exception:
+                logger.warning("Failed to update worker model in-place, restarting worker.")
+                self._restart()
+
     def start(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
@@ -153,6 +167,13 @@ class ToolWorkerClient:
         self.start()
         return self._request("health", {}, expect_event=False)
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((ToolWorkerProcessError, IOError)),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True
+    )
     def run_tools(
         self,
         request: ToolRunRequest,
@@ -164,8 +185,10 @@ class ToolWorkerClient:
             payload = self._request("run_tools", request.model_dump(), expect_event=False, on_event=on_event)
         except ToolWorkerProcessError as exc:
             if self._can_retry(exc):
+                logger.warning(f"Retrying run_tools due to worker error: {exc.code}. Message: {exc}")
                 self._restart()
-                payload = self._request("run_tools", request.model_dump(), expect_event=False, on_event=on_event)
+                # پرتاب مجدد خطا برای اینکه دکوراتور retry آن را بگیرد و دوباره تلاش کند
+                raise
             else:
                 raise
         return ToolRunResponse.model_validate(payload)
@@ -175,7 +198,8 @@ class ToolWorkerClient:
             return False
         if exc.retriable:
             return True
-        return exc.code in {"worker_io_error", "worker_dead"}
+        # اگر مدل پیدا نشد یا خطای IO بود، اجازه ریترای بده
+        return exc.code in {"worker_io_error", "worker_dead", "model_not_found", "init_failed"}
 
     def _restart(self) -> None:
         self.stop()
@@ -288,6 +312,12 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
     return ask_agent
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True
+)
 def _run_tool_request(
     *,
     ask_agent: AskAgent,
@@ -435,6 +465,9 @@ class _ToolWorkerServer:
             if env.type == "init":
                 self._handle_init(env)
                 continue
+            if env.type == "update_model":
+                self._handle_update_model(env)
+                continue
             if env.type == "health":
                 self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"status": "ok"}))
                 continue
@@ -467,10 +500,29 @@ class _ToolWorkerServer:
                     payload=WorkerError(
                         code="init_failed",
                         message=str(exc),
-                        retriable=False,
+                        retriable=True, # اجازه ریترای برای خطاهای احتمالی شبکه در زمان اینیت
                     ).model_dump(),
                 )
             )
+
+    def _handle_update_model(self, env: WorkerEnvelope) -> None:
+        """Dynamically update the model name of the active AskAgent."""
+        if self._ask_agent is None:
+            self._emit(WorkerReply(type="error", request_id=env.request_id, 
+                                 payload=WorkerError(code="not_initialized", message="worker not initialized").model_dump()))
+            return
+        
+        new_model = env.payload.get("model")
+        if new_model:
+            try:
+                self._ask_agent.model = new_model
+                # اگر متد آپدیت در AskAgent پیاده‌سازی شده باشد
+                if hasattr(self._ask_agent, "update_model"):
+                    self._ask_agent.update_model(new_model)
+                self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"status": "updated", "model": new_model}))
+            except Exception as exc:
+                self._emit(WorkerReply(type="error", request_id=env.request_id, 
+                                     payload=WorkerError(code="update_failed", message=str(exc)).model_dump()))
 
     def _handle_run_tools(self, env: WorkerEnvelope) -> None:
         if self._ask_agent is None:
@@ -510,12 +562,18 @@ class _ToolWorkerServer:
                 )
             )
         except Exception as exc:
+            # تشخیص هوشمند خطای مدل نامعتبر (404)
+            code = "run_failed"
+            err_msg = str(exc).lower()
+            if "model_not_found" in err_msg or "404" in err_msg or "not found" in err_msg:
+                code = "model_not_found"
+                
             self._emit(
                 WorkerReply(
                     type="error",
                     request_id=env.request_id,
                     payload=WorkerError(
-                        code="run_failed",
+                        code=code,
                         message=str(exc),
                         retriable=True,
                     ).model_dump(),

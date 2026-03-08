@@ -545,8 +545,8 @@ class AskAgent:
                     output_preview = encoded
                     return encoded
 
-                stat = resolved.stat()
                 content_text = resolved.read_text(encoding="utf-8")
+                stat = resolved.stat()
                 lines = content_text.splitlines()
                 line_count = len(lines)
                 char_count = len(content_text)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -63,6 +63,10 @@ class AnalyzeChain:
         if column < 0:
             column = 0
 
+        # Extract architecture_summary and technology_summary from raw_finding if present
+        architecture_summary = str(item.get("architecture_summary", "")).strip()
+        technology_summary = str(item.get("technology_summary", "")).strip()
+
         return Finding(
             rule_id=rule_id,
             severity=severity,
@@ -70,19 +74,44 @@ class AnalyzeChain:
             file_path=file_path,
             line=line,
             column=column,
+            architecture_summary=architecture_summary,
+            technology_summary=technology_summary,
         )
 
     def run(self, file_path: str, source: str, static_findings: list[Finding]) -> list[Finding]:
         logger.info("Invoking LLM analyzer for %s", file_path)
         chain = self.prompt | self.llm
         started = perf_counter()
-        response = chain.invoke(
-            {
-                "file_path": file_path,
-                "source": source,
-                "static_findings": json.dumps([item.to_dict() for item in static_findings]),
-            }
-        )
+        
+        # --- ADDED: 100 retries with exponential backoff ---
+        max_retries = 100
+        base_delay = 1.0  # seconds
+        max_delay = 60.0  # cap the delay so it doesn't sleep forever on high attempts
+        
+        for attempt in range(max_retries + 1):
+            try:
+                response = chain.invoke(
+                    {
+                        "file_path": file_path,
+                        "source": source,
+                        "static_findings": json.dumps([item.to_dict() for item in static_findings]),
+                    }
+                )
+                break  # If successful, break out of the retry loop
+            except Exception as e:
+                if attempt == max_retries:
+                    logger.error("Failed to invoke LLM for %s after %d attempts: %s", file_path, max_retries, e)
+                    raise  # Re-raise the exception if we've exhausted all 100 retries
+                
+                # Calculate exponential backoff: base_delay * (2 ^ attempt)
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                logger.warning(
+                    "Error invoking LLM for %s: %s. Retrying in %.2fs (attempt %d/%d)...", 
+                    file_path, e, delay, attempt + 1, max_retries
+                )
+                sleep(delay)
+        # --- END ADDED RETRY LOGIC ---
+
         elapsed_ms = (perf_counter() - started) * 1000
         text = str(response.content).strip()
         findings: list[Finding] = []

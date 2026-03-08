@@ -41,6 +41,8 @@ class Finding:
     file_path: str
     line: int
     column: int
+    architecture_summary: str = ""
+    technology_summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

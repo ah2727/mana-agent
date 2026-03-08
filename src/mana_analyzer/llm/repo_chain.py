@@ -9,6 +9,13 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from mana_analyzer.llm.prompts import DEEP_FLOW_SYSTEM_PROMPT, DEEP_FLOW_HUMAN_TEMPLATE
 from langchain_openai import ChatOpenAI
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
 
 from mana_analyzer.llm.run_logger import LlmRunLogger
 
@@ -61,18 +68,31 @@ class RepositoryMultiChain:
     _MAX_SUMMARY_CHARS = 700
 
     def __init__(self, api_key: str, model: str, base_url: str | None = None) -> None:
-        kwargs: dict[str, Any] = {"api_key": api_key, "model": model}
-        if base_url:
-            kwargs["base_url"] = base_url
-        self.llm = ChatOpenAI(**kwargs)
-        self.run_logger = LlmRunLogger()
+        self.api_key = api_key
+        self.base_url = base_url
         self.model = model
+        self.llm = self._create_llm(model)
+        self.run_logger = LlmRunLogger()
 
         self.file_summary_prompt = ChatPromptTemplate.from_messages(
             [("system", FILE_SUMMARY_SYSTEM), ("human", FILE_SUMMARY_HUMAN)]
         )
         self.arch_prompt = ChatPromptTemplate.from_messages([( "system", ARCH_SYSTEM), ("human", ARCH_HUMAN)])
         self.tech_prompt = ChatPromptTemplate.from_messages([( "system", TECH_SYSTEM), ("human", TECH_HUMAN)])
+
+    def _create_llm(self, model_name: str) -> ChatOpenAI:
+        """Helper to instantiate or recreate the LLM object."""
+        kwargs: dict[str, Any] = {"api_key": self.api_key, "model": model_name}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        return ChatOpenAI(**kwargs)
+
+    def update_model(self, new_model: str):
+        """Allows switching the model at runtime (e.g., if the current one 404s)."""
+        if self.model != new_model:
+            logger.info(f"Updating RepositoryMultiChain model from {self.model} to {new_model}")
+            self.model = new_model
+            self.llm = self._create_llm(new_model)
 
     @staticmethod
     def _safe_json(text: str) -> dict[str, Any]:
@@ -143,6 +163,12 @@ class RepositoryMultiChain:
             )
         return compact
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(Exception),
+        before_sleep=before_sleep_log(logger, logging.WARNING)
+    )
     def summarize_file(self, file_path: Path, language: str, source: str) -> tuple[str, list[str]]:
         chain = self.file_summary_prompt | self.llm
         started = perf_counter()
@@ -163,7 +189,12 @@ class RepositoryMultiChain:
         )
         return summary, symbols
 
-
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(Exception),
+        before_sleep=before_sleep_log(logger, logging.WARNING)
+    )
     def synthesize_deep_flow_analysis(
         self,
         *,
@@ -184,8 +215,6 @@ class RepositoryMultiChain:
         )
 
         # -------- COMPACT EVERYTHING --------
-
-        # 1) dependency report
         if hasattr(dependency_report, "to_dict"):
             dep = dependency_report.to_dict()
         else:
@@ -193,41 +222,33 @@ class RepositoryMultiChain:
 
         dep = self._compact_dependency_report(dep)
 
-        # 2) structure summary (VERY IMPORTANT)
         compact_structure = {
             "total_files": structure_summary.get("total_files"),
             "language_counts": structure_summary.get("language_counts"),
             "hotspots": structure_summary.get("hotspots", [])[:15],
-            # 🔥 truncate tree aggressively
             "tree_markdown": self._truncate(
                 structure_summary.get("tree_markdown", ""),
-                6000,  # ← مهم: اینو پایین نگه دار
+                6000,
             ),
         }
 
-        # 3) findings summary (limit rule list)
         compact_findings = {
             "counts": findings_summary.get("counts"),
             "top_rules": findings_summary.get("top_rules", [])[:20],
             "by_severity": findings_summary.get("by_severity"),
         }
 
-        # 4) security summary (limit vulnerabilities)
         compact_security = security_summary
         if isinstance(security_summary, dict):
             compact_security = dict(security_summary)
-            # اگر لیست vulnerability داره، truncate کن
             for key in list(compact_security.keys()):
                 if isinstance(compact_security[key], list):
                     compact_security[key] = compact_security[key][:50]
 
-        # 5) sampled file summaries
         compact_files = self._compact_file_summaries(sampled_file_summaries)
 
         # -------------------------------------
-
         chain = prompt | self.llm
-
         response = chain.invoke(
             {
                 "security_lens": security_lens,
@@ -242,6 +263,12 @@ class RepositoryMultiChain:
 
         return str(response.content).strip()
     
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(Exception),
+        before_sleep=before_sleep_log(logger, logging.WARNING)
+    )
     def synthesize_architecture(self, dependency_report: dict[str, Any], file_summaries: list[dict[str, Any]]) -> tuple[str, str]:
         compact_dependency_report = self._compact_dependency_report(dependency_report)
         compact_file_summaries = self._compact_file_summaries(file_summaries)
@@ -268,6 +295,12 @@ class RepositoryMultiChain:
         )
         return architecture, tech
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(Exception),
+        before_sleep=before_sleep_log(logger, logging.WARNING)
+    )
     def detect_frameworks_from_samples(self, samples: list[dict[str, str]]) -> list[str]:
         if not samples:
             return []

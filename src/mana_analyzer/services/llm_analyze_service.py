@@ -34,6 +34,11 @@ class LlmAnalyzeService:
         else:
             ranked = sorted(files, key=str)
         return ranked[:max_files]
+    
+    def _replace_quotes_with_backticks(text):
+        if not isinstance(text, str):
+            return text
+        return text.replace('"', '`')
 
     @staticmethod
     def _dedupe_findings(findings: list[Finding]) -> list[Finding]:
@@ -75,7 +80,7 @@ class LlmAnalyzeService:
         for file_path in selected_files:
             file_start = perf_counter()
             try:
-                source = file_path.read_text(encoding="utf-8")
+                source = file_path.read_text(encoding="utf-8").replace('"', '\\"')
             except OSError:
                 logger.warning("Failed reading file for LLM analysis: %s", file_path)
                 continue

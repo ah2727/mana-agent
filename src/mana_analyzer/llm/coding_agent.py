@@ -9,7 +9,7 @@ Coding agent wrapper with:
 """
 
 from __future__ import annotations
-
+from tenacity import retry, stop_after_attempt, wait_exponential
 import ast
 import dataclasses
 import inspect
@@ -489,7 +489,7 @@ class CodingAgent:
         }
         if base_url:
             planner_kwargs["base_url"] = base_url
-        self.planner_llm = ChatOpenAI(**planner_kwargs)
+        self._setup_planner()
 
         self.ask_agent.tools.extend(
             [
@@ -498,6 +498,63 @@ class CodingAgent:
             ]
         )
 
+    def update_model(self, model_name: str):
+        """قابلیت تغییر مدل در زمان اجرا"""
+        if hasattr(self, "ask_agent"):
+            self.ask_agent.model = model_name
+        
+        # بازنشانی Planner با مدل جدید
+        self._setup_planner()
+        logger.info(f"Planner model updated to: {model_name}")
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        reraise=True
+    )
+    def _setup_planner(self):
+        """تنظیم و مقداردهی اولیه LLM با قابلیت Retry"""
+        try:
+            # استفاده از مدل موجود در ask_agent یا مقدار پیش‌فرض
+            current_model = str(getattr(self.ask_agent, "model", "gpt-4o"))
+            
+            planner_kwargs = {
+                "api_key": self.api_key, # فرض بر این است که self.api_key در کلاس موجود است
+                "model": current_model,
+            }
+            
+            if hasattr(self, "base_url") and self.base_url:
+                planner_kwargs["base_url"] = self.base_url
+                
+            self.planner_llm = ChatOpenAI(**planner_kwargs)
+            
+            # یک تست کوچک برای اطمینان از صحت مدل (اختیاری)
+            # self.planner_llm.predict("health check") 
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize planner with model {current_model}: {e}")
+            # اگر خطا مربوط به پیدا نشدن مدل بود، اینجا می‌توان منطق تغییر مدل خودکار را هم اضافه کرد
+            raise e
+
+    def initialize_components(self):
+        """متدی که کد اصلی شما را اجرا می‌کند"""
+        # فراخوانی متد با قابلیت Retry
+        self._setup_planner()
+
+        # افزودن ابزارها به ask_agent
+        self.ask_agent.tools.extend(
+            [
+                build_write_file_tool(
+                    repo_root=self.repo_root, 
+                    allowed_prefixes=self.allowed_prefixes
+                ),
+                build_apply_patch_tool(
+                    repo_root=self.repo_root, 
+                    allowed_prefixes=self.allowed_prefixes
+                ),
+            ]
+        )
+        
     def set_tools_manager_orchestrator(self, orchestrator: ToolsManagerOrchestrator | None) -> None:
         self.tools_manager_orchestrator = orchestrator
         if (

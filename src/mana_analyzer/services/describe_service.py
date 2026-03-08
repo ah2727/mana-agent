@@ -27,7 +27,7 @@ class DescribeService:
     def __init__(self, dependency_service: DependencyService, llm_chain: RepositoryMultiChain | None = None) -> None:
         self.dependency_service = dependency_service
         self.llm_chain = llm_chain
-
+        
     @staticmethod
     def _language_from_suffix(path: Path) -> str:
         language = language_for_path(path)
@@ -397,11 +397,23 @@ class DescribeService:
         use_cache: bool = True,
         return_structured: bool = True,
     ) -> DescribeReport:
-        _ = model_override
+        if model_override and self.llm_chain:
+            self.llm_chain.update_model(model_override)
         started = perf_counter()
         root = Path(target_path).resolve()
-        if root.is_file():
-            root = root.parent
+        if root.is_file(): root = root.parent
+
+        dependency_report = self.dependency_service.analyze(root)
+        selected = self._select_files(root, dependency_report, max_files, include_patterns, exclude_patterns, modified_since)
+        
+        cache = self._load_cache(root) if use_cache else {}
+        cached_files = cache.get("files", {})
+
+        descriptions: list[CodeDescription] = []
+        cache_updates: dict[str, Any] = {}
+
+        source_by_file = {p: p.read_text(errors="ignore") for p in selected}
+
 
         if modified_since and modified_since.tzinfo is None:
             modified_since = modified_since.replace(tzinfo=timezone.utc)
@@ -438,12 +450,11 @@ class DescribeService:
             relative = str(file_path.relative_to(root))
             source = source_by_file.get(file_path, "")
             language = self._language_from_suffix(file_path)
-            symbols, symbol_docs = self._heuristic_symbols(file_path, source, include_functions=include_functions)
-            entrypoint = self._is_entrypoint(file_path, source)
-
+            symbols, symbol_docs = self._heuristic_symbols(file_path, source, include_functions)
             mtime = self._safe_mtime(file_path)
+
             cached = cached_files.get(relative)
-            if use_cache and isinstance(cached, dict) and cached.get("mtime") == mtime:
+            if use_cache and relative in cached_files and cached_files[relative].get("mtime") == mtime:
                 descriptions.append(
                     CodeDescription(
                         file_path=relative,
@@ -459,46 +470,20 @@ class DescribeService:
                 continue
 
             merged_symbols = symbols
-            summary = self._local_summary(file_path, source, language, symbols, entrypoint)
+            summary, llm_symbols, ok = "", [], False
 
-            if use_llm and self.llm_chain is not None and language != "text":
-                anchors = self._extract_anchor_lines(file_path, source, include_docstrings=include_docstrings)
-                llm_attempts += 1
+            if use_llm and self.llm_chain and language != "text":
+                anchors = self._extract_anchor_lines(file_path, source, include_docstrings)
                 try:
-                    llm_summary, llm_symbols, ok = self._summarize_with_llm(
-                        file_path=file_path,
-                        language=language,
-                        source=source,
-                        anchors=anchors,
-                    )
-                    if ok and llm_summary.strip():
-                        summary = llm_summary
-                        merged_symbols = sorted(set(symbols) | set(llm_symbols))
-                except Exception:
-                    llm_failures += 1
-                    logger.exception(
-                        "LLM file summarization failed; falling back to local summary",
-                        extra={"file_path": relative, "language": language},
-                    )
+                    summary, llm_symbols, ok = self._summarize_with_llm(file_path=file_path, language=language, source=source, anchors=anchors)
+                except Exception as e:
+                    logger.error(f"Failed after retries: {e}")
+                    summary = f"Local summary due to LLM error."
+            
+            desc = CodeDescription(file_path=relative, language=language, symbols=llm_symbols or symbols, summary=summary, entrypoint=False, symbol_docs={})
+            descriptions.append(desc)
+            cache_updates[relative] = {"mtime": mtime, "summary": summary, "symbols": llm_symbols or symbols}
 
-            description = CodeDescription(
-                file_path=relative,
-                language=language,
-                symbols=merged_symbols,
-                summary=summary,
-                entrypoint=entrypoint,
-                symbol_docs=(symbol_docs if include_docstrings else {}),
-            )
-            descriptions.append(description)
-
-            cache_updates[relative] = {
-                "mtime": mtime,
-                "language": language,
-                "symbols": merged_symbols,
-                "summary": summary,
-                "entrypoint": entrypoint,
-                "symbol_docs": description.symbol_docs,
-            }
 
         if use_cache:
             self._save_cache(root, {"version": 2, "generated_at": datetime.now(timezone.utc).isoformat(), "files": cache_updates})
@@ -557,7 +542,7 @@ class DescribeService:
 
         return DescribeReport(
             project_root=str(root),
-            selected_files=[str(item.relative_to(root)) for item in selected],
+            selected_files=[str(f) for f in selected],
             descriptions=descriptions,
             architecture_summary=architecture_summary,
             tech_summary=tech_summary,
@@ -566,6 +551,7 @@ class DescribeService:
             architecture_data=architecture_data,
             metrics=metrics,
         )
+
 
     @staticmethod
     def render_markdown(report: DescribeReport) -> str:
