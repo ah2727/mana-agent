@@ -15,6 +15,7 @@ def test_apply_patch_tool_accepts_patch_alias(monkeypatch, tmp_path: Path) -> No
         diff: str,
         allowed_prefixes,
         check_only: bool,
+        **_kwargs: object,
     ) -> dict:
         captured["repo_root"] = repo_root
         captured["diff"] = diff

@@ -631,13 +631,15 @@ def safe_apply_patch(
         ).to_dict()
 
     attempts: list[dict[str, Any]] = []
-    
-    # Core execution order: we shim shell execution in front so the LLM tools 
-    # run natively if possible, falling back deterministically.
+
+    # Supported strategy ordering for explicit hints includes shell.
+    # The default "auto" order is python -> write_file (deterministic, no subprocess).
+    # Shell is only used when explicitly requested via strategy_hint.
     strategy_order = ["shell", "python", "write_file"]
-    
+    auto_order = ["python", "write_file"]
+
     if requested_strategy == "auto":
-        run_order = list(strategy_order)
+        run_order = list(auto_order)
     else:
         start = strategy_order.index(requested_strategy)
         run_order = [requested_strategy] if strict_strategy else strategy_order[start:]
@@ -700,6 +702,18 @@ def safe_apply_patch(
             py_detail = f"Parser error: {parse_err}"
             attempts.append(_attempt("python", python_phase, py_ok, py_detail))
             python_available = False
+            # Unsupported diff features (rename/copy/binary/mode-only) cannot be
+            # handled by any fallback strategy; return immediately with the parse error.
+            if "unsupported diff feature" in parse_err.lower():
+                return ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    check_only=check_only,
+                    strategy_requested=requested_strategy,
+                    strategy="python",
+                    attempts=attempts,
+                    error=parse_err,
+                ).to_dict()
             if strict_strategy and requested_strategy == "python":
                 return ApplyPatchResult(
                     ok=False,

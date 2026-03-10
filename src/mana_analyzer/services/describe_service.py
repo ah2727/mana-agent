@@ -542,7 +542,7 @@ class DescribeService:
 
         return DescribeReport(
             project_root=str(root),
-            selected_files=[str(f) for f in selected],
+            selected_files=[str(f.relative_to(root)) for f in selected],
             descriptions=descriptions,
             architecture_summary=architecture_summary,
             tech_summary=tech_summary,

@@ -129,6 +129,133 @@ class ToolsManagerDecisionProvider(Protocol):
         ...
 
 
+
+class _InternalDecisionProvider:
+    """Fallback decision provider that uses the orchestrator's _invoke_model directly.
+
+    This is used when no external decision provider is attached (e.g. in tests
+    that build the orchestrator with object.__new__ and monkeypatch _invoke_model).
+    """
+
+    def __init__(self, orchestrator: "ToolsManagerOrchestrator") -> None:
+        self._orchestrator = orchestrator
+
+    def plan_with_source(
+        self,
+        *,
+        request: str,
+        flow_context: str | None,
+        pass_index: int = 0,
+        pass_cap: int = 4,
+        previous_plan: "ToolsPlan | None" = None,
+        pass_logs: "Sequence[dict[str, Any]]" = (),
+        warnings: "Sequence[str]" = (),
+        changed_files: "Sequence[str]" = (),
+        latest_answer: str = "",
+    ) -> "tuple[ToolsPlan, list[str], str]":
+        import json as _json
+        issues: list[str] = []
+        payload = {
+            "request": request,
+            "flow_context": (flow_context or "none").strip(),
+            "pass_index": int(pass_index),
+            "pass_cap": int(pass_cap),
+            "previous_plan": previous_plan.model_dump() if previous_plan is not None else None,
+            "pass_logs": list(pass_logs)[-4:],
+            "warnings": list(warnings)[-12:],
+            "changed_files": list(changed_files),
+            "latest_answer": str(latest_answer or "")[:1500],
+        }
+        human_prompt = _json.dumps(payload, ensure_ascii=False, indent=2)
+        raw = self._orchestrator._invoke_model(
+            system_prompt="tools_planner",
+            human_prompt=human_prompt,
+        )
+        parsed = self._orchestrator.parse_tools_plan(raw, request=request, previous_plan=previous_plan)
+        if parsed is not None:
+            return parsed, issues, "planner"
+
+        issues.append("head_tools_planner parse failed; attempting repair")
+        repair_raw = self._orchestrator._invoke_model(
+            system_prompt="tools_planner_repair",
+            human_prompt=(
+                "Repair this planner output to strict JSON schema.\n"
+                "Do not add markdown. Return only one JSON object.\n\n"
+                f"Broken output:\n{raw}\n\n"
+                f"Execution payload:\n{human_prompt}"
+            ),
+        )
+        repaired = self._orchestrator.parse_repair(
+            repair_raw, "plan", request=request, previous_plan=previous_plan
+        )
+        if isinstance(repaired, ToolsPlan):
+            return repaired, issues, "planner_repair"
+
+        issues.append("head_tools_planner repair failed; using deterministic fallback")
+        fallback = self._orchestrator._deterministic_fallback_plan(
+            request=request,
+            flow_context=flow_context,
+            previous_plan=previous_plan,
+            reason="planner_parse_failed",
+        )
+        return fallback, issues, "deterministic_fallback"
+
+    def build_batch(
+        self,
+        *,
+        request: str,
+        flow_context: str | None,
+        plan: "ToolsPlan",
+        pass_index: int,
+        pass_cap: int,
+        pass_logs: "Sequence[dict[str, Any]]" = (),
+        warnings: "Sequence[str]" = (),
+        changed_files: "Sequence[str]" = (),
+        latest_answer: str = "",
+    ) -> "tuple[ToolsManagerBatch | None, list[str]]":
+        import json as _json
+        issues: list[str] = []
+        payload = {
+            "request": request,
+            "flow_context": (flow_context or "").strip(),
+            "planner": plan.model_dump(),
+            "pass_index": int(pass_index),
+            "pass_cap": int(pass_cap),
+            "pass_logs": list(pass_logs)[-4:],
+            "warnings": list(warnings)[-10:],
+            "changed_files": list(changed_files),
+            "latest_answer": str(latest_answer or "")[:1500],
+        }
+        human_prompt = _json.dumps(payload, ensure_ascii=False, indent=2)
+        raw = self._orchestrator._invoke_model(
+            system_prompt="toolsmanager",
+            human_prompt=human_prompt,
+        )
+        batch = self._orchestrator.parse_tools_batch(raw, planner_step_id=plan.current_step_id)
+        if batch is not None:
+            return batch, issues
+
+        issues.append("toolsmanager batch invalid; attempting repair")
+        repair_raw = self._orchestrator._invoke_model(
+            system_prompt="toolsmanager_repair",
+            human_prompt=(
+                "Repair this tools-manager output to strict JSON schema.\n"
+                "Do not add markdown. Return only one JSON object.\n\n"
+                f"Broken output:\n{raw}\n\n"
+                f"Execution payload:\n{human_prompt}"
+            ),
+        )
+        repaired = self._orchestrator.parse_repair(
+            repair_raw, "batch", request=request, previous_plan=plan,
+            planner_step_id=plan.current_step_id,
+        )
+        if isinstance(repaired, ToolsManagerBatch):
+            return repaired, issues
+
+        issues.append("toolsmanager repair failed")
+        return None, issues
+
+
 class ToolsManagerOrchestrator:
     """Planner-driven auto-execution loop for agent-tools chat turns."""
 
@@ -675,9 +802,10 @@ class ToolsManagerOrchestrator:
         self._decision_provider = provider
 
     def _decision_provider_or_raise(self) -> ToolsManagerDecisionProvider:
-        if self._decision_provider is None:
-            raise RuntimeError("toolsmanager decision provider is not configured")
-        return self._decision_provider
+        provider = getattr(self, "_decision_provider", None)
+        if provider is None:
+            return _InternalDecisionProvider(self)
+        return provider
 
     def _plan(
         self,

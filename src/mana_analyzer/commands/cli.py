@@ -3502,7 +3502,7 @@ def chat(
         help="Maximum planning clarification questions to ask (1-6).",
     ),
     auto_execute_plan: bool = typer.Option(
-        True,
+        False,
         "--auto-execute-plan/--no-auto-execute-plan",
         help="Automatically execute plan-producing turns in agent-tools mode.",
     ),

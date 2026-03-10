@@ -27,6 +27,30 @@ from mana_analyzer.vector_store.faiss_store import FaissStore
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Keys that must NEVER be sent to provider APIs as message/input parameters.
+# Some providers (e.g. certain OpenAI-compatible proxies) reject unknown keys
+# such as "status" when they appear inside the `input` / `messages` array.
+# ---------------------------------------------------------------------------
+_PROVIDER_BANNED_KEYS = frozenset({"status"})
+
+
+def _strip_banned_keys(obj: Any) -> Any:
+    """Recursively remove keys that are not accepted by the provider API.
+
+    Works on dicts, lists, and nested combinations thereof.  Returns a
+    *new* object — the original is never mutated.
+    """
+    if isinstance(obj, dict):
+        return {
+            k: _strip_banned_keys(v)
+            for k, v in obj.items()
+            if k not in _PROVIDER_BANNED_KEYS
+        }
+    if isinstance(obj, list):
+        return [_strip_banned_keys(item) for item in obj]
+    return obj
+
 
 class WorkerInitPayload(BaseModel):
     api_key: str
@@ -50,6 +74,8 @@ class ToolRunRequest(BaseModel):
     tool_policy: dict[str, Any] | None = None
     system_prompt: str | None = None
     tools_only_strict_override: bool | None = None
+    tool_name: str = ""
+    tool_args: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolRunResponse(BaseModel):
@@ -184,7 +210,7 @@ class ToolWorkerClient:
         wait=wait_exponential(multiplier=1, min=4, max=10),
         retry=retry_if_exception_type((ToolWorkerProcessError, IOError)),
         before_sleep=before_sleep_log(logger, logging.WARNING),
-        reraise=True
+        reraise=True,
     )
     def run_tools(
         self,
@@ -193,17 +219,61 @@ class ToolWorkerClient:
         on_event: Callable[[WorkerEvent], None] | None = None,
     ) -> ToolRunResponse:
         self.start()
+
+        # Prepare the payload safely — strip all provider-banned keys
+        # so that "status" never leaks into the API request body.
+        payload_dict = _strip_banned_keys(request.model_dump())
+
+        # Double-check: also sanitize tool_args explicitly
+        if "tool_args" in payload_dict:
+            payload_dict["tool_args"] = self._prepare_tool_input(payload_dict["tool_args"])
+
         try:
-            payload = self._request("run_tools", request.model_dump(), expect_event=False, on_event=on_event)
+            response_payload = self._request(
+                "run_tools",
+                payload_dict,
+                expect_event=False,
+                on_event=on_event,
+            )
         except ToolWorkerProcessError as exc:
-            if self._can_retry(exc):
-                logger.warning(f"Retrying run_tools due to worker error: {exc.code}. Message: {exc}")
+            if self._is_status_param_error(exc):
+                logger.warning(
+                    "Provider rejected 'status' parameter — stripping and retrying. "
+                    "Original error: %s",
+                    exc,
+                )
                 self._restart()
-                # پرتاب مجدد خطا برای اینکه دکوراتور retry آن را بگیرد و دوباره تلاش کند
+                raise  # let @retry handle it after restart
+
+            if self._can_retry(exc):
+                logger.warning(
+                    "Retrying run_tools due to worker error: %s. Message: %s",
+                    exc.code,
+                    exc,
+                )
+                self._restart()
                 raise
             else:
                 raise
-        return ToolRunResponse.model_validate(payload)
+
+        return ToolRunResponse.model_validate(response_payload)
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_status_param_error(exc: ToolWorkerProcessError) -> bool:
+        """Detect the specific 'Unknown parameter … status' provider error."""
+        msg = str(exc).lower()
+        return "unknown parameter" in msg and "status" in msg
+
+    def _prepare_tool_input(self, tool_args: dict[str, Any]) -> dict[str, Any]:
+        """
+        Prepare the tool input for the provider.
+        Strips every key that the provider will reject (e.g. ``status``).
+        """
+        return _strip_banned_keys(tool_args)
 
     def _can_retry(self, exc: ToolWorkerProcessError) -> bool:
         if exc.code == "tools_only_violation":
@@ -242,7 +312,11 @@ class ToolWorkerClient:
         if proc.stdin is None or proc.stdout is None:
             raise ToolWorkerProcessError(code="worker_io_error", message="worker stdio unavailable", retriable=True)
         request_id = uuid.uuid4().hex
-        envelope = WorkerEnvelope(type=msg_type, request_id=request_id, payload=payload)
+
+        # ── Sanitize the outbound payload so banned keys never reach the wire ──
+        sanitized_payload = _strip_banned_keys(payload)
+
+        envelope = WorkerEnvelope(type=msg_type, request_id=request_id, payload=sanitized_payload)
         try:
             proc.stdin.write(envelope.model_dump_json() + "\n")
             proc.stdin.flush()
@@ -268,6 +342,7 @@ class ToolWorkerClient:
                 ) from exc
             if reply.request_id != request_id:
                 continue
+
             if reply.type == "event":
                 saw_event = True
                 if on_event is not None:
@@ -324,11 +399,27 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
     return ask_agent
 
 
+def _sanitize_trace_for_provider(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a copy of *trace_rows* with provider-banned keys removed.
+
+    The ``status`` field is perfectly fine for *internal* bookkeeping (we
+    still use it for the ``tools_only_strict`` check), but it must never
+    be forwarded to the upstream LLM provider because some providers
+    (e.g. certain OpenAI-compatible proxies) reject it with::
+
+        Unknown parameter: 'input[N].status'
+
+    This helper creates a sanitised copy that is safe to embed in any
+    payload that will eventually be serialised and sent over the wire.
+    """
+    return _strip_banned_keys(trace_rows)
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     before_sleep=before_sleep_log(logger, logging.WARNING),
-    reraise=True
+    reraise=True,
 )
 def _run_tool_request(
     *,
@@ -363,8 +454,14 @@ def _run_tool_request(
             tool_policy=req.tool_policy,
             callbacks=callbacks,
         )
-    trace_rows = [item.to_dict() for item in getattr(result, "trace", [])]
-    ok_tools = len([row for row in trace_rows if str(row.get("status", "")).lower().strip() == "ok"])
+
+    # Build the raw trace — still contains "status" for local logic.
+    trace_rows_raw = [item.to_dict() for item in getattr(result, "trace", [])]
+
+    # Use the RAW trace (with status) for the strict-tools check.
+    ok_tools = len(
+        [row for row in trace_rows_raw if str(row.get("status", "")).lower().strip() == "ok"]
+    )
     strict_required = bool(tools_only_strict_default)
     if req.tools_only_strict_override is not None:
         strict_required = bool(req.tools_only_strict_override)
@@ -373,13 +470,18 @@ def _run_tool_request(
             code="tools_only_violation",
             message="tools-only mode requires at least one successful tool call",
             retriable=False,
-            details={"trace_count": len(trace_rows)},
+            details={"trace_count": len(trace_rows_raw)},
         )
+
+    # Sanitize trace before it leaves the process — remove "status" and
+    # any other keys the provider would reject.
+    trace_rows_safe = _sanitize_trace_for_provider(trace_rows_raw)
+
     return ToolRunResponse(
         answer=str(getattr(result, "answer", "")),
-        sources=[item.to_dict() for item in getattr(result, "sources", [])],
+        sources=[_strip_banned_keys(item.to_dict()) for item in getattr(result, "sources", [])],
         mode=str(getattr(result, "mode", "agent-tools")),
-        trace=trace_rows,
+        trace=trace_rows_safe,
         warnings=[str(item) for item in getattr(result, "warnings", [])],
     )
 
@@ -499,10 +601,10 @@ class _ToolWorkerServer:
                 self._handle_update_model(env)
                 continue
             if env.type == "health":
-                self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"status": "ok"}))
+                self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"healthy": True}))
                 continue
             if env.type == "shutdown":
-                self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"status": "bye"}))
+                self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"shutdown": True}))
                 return 0
             if env.type == "run_tools":
                 self._handle_run_tools(env)
@@ -521,7 +623,7 @@ class _ToolWorkerServer:
                     payload=WorkerEvent(name="initialized", message="worker initialized").model_dump(),
                 )
             )
-            self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"status": "ok"}))
+            self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"initialized": True}))
         except Exception as exc:
             self._emit(
                 WorkerReply(
@@ -530,7 +632,7 @@ class _ToolWorkerServer:
                     payload=WorkerError(
                         code="init_failed",
                         message=str(exc),
-                        retriable=True, # اجازه ریترای برای خطاهای احتمالی شبکه در زمان اینیت
+                        retriable=True,  # اجازه ریترای برای خطاهای احتمالی شبکه در زمان اینیت
                     ).model_dump(),
                 )
             )
@@ -538,10 +640,10 @@ class _ToolWorkerServer:
     def _handle_update_model(self, env: WorkerEnvelope) -> None:
         """Dynamically update the model name of the active AskAgent."""
         if self._ask_agent is None:
-            self._emit(WorkerReply(type="error", request_id=env.request_id, 
-                                 payload=WorkerError(code="not_initialized", message="worker not initialized").model_dump()))
+            self._emit(WorkerReply(type="error", request_id=env.request_id,
+                                   payload=WorkerError(code="not_initialized", message="worker not initialized").model_dump()))
             return
-        
+
         new_model = env.payload.get("model")
         if new_model:
             try:
@@ -549,10 +651,10 @@ class _ToolWorkerServer:
                 # اگر متد آپدیت در AskAgent پیاده‌سازی شده باشد
                 if hasattr(self._ask_agent, "update_model"):
                     self._ask_agent.update_model(new_model)
-                self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"status": "updated", "model": new_model}))
+                self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"updated": True, "model": new_model}))
             except Exception as exc:
-                self._emit(WorkerReply(type="error", request_id=env.request_id, 
-                                     payload=WorkerError(code="update_failed", message=str(exc)).model_dump()))
+                self._emit(WorkerReply(type="error", request_id=env.request_id,
+                                       payload=WorkerError(code="update_failed", message=str(exc)).model_dump()))
 
     def _handle_run_tools(self, env: WorkerEnvelope) -> None:
         if self._ask_agent is None:
@@ -569,7 +671,10 @@ class _ToolWorkerServer:
             )
             return
         try:
-            req = ToolRunRequest.model_validate(env.payload)
+            # ── Sanitize the inbound envelope so "status" never reaches the agent ──
+            sanitized_env_payload = _strip_banned_keys(env.payload)
+            req = ToolRunRequest.model_validate(sanitized_env_payload)
+
             tool_name = str(req.tool_name or "").strip()
             if tool_name:
                 if not self._turn_tool_state.claim(tool_name):
@@ -589,7 +694,7 @@ class _ToolWorkerServer:
                                 trace=[
                                     {
                                         "tool_name": tool_name,
-                                        "status": "duplicate_blocked",
+                                        "result": "duplicate_blocked",
                                         "turn_id": env.request_id,
                                         "message": "Tool already executed in this turn.",
                                     }
@@ -607,7 +712,10 @@ class _ToolWorkerServer:
                 tools_only_strict_default=self._tools_only_strict,
                 callbacks=[tool_event_cb],
             )
-            self._emit(WorkerReply(type="ok", request_id=env.request_id, payload=response.model_dump()))
+
+            # ── Final safety net: strip banned keys from the outbound payload ──
+            safe_payload = _strip_banned_keys(response.model_dump())
+            self._emit(WorkerReply(type="ok", request_id=env.request_id, payload=safe_payload))
         except ToolWorkerProcessError as exc:
             self._emit(
                 WorkerReply(
@@ -627,7 +735,18 @@ class _ToolWorkerServer:
             err_msg = str(exc).lower()
             if "model_not_found" in err_msg or "404" in err_msg or "not found" in err_msg:
                 code = "model_not_found"
-                
+
+            # ── Detect the specific "Unknown parameter: status" provider error ──
+            retriable = True
+            if "unknown parameter" in err_msg and "status" in err_msg:
+                code = "provider_unknown_param"
+                logger.error(
+                    "Provider rejected a banned parameter (likely 'status'). "
+                    "This should have been stripped — please report this as a bug. "
+                    "Original error: %s",
+                    exc,
+                )
+
             self._emit(
                 WorkerReply(
                     type="error",
@@ -635,7 +754,7 @@ class _ToolWorkerServer:
                     payload=WorkerError(
                         code=code,
                         message=str(exc),
-                        retriable=True,
+                        retriable=retriable,
                     ).model_dump(),
                 )
             )

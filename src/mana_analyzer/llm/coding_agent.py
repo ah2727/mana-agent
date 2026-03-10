@@ -466,12 +466,13 @@ class CodingAgent:
             planner_kwargs["base_url"] = base_url
         self._setup_planner()
 
-        self.ask_agent.tools.extend(
-            [
-                build_write_file_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
-                build_apply_patch_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
-            ]
-        )
+        if hasattr(self.ask_agent, "tools"):
+            self.ask_agent.tools.extend(
+                [
+                    build_write_file_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
+                    build_apply_patch_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
+                ]
+            )
 
     def update_model(self, model_name: str):
         """قابلیت تغییر مدل در زمان اجرا"""
@@ -517,25 +518,27 @@ class CodingAgent:
         self._setup_planner()
 
         # افزودن ابزارها به ask_agent
-        self.ask_agent.tools.extend(
-            [
-                build_write_file_tool(
-                    repo_root=self.repo_root, 
-                    allowed_prefixes=self.allowed_prefixes
-                ),
-                build_apply_patch_tool(
-                    repo_root=self.repo_root, 
-                    allowed_prefixes=self.allowed_prefixes
-                ),
-            ]
-        )
+        if hasattr(self.ask_agent, "tools"):
+            self.ask_agent.tools.extend(
+                [
+                    build_write_file_tool(
+                        repo_root=self.repo_root,
+                        allowed_prefixes=self.allowed_prefixes
+                    ),
+                    build_apply_patch_tool(
+                        repo_root=self.repo_root,
+                        allowed_prefixes=self.allowed_prefixes
+                    ),
+                ]
+            )
         
     def set_tools_manager_orchestrator(self, manager: ToolsManagerOrchestrator):
         """
         Bind the ToolsManager to the Core LLM Orchestrator.
         """
-        provider = CodingAgentToolsManagerDecisionProvider(self)
-        manager.attach_decision_provider(provider)
+        if hasattr(manager, "attach_decision_provider"):
+            provider = CodingAgentToolsManagerDecisionProvider(self)
+            manager.attach_decision_provider(provider)
         self.tools_manager_orchestrator = manager
 
     @staticmethod
@@ -967,6 +970,7 @@ class CodingAgent:
 
     def _effective_system_prompt_for(self, request: str, *, flow_context: str | None = None) -> str:
         prompt = self.system_prompt
+        prompt = f"{prompt}\n\n{CODING_AGENT_LANGUAGE_TOOLING_PROMPT}"
         if self._looks_like_edit_request(request):
             prompt = f"{prompt}\n\n{CODING_AGENT_RECOGNITION_PROMPT}"
         if self.full_auto_mode:
@@ -1789,6 +1793,62 @@ class CodingAgent:
         )
         return result
 
+    def _execute_via_manager(
+        self,
+        tool_req: "ToolRunRequest",
+        *,
+        tool_policy: "dict[str, Any] | None" = None,
+        index_dir: "str | Path | None" = None,
+        index_dirs: "list[str] | None" = None,
+        flow_id: "str | None" = None,
+        pass_cap: int = 1,
+        timeout_seconds: int = 60,
+        max_steps: int = 6,
+        k: "int | None" = None,
+        flow_context: "str | None" = None,
+    ) -> "ToolRunResponse":
+        """Route a ToolRunRequest through ToolsManagerOrchestrator when available.
+
+        Using the manager as the single gateway prevents the same command from
+        being dispatched to the worker subprocess more than once when multiple
+        processes share the same CodingAgent instance.  If no orchestrator has
+        been attached, the request falls back to the bare ToolWorkerClient so
+        that nothing is broken for callers that do not wire up an orchestrator.
+        """
+        from mana_analyzer.llm.tool_worker_process import ToolRunResponse as _TRR
+
+        if self.tools_manager_orchestrator is not None:
+            resolved_tool_policy = tool_policy or {}
+            orchestrated = self.tools_manager_orchestrator.run(
+                request=tool_req.question,
+                flow_context=flow_context,
+                index_dir=index_dir,
+                index_dirs=index_dirs,
+                k=int(k if k is not None else 8),
+                max_steps=max_steps,
+                timeout_seconds=timeout_seconds,
+                tool_policy=resolved_tool_policy,
+                pass_cap=max(1, pass_cap),
+                on_event=self._log_worker_event,
+                flow_id=flow_id,
+            )
+            return _TRR(
+                answer=str(orchestrated.answer or ""),
+                sources=list(orchestrated.sources),
+                mode="agent-tools",
+                trace=list(orchestrated.trace),
+                warnings=list(orchestrated.warnings),
+            )
+
+        if self.tool_worker_client is None:
+            return _TRR(answer="No tool worker or orchestrator available.", sources=[], mode="agent-tools", trace=[], warnings=[])
+
+        try:
+            response = self.tool_worker_client.run_tools(tool_req, on_event=self._log_worker_event)
+        except TypeError:
+            response = self.tool_worker_client.run_tools(tool_req)
+        return response
+
     def _call_agent_single(
         self,
         request: str,
@@ -1803,7 +1863,7 @@ class CodingAgent:
         flow_id: str | None = None,
     ) -> str:
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
-        if self.tool_worker_client is not None:
+        if self.tool_worker_client is not None or self.tools_manager_orchestrator is not None:
             tool_req = ToolRunRequest(
                 question=request,
                 index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
@@ -1815,13 +1875,16 @@ class CodingAgent:
                 flow_id=flow_id,
             )
             try:
-                try:
-                    response = self.tool_worker_client.run_tools(
-                        tool_req,
-                        on_event=self._log_worker_event,
-                    )
-                except TypeError:
-                    response = self.tool_worker_client.run_tools(tool_req)
+                response = self._execute_via_manager(
+                    tool_req,
+                    tool_policy=tool_policy,
+                    index_dir=index_dir,
+                    flow_id=flow_id,
+                    timeout_seconds=timeout_seconds,
+                    max_steps=max_steps,
+                    k=k,
+                    flow_context=flow_context,
+                )
                 return self._stringify(response.model_dump())
             except ToolWorkerProcessError as exc:
                 if exc.code == "tools_only_violation":
@@ -1831,13 +1894,16 @@ class CodingAgent:
                         "tools_only_violation_retry_attempted: strict override disabled for one retry",
                     ]
                     try:
-                        try:
-                            retry_response = self.tool_worker_client.run_tools(
-                                retry_req,
-                                on_event=self._log_worker_event,
-                            )
-                        except TypeError:
-                            retry_response = self.tool_worker_client.run_tools(retry_req)
+                        retry_response = self._execute_via_manager(
+                            retry_req,
+                            tool_policy=tool_policy,
+                            index_dir=index_dir,
+                            flow_id=flow_id,
+                            timeout_seconds=timeout_seconds,
+                            max_steps=max_steps,
+                            k=k,
+                            flow_context=flow_context,
+                        )
                         payload = retry_response.model_dump()
                         existing = [str(item) for item in payload.get("warnings", []) if str(item).strip()]
                         payload["warnings"] = [*existing, *retry_warnings, "tools_only_violation_retry_result: success"]
@@ -1894,7 +1960,7 @@ class CodingAgent:
         if not resolved:
             return "No index_dirs provided for dir-mode."
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
-        if self.tool_worker_client is not None:
+        if self.tool_worker_client is not None or self.tools_manager_orchestrator is not None:
             tool_req = ToolRunRequest(
                 question=request,
                 index_dirs=resolved,
@@ -1906,13 +1972,16 @@ class CodingAgent:
                 flow_id=flow_id,
             )
             try:
-                try:
-                    response = self.tool_worker_client.run_tools(
-                        tool_req,
-                        on_event=self._log_worker_event,
-                    )
-                except TypeError:
-                    response = self.tool_worker_client.run_tools(tool_req)
+                response = self._execute_via_manager(
+                    tool_req,
+                    tool_policy=tool_policy,
+                    index_dirs=resolved,
+                    flow_id=flow_id,
+                    timeout_seconds=timeout_seconds,
+                    max_steps=max_steps,
+                    k=k,
+                    flow_context=flow_context,
+                )
                 return self._stringify(response.model_dump())
             except ToolWorkerProcessError as exc:
                 if exc.code == "tools_only_violation":
@@ -1922,13 +1991,16 @@ class CodingAgent:
                         "tools_only_violation_retry_attempted: strict override disabled for one retry",
                     ]
                     try:
-                        try:
-                            retry_response = self.tool_worker_client.run_tools(
-                                retry_req,
-                                on_event=self._log_worker_event,
-                            )
-                        except TypeError:
-                            retry_response = self.tool_worker_client.run_tools(retry_req)
+                        retry_response = self._execute_via_manager(
+                            retry_req,
+                            tool_policy=tool_policy,
+                            index_dirs=resolved,
+                            flow_id=flow_id,
+                            timeout_seconds=timeout_seconds,
+                            max_steps=max_steps,
+                            k=k,
+                            flow_context=flow_context,
+                        )
                         payload = retry_response.model_dump()
                         existing = [str(item) for item in payload.get("warnings", []) if str(item).strip()]
                         payload["warnings"] = [*existing, *retry_warnings, "tools_only_violation_retry_result: success"]
