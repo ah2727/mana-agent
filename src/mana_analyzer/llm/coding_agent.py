@@ -32,6 +32,7 @@ from mana_analyzer.llm.prompts import (
     CODING_FLOW_MEMORY_PROMPT,
     CODING_FLOW_PLANNER_PROMPT,
     FULL_AUTO_EXECUTION_PROMPT,
+    TOOLSMANAGER_PROMPT
 )
 from mana_analyzer.llm.tools_manager import (
     ToolsManagerBatch,
