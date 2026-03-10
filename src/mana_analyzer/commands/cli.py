@@ -3647,6 +3647,10 @@ def chat(
         min_steps=8,
         cap=200,
     )
+    if auto_execute_plan:
+        agent_tools = True
+        coding_agent = True
+        tool_worker_process = True
     settings = Settings()
     resolved_tool_exec_backend = str(
         (tool_exec_backend or getattr(settings, "tool_exec_backend", "local")) or "local"

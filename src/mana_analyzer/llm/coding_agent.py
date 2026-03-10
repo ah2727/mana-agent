@@ -38,7 +38,16 @@ from mana_analyzer.llm.tools_manager import (
     ToolsManagerOrchestrator,
     ToolsPlan,
 )
+
+
+from mana_analyzer.llm.tool_worker_process import (
+    ToolRunRequest,
+    ToolWorkerClient,
+    ToolWorkerProcessError,
+)
+
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
+from mana_analyzer.tools import build_write_file_tool,build_apply_patch_tool
 
 logger = logging.getLogger(__name__)
 
@@ -2036,6 +2045,46 @@ class CodingAgent:
             return json.dumps(_as_jsonable(result), indent=2, ensure_ascii=False)
         except Exception:
             return str(result)
+
+    def _invoke_tools_planner(self, human_prompt: str) -> str:
+        if not hasattr(self, "planner_llm"):
+            raise AttributeError("planner_llm is not initialized")
+        messages = [
+            SystemMessage(content=HEAD_TOOLS_PLANNER_PROMPT),
+            HumanMessage(content=human_prompt),
+        ]
+        response = self.planner_llm.invoke(messages)
+        return str(getattr(response, "content", response) or "").strip()
+
+    def _repair_tools_planner(self, raw: str, human_prompt: str) -> str:
+        repair_prompt = (
+            "The previous tools planner output was invalid."
+            " Return corrected JSON matching the required schema."
+            " Original output:\n"
+            f"{raw}\n\n"
+            f"Original prompt:\n{human_prompt}"
+        )
+        return self._invoke_tools_planner(repair_prompt)
+
+    def _invoke_tools_batcher(self, human_prompt: str) -> str:
+        if not hasattr(self, "planner_llm"):
+            raise AttributeError("planner_llm is not initialized")
+        messages = [
+            SystemMessage(content=TOOLSMANAGER_PROMPT),
+            HumanMessage(content=human_prompt),
+        ]
+        response = self.planner_llm.invoke(messages)
+        return str(getattr(response, "content", response) or "").strip()
+
+    def _repair_tools_batcher(self, raw: str, human_prompt: str) -> str:
+        repair_prompt = (
+            "The previous tools batcher output was invalid."
+            " Return corrected JSON matching the ToolsManagerBatch schema."
+            " Original output:\n"
+            f"{raw}\n\n"
+            f"Original prompt:\n{human_prompt}"
+        )
+        return self._invoke_tools_batcher(repair_prompt)
 
     def _git_status_paths(self) -> set[str]:
         try:

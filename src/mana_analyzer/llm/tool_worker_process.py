@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -18,8 +19,10 @@ from pydantic import BaseModel, Field, ValidationError
 
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
+from mana_analyzer.llm.ask_agent import AskAgent
+from mana_analyzer.tools import build_apply_patch_tool, build_write_file_tool
 from mana_analyzer.tools import safe_apply_patch, safe_write_file
-from mana_analyzer.tools.search_internet import safe_search_internet
+from mana_analyzer.tools.search_internet import build_search_internet_tool, safe_search_internet
 from mana_analyzer.vector_store.faiss_store import FaissStore
 
 logger = logging.getLogger(__name__)
@@ -133,6 +136,17 @@ class ToolWorkerClient:
     def start(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
+        env = os.environ.copy()
+        repo_root = Path(self._init_payload.repo_root).resolve()
+        pythonpath_entries: list[str] = []
+        src_dir = repo_root / "src"
+        if src_dir.exists():
+            pythonpath_entries.append(str(src_dir))
+        pythonpath_entries.append(str(repo_root))
+        existing_pythonpath = env.get("PYTHONPATH")
+        if existing_pythonpath:
+            pythonpath_entries.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
         self._proc = subprocess.Popen(
             [sys.executable, "-m", "mana_analyzer.llm.tool_worker_process"],
             stdin=subprocess.PIPE,
@@ -140,6 +154,7 @@ class ToolWorkerClient:
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            env=env,
         )
         self._request("init", self._init_payload.model_dump(), expect_event=True)
 

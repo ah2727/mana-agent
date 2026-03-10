@@ -2040,7 +2040,7 @@ class ToolsManagerOrchestrator:
             persisted_fingerprint_counts=persisted_fingerprint_counts,
         )
         
-   @staticmethod
+    @staticmethod
     def _canonical_tool_name_from_question(question: str) -> str:
         normalized = re.sub(r"\s+", " ", str(question or "").strip()).lower()
         if not normalized:
