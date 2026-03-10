@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, ValidationError
 from mana_analyzer.llm.prompts import (
     CODING_AGENT_RECOGNITION_PROMPT,
     CODING_AGENT_LANGUAGE_TOOLING_PROMPT,
+    HEAD_TOOLS_PLANNER_PROMPT,
     CODING_FLOW_MEMORY_PROMPT,
     CODING_FLOW_PLANNER_PROMPT,
     FULL_AUTO_EXECUTION_PROMPT,
