@@ -8,7 +8,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Literal, Sequence, TypeVar
+from typing import Any, Callable, Literal, Protocol, Sequence, TypeVar
 
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
@@ -90,10 +90,43 @@ class AutoExecuteResult(BaseModel):
     execution_requests_failed: int = 0
     duplicate_request_skips: int = 0
     duplicate_semantic_search_skips: int = 0
+    duplicate_tool_execution_blocks: int = 0
     request_retry_attempts: int = 0
     request_retry_exhausted: int = 0
     edit_retry_mode_activations: int = 0
     persisted_fingerprint_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class ToolsManagerDecisionProvider(Protocol):
+    def plan_with_source(
+        self,
+        *,
+        request: str,
+        flow_context: str | None,
+        pass_index: int,
+        pass_cap: int,
+        previous_plan: ToolsPlan | None,
+        pass_logs: Sequence[dict[str, Any]],
+        warnings: Sequence[str],
+        changed_files: Sequence[str],
+        latest_answer: str,
+    ) -> tuple[ToolsPlan, list[str], str]:
+        ...
+
+    def build_batch(
+        self,
+        *,
+        request: str,
+        flow_context: str | None,
+        plan: ToolsPlan,
+        pass_index: int,
+        pass_cap: int,
+        pass_logs: Sequence[dict[str, Any]],
+        warnings: Sequence[str],
+        changed_files: Sequence[str],
+        latest_answer: str,
+    ) -> tuple[ToolsManagerBatch | None, list[str]]:
+        ...
 
 
 class ToolsManagerOrchestrator:
@@ -110,6 +143,7 @@ class ToolsManagerOrchestrator:
         execution_config: ToolsExecutionConfig | None = None,
         executor: ToolsExecutor | None = None,
         coding_memory_service: CodingMemoryService | None = None,
+        decision_provider: ToolsManagerDecisionProvider | None = None,
     ) -> None:
         _ = (api_key, model, base_url)
         self.worker_client = worker_client
@@ -126,6 +160,7 @@ class ToolsManagerOrchestrator:
             self.executor = executor
             
         self.coding_memory_service = coding_memory_service
+        self._decision_provider: ToolsManagerDecisionProvider | None = decision_provider
 
     def _setup_llm(self) -> None:
         """Deprecated: tools manager is deterministic and does not use an LLM."""
@@ -636,6 +671,14 @@ class ToolsManagerOrchestrator:
         _ = (system_prompt, human_prompt)
         raise RuntimeError("ToolsManagerOrchestrator no longer supports model invocation")
 
+    def attach_decision_provider(self, provider: ToolsManagerDecisionProvider) -> None:
+        self._decision_provider = provider
+
+    def _decision_provider_or_raise(self) -> ToolsManagerDecisionProvider:
+        if self._decision_provider is None:
+            raise RuntimeError("toolsmanager decision provider is not configured")
+        return self._decision_provider
+
     def _plan(
         self,
         *,
@@ -675,47 +718,18 @@ class ToolsManagerOrchestrator:
         changed_files: Sequence[str],
         latest_answer: str = "",
     ) -> tuple[ToolsManagerBatch | None, list[str]]:
-        issues: list[str] = []
-        payload = {
-            "request": request,
-            "flow_context": (flow_context or "").strip(),
-            "planner": plan.model_dump(),
-            "pass_index": int(pass_index),
-            "pass_cap": int(pass_cap),
-            "pass_logs": list(pass_logs)[-4:],
-            "warnings": list(warnings)[-10:],
-            "changed_files": list(changed_files),
-            "latest_answer": str(latest_answer or "")[:1500],
-        }
-        human_prompt = json.dumps(payload, ensure_ascii=False, indent=2)
-
-        raw = self._invoke_model(system_prompt=TOOLSMANAGER_PROMPT, human_prompt=human_prompt)
-        batch = self.parse_tools_batch(raw, planner_step_id=plan.current_step_id)
-        if batch is not None:
-            return batch, issues
-
-        issues.append("toolsmanager batch invalid; attempting repair")
-        repaired = self._invoke_model(
-            system_prompt=TOOLSMANAGER_PROMPT,
-            human_prompt=(
-                "Repair this tools-manager output to strict JSON schema.\n"
-                "Do not add markdown. Return only one JSON object.\n\n"
-                f"Broken output:\n{raw}\n\n"
-                f"Execution payload:\n{human_prompt}"
-            ),
-        )
-        repaired_batch = self.parse_repair(
-            repaired,
-            "batch",
+        provider = self._decision_provider_or_raise()
+        return provider.build_batch(
             request=request,
-            previous_plan=plan,
-            planner_step_id=plan.current_step_id,
+            flow_context=flow_context,
+            plan=plan,
+            pass_index=pass_index,
+            pass_cap=pass_cap,
+            pass_logs=pass_logs,
+            warnings=warnings,
+            changed_files=changed_files,
+            latest_answer=latest_answer,
         )
-        if isinstance(repaired_batch, ToolsManagerBatch):
-            return repaired_batch, issues
-
-        issues.append("toolsmanager repair failed")
-        return None, issues
 
     @staticmethod
     def _merge_policy(base_policy: dict[str, Any], override: dict[str, Any] | None) -> dict[str, Any]:
@@ -1231,52 +1245,18 @@ class ToolsManagerOrchestrator:
         changed_files: Sequence[str] = (),
         latest_answer: str = "",
     ) -> tuple[ToolsPlan, list[str], str]:
-        issues: list[str] = []
-        payload = {
-            "request": request,
-            "flow_context": (flow_context or "none").strip(),
-            "pass_index": int(pass_index),
-            "pass_cap": int(pass_cap),
-            "previous_plan": previous_plan.model_dump() if previous_plan is not None else None,
-            "pass_logs": list(pass_logs)[-4:],
-            "warnings": list(warnings)[-12:],
-            "changed_files": list(changed_files),
-            "latest_answer": str(latest_answer or "")[:1500],
-        }
-        human_prompt = json.dumps(payload, ensure_ascii=False, indent=2)
-
-        raw = self._invoke_model(system_prompt=HEAD_TOOLS_PLANNER_PROMPT, human_prompt=human_prompt)
-        parsed = self.parse_tools_plan(raw, request=request, previous_plan=previous_plan)
-        if parsed is not None:
-            return parsed, issues, "planner"
-
-        issues.append("head_tools_planner parse failed; attempting repair")
-        repaired_raw = self._invoke_model(
-            system_prompt=HEAD_TOOLS_PLANNER_PROMPT,
-            human_prompt=(
-                "Repair this planner output to strict JSON schema.\n"
-                "Do not add markdown. Return only one JSON object.\n\n"
-                f"Broken output:\n{raw}\n\n"
-                f"Execution payload:\n{human_prompt}"
-            ),
-        )
-        repaired = self.parse_repair(
-            repaired_raw,
-            "plan",
-            request=request,
-            previous_plan=previous_plan,
-        )
-        if isinstance(repaired, ToolsPlan):
-            return repaired, issues, "planner_repair"
-
-        issues.append("head_tools_planner repair failed; using deterministic fallback")
-        fallback_plan = self._deterministic_fallback_plan(
+        provider = self._decision_provider_or_raise()
+        return provider.plan_with_source(
             request=request,
             flow_context=flow_context,
+            pass_index=pass_index,
+            pass_cap=pass_cap,
             previous_plan=previous_plan,
-            reason="planner_parse_failed",
+            pass_logs=pass_logs,
+            warnings=warnings,
+            changed_files=changed_files,
+            latest_answer=latest_answer,
         )
-        return fallback_plan, issues, "deterministic_fallback"
 
     def run(
         self,
@@ -1309,6 +1289,7 @@ class ToolsManagerOrchestrator:
         execution_requests_failed = 0
         duplicate_request_skips = 0
         duplicate_semantic_search_skips = 0
+        duplicate_tool_execution_blocks = 0
         request_retry_attempts = 0
         request_retry_exhausted = 0
         edit_retry_mode_activations = 0
@@ -1322,6 +1303,7 @@ class ToolsManagerOrchestrator:
 
         seen_request_fingerprints: set[str] = set()
         seen_semantic_search_fingerprints: set[str] = set()
+        executed_tools_this_turn: set[str] = set()
         seen_failure_signatures: set[str] = set()
 
         if memory_service is not None and flow_key:
@@ -1629,6 +1611,20 @@ class ToolsManagerOrchestrator:
                     duplicate_skips_this_pass += 1
                     all_warnings.append("duplicate_request_skipped")
                     continue
+
+                canonical_tool_name = self._canonical_tool_name_from_question(question)
+                if canonical_tool_name:
+                    if canonical_tool_name in executed_tools_this_turn:
+                        duplicate_tool_execution_blocks += 1
+                        duplicate_skips_this_pass += 1
+                        all_warnings.append(
+                            f"duplicate_tool_execution_blocked: tool={canonical_tool_name} turn={execution_run_id}"
+                        )
+                        continue
+                    executed_tools_this_turn.add(canonical_tool_name)
+                    all_warnings.append(
+                        f"tool_execution_registered: tool={canonical_tool_name} turn={execution_run_id}"
+                    )
 
                 seen_request_fingerprints.add(request_fingerprint)
                 request_fingerprints.append(request_fingerprint)
@@ -2037,11 +2033,34 @@ class ToolsManagerOrchestrator:
             execution_requests_failed=execution_requests_failed,
             duplicate_request_skips=duplicate_request_skips,
             duplicate_semantic_search_skips=duplicate_semantic_search_skips,
+            duplicate_tool_execution_blocks=duplicate_tool_execution_blocks,
             request_retry_attempts=request_retry_attempts,
             request_retry_exhausted=request_retry_exhausted,
             edit_retry_mode_activations=edit_retry_mode_activations,
             persisted_fingerprint_counts=persisted_fingerprint_counts,
         )
+        
+   @staticmethod
+    def _canonical_tool_name_from_question(question: str) -> str:
+        normalized = re.sub(r"\s+", " ", str(question or "").strip()).lower()
+        if not normalized:
+            return ""
+        match = re.search(r"\btool\s*[:=]\s*['\"]?([a-z0-9_\-]+)", normalized)
+        if match:
+            return str(match.group(1) or "").strip().lower()
+        known = (
+            "semantic_search",
+            "read_file",
+            "run_command",
+            "apply_patch",
+            "write_file",
+            "search_internet",
+            "github_search",
+        )
+        for tool_name in known:
+            if tool_name in normalized:
+                return tool_name
+        return ""
 
 
 __all__ = [
@@ -2052,3 +2071,4 @@ __all__ = [
     "AutoExecuteResult",
     "ToolsManagerOrchestrator",
 ]
+ 

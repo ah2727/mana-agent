@@ -353,6 +353,85 @@ def test_tool_worker_server_emits_tool_events(monkeypatch) -> None:
     assert emitted[-1].type == "ok"
 
 
+def test_tool_worker_server_blocks_duplicate_tool_name_within_turn(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class _TraceRow:
+        def to_dict(self) -> dict:
+            return {"tool_name": "read_file", "status": "ok", "duration_ms": 1.0}
+
+    class _FakeAskAgent:
+        def run(self, **_kwargs):
+            calls.append({"called": True})
+            return SimpleNamespace(
+                answer="done",
+                sources=[],
+                mode="agent-tools",
+                trace=[_TraceRow()],
+                warnings=[],
+            )
+
+    server = twp._ToolWorkerServer()
+    server._ask_agent = _FakeAskAgent()  # type: ignore[assignment]
+    emitted: list[twp.WorkerReply] = []
+    monkeypatch.setattr(twp._ToolWorkerServer, "_emit", staticmethod(lambda reply: emitted.append(reply)))
+
+    first_payload = twp.ToolRunRequest(
+        question="run once",
+        index_dir="/tmp/.mana_index",
+        tool_name="read_file",
+    ).model_dump()
+    second_payload = twp.ToolRunRequest(
+        question="run twice",
+        index_dir="/tmp/.mana_index",
+        tool_name="read_file",
+    ).model_dump()
+
+    server._handle_run_tools(twp.WorkerEnvelope(type="run_tools", request_id="turn-1", payload=first_payload))
+    server._handle_run_tools(twp.WorkerEnvelope(type="run_tools", request_id="turn-1", payload=second_payload))
+
+    assert len(calls) == 1
+    assert emitted[-1].type == "ok"
+    assert emitted[-1].payload["answer"] == "Tool already executed in this turn."
+    assert emitted[-1].payload["trace"][0]["status"] == "duplicate_blocked"
+
+
+def test_tool_worker_server_allows_same_tool_name_in_new_turn(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class _TraceRow:
+        def to_dict(self) -> dict:
+            return {"tool_name": "read_file", "status": "ok", "duration_ms": 1.0}
+
+    class _FakeAskAgent:
+        def run(self, **_kwargs):
+            calls.append({"called": True})
+            return SimpleNamespace(
+                answer="done",
+                sources=[],
+                mode="agent-tools",
+                trace=[_TraceRow()],
+                warnings=[],
+            )
+
+    server = twp._ToolWorkerServer()
+    server._ask_agent = _FakeAskAgent()  # type: ignore[assignment]
+    emitted: list[twp.WorkerReply] = []
+    monkeypatch.setattr(twp._ToolWorkerServer, "_emit", staticmethod(lambda reply: emitted.append(reply)))
+
+    payload = twp.ToolRunRequest(
+        question="run",
+        index_dir="/tmp/.mana_index",
+        tool_name="read_file",
+    ).model_dump()
+
+    server._handle_run_tools(twp.WorkerEnvelope(type="run_tools", request_id="turn-a", payload=payload))
+    server._turn_tool_state.reset()
+    server._handle_run_tools(twp.WorkerEnvelope(type="run_tools", request_id="turn-b", payload=payload))
+
+    assert len(calls) == 2
+
+
 def test_run_tool_request_once_enforces_tools_only_policy(monkeypatch) -> None:
     class _FakeAskAgent:
         def run(self, **_kwargs):

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -15,14 +16,10 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field, ValidationError
 
-from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
-from mana_analyzer.tools import (
-    build_apply_patch_tool,
-    build_search_internet_tool,
-    build_write_file_tool,
-)
+from mana_analyzer.tools import safe_apply_patch, safe_write_file
+from mana_analyzer.tools.search_internet import safe_search_internet
 from mana_analyzer.vector_store.faiss_store import FaissStore
 
 logger = logging.getLogger(__name__)
@@ -437,10 +434,28 @@ class _WorkerToolEventCallback(BaseCallbackHandler):
         self._emit(name="tool_error", message=msg, data={"tool": tool, "error": err})
 
 
+@dataclass
+class TurnToolExecutionState:
+    executed_tools: set[str] = field(default_factory=set)
+
+    def reset(self) -> None:
+        self.executed_tools.clear()
+
+    def claim(self, tool_name: str) -> bool:
+        canonical = str(tool_name or "").strip().lower()
+        if not canonical:
+            return True
+        if canonical in self.executed_tools:
+            return False
+        self.executed_tools.add(canonical)
+        return True
+
+
 class _ToolWorkerServer:
     def __init__(self) -> None:
         self._ask_agent: AskAgent | None = None
         self._tools_only_strict = True
+        self._turn_tool_state = TurnToolExecutionState()
 
     def run(self) -> int:
         for raw in sys.stdin:
@@ -540,6 +555,36 @@ class _ToolWorkerServer:
             return
         try:
             req = ToolRunRequest.model_validate(env.payload)
+            tool_name = str(req.tool_name or "").strip()
+            if tool_name:
+                if not self._turn_tool_state.claim(tool_name):
+                    logger.warning(
+                        "Blocking duplicate tool execution within turn: tool=%s turn=%s",
+                        tool_name,
+                        env.request_id,
+                    )
+                    self._emit(
+                        WorkerReply(
+                            type="ok",
+                            request_id=env.request_id,
+                            payload=ToolRunResponse(
+                                answer="Tool already executed in this turn.",
+                                sources=[],
+                                mode="agent-tools",
+                                trace=[
+                                    {
+                                        "tool_name": tool_name,
+                                        "status": "duplicate_blocked",
+                                        "turn_id": env.request_id,
+                                        "message": "Tool already executed in this turn.",
+                                    }
+                                ],
+                                warnings=["Tool already executed in this turn."],
+                            ).model_dump(),
+                        )
+                    )
+                    return
+                logger.info("Registered tool execution for turn: tool=%s turn=%s", tool_name, env.request_id)
             tool_event_cb = _WorkerToolEventCallback(request_id=env.request_id, emit_reply=self._emit)
             response = _run_tool_request(
                 ask_agent=self._ask_agent,
