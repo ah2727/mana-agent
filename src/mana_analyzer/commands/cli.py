@@ -2725,7 +2725,7 @@ def ask(
         "--auto-index-missing/--no-auto-index-missing",
         help="Automatically create missing subproject indexes in --dir-mode.",
     ),
-    agent_tools: bool = typer.Option(False, "--agent-tools"),
+    agent_tools: bool = typer.Option(True, "--agent-tools"),
     agent_max_steps: int = typer.Option(6, "--agent-max-steps"),
     agent_unlimited: bool = typer.Option(
         False,
@@ -3412,17 +3412,6 @@ def chat(
     auto_index_missing: bool = typer.Option(
         True,
         "--auto-index-missing/--no-auto-index-missing",
-        help="Automatically create missing subproject indexes in dir-mode.",
-    ),
-    agent_tools: bool = typer.Option(
-        False,
-        "--agent-tools",
-        help="Enable tool-aware answering (calls specialized tools).",
-    ),
-    coding_agent: bool = typer.Option(
-        False,
-        "--coding-agent",
-        help="Enable repo-modifying coding agent (write_file/apply_patch) inside chat.",
     ),
     tool_worker_process: bool = typer.Option(
         True,
@@ -3574,7 +3563,9 @@ def chat(
     as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
 ) -> None:
     output_file = _resolve_output_file()
-
+    agent_tools = True
+    coding_agent = True
+    tool_worker_process = True
     logger.info(
         "Chat command started",
         extra={
@@ -3647,10 +3638,10 @@ def chat(
         min_steps=8,
         cap=200,
     )
+    # CodingAgent is the sole decision-maker in chat – always force on.
+
     if auto_execute_plan:
-        agent_tools = True
-        coding_agent = True
-        tool_worker_process = True
+        pass  # already forced above
     settings = Settings()
     resolved_tool_exec_backend = str(
         (tool_exec_backend or getattr(settings, "tool_exec_backend", "local")) or "local"
@@ -4008,26 +3999,22 @@ def chat(
         min_sources = 2
 
         console.print("mana-analyzer chat – type 'exit' or 'quit' to end.")
-        if not agent_tools:
-            console.print("[yellow]Tip:[/yellow] run with --agent-tools for real tool-driven investigation.")
+
         if planning_mode:
             console.print(
                 f"[bold cyan]Planning mode enabled:[/bold cyan] "
                 f"up to {planning_question_limit} clarification question(s) before each plan answer."
             )
-            if not agent_tools:
-                console.print(
-                    "[yellow]Planning mode auto-execute requires --agent-tools; this session will remain plan-only.[/yellow]"
-                )
-        if coding_agent:
-            console.print("[bold red]Coding agent enabled:[/bold red] this session can modify any files under the repository root.")
-            if coding_memory:
-                msg_flow = flow_id or (coding_agent_instance.get_active_flow_id() if coding_agent_instance else None)
-                if msg_flow:
-                    console.print(f"[cyan]Flow memory active:[/cyan] {msg_flow}")
-                else:
-                    console.print("[cyan]Flow memory active:[/cyan] new flow will be created on first coding request.")
-        if agent_tools:
+
+        # CodingAgent is always active
+        console.print("[bold red]Coding agent active[/bold red] – all decisions routed through CodingAgent.")
+        _ca_flow = flow_id or (coding_agent_instance.get_active_flow_id() if coding_agent_instance else None)
+        if coding_memory:
+            if _ca_flow:
+                console.print(f"[cyan]Flow memory:[/cyan] resuming flow {_ca_flow}")
+            else:
+                console.print("[cyan]Flow memory:[/cyan] new flow will be created on first request.")
+        if True:  # agent_tools always on
             console.print(
                 f"[cyan]Auto-execute:[/cyan] {'enabled' if auto_execute_plan else 'disabled'} "
                 f"(max passes: {auto_execute_max_passes})"
@@ -5278,189 +5265,6 @@ def chat(
                 # console.print("\n[dim]Tip: run with your own :diff command if you add history later.[/dim]")
 
                 continue
-            # ==========================================================
-            # ✅ NORMAL CHAT PATH (your existing logic)
-            # ==========================================================
-            response = None
-            attempt_question = question
-
-            for attempt in range(1, max_attempts + 1):
-                logger.debug("Chat attempt", extra={"attempt": attempt, "max_attempts": max_attempts})
-
-                try:
-                    if agent_tools:
-                        cb = RichToolCallbackHandler(show_inputs=True)
-
-                        def _call(callbacks: list[BaseCallbackHandler]):
-                            # Primary path
-                            try:
-                                return chat_service.ask(attempt_question, callbacks=callbacks)  # type: ignore[arg-type]
-                            except TypeError:
-                                # Compatibility fallback
-                                if dir_mode:
-                                    return ask_service.ask_with_tools_dir_mode(  # type: ignore[call-arg]
-                                        index_dirs=getattr(chat_service, "index_dirs", []) or [],
-                                        question=attempt_question,
-                                        k=resolved_k,
-                                        max_steps=chat_agent_max_steps,
-                                        timeout_seconds=agent_timeout_seconds,
-                                        root_dir=root,
-                                        callbacks=callbacks,
-                                    )
-                                else:
-                                    assert resolved_index_dir is not None
-                                    return ask_service.ask_with_tools(
-                                        index_dir=resolved_index_dir,
-                                        question=attempt_question,
-                                        k=resolved_k,
-                                        max_steps=chat_agent_max_steps,
-                                        timeout_seconds=agent_timeout_seconds,
-                                        callbacks=callbacks,
-                                    )
-
-                        response_obj, debug_tail = _run_with_live_buffer(
-                            console,
-                            spinner_text="Thinking…",
-                            fn=_call,
-                            callbacks=[cb],
-                        )
-                        response = response_obj  # keep your variable name
-
-                    else:
-                        # no tools => no live panel; still want debug tail? keep simple
-                        response = chat_service.ask(attempt_question)
-
-                except Exception as exc:
-                    _log_exception("chat_service.ask", exc, attempt=attempt)
-                    raise
-                
-                if response is None:
-                    logger.warning("Chat service returned None response", extra={"attempt": attempt})
-                    break
-
-                src_count = len(getattr(response, "sources", []) or [])
-                guessed = _looks_like_guess(getattr(response, "answer", ""))
-                attempt_answer_text, parsed_attempt_payload = _extract_structured_answer(
-                    getattr(response, "answer", "") or ""
-                )
-                attempt_ui_blocks = _effective_ui_blocks(
-                    attempt_answer_text,
-                    parsed_attempt_payload if isinstance(parsed_attempt_payload, dict) else None,
-                )
-
-                logger.debug(
-                    "Chat attempt evaluation",
-                    extra={"attempt": attempt, "src_count": src_count, "guessed": guessed},
-                )
-
-                if attempt_ui_blocks:
-                    break
-                if (src_count >= min_sources) and not guessed:
-                    break
-
-                if attempt < max_attempts:
-                    attempt_question = _tool_first_instruction(question) + f"\n(Attempt {attempt+1}/{max_attempts})"
-
-            if response is None:
-                continue
-
-            answer = getattr(response, "answer", "") or ""
-            sources = getattr(response, "sources", []) or []
-            warns = getattr(response, "warnings", []) or []
-            trace = getattr(response, "trace", None) or []
-            answer_text, parsed_payload = _extract_structured_answer(answer)
-            if agent_tools and auto_execute_plan and _looks_like_plan_only_answer(
-                answer_text,
-                parsed_payload if isinstance(parsed_payload, dict) else None,
-            ):
-                auto_payload, auto_debug_tail = _run_auto_execute_pipeline_with_resume(question)
-                _emit_auto_execute_terminal(
-                    user_question=question,
-                    payload=auto_payload,
-                    debug_tail=auto_debug_tail,
-                )
-                continue
-            ui_blocks = _effective_ui_blocks(
-                answer_text,
-                parsed_payload if isinstance(parsed_payload, dict) else None,
-            )
-            payload_sources = parsed_payload.get("sources", []) if isinstance(parsed_payload, dict) else []
-            effective_sources = list(sources) or (list(payload_sources) if isinstance(payload_sources, list) else [])
-            payload_trace = parsed_payload.get("trace", []) if isinstance(parsed_payload, dict) else []
-            effective_trace_raw = list(trace) or (list(payload_trace) if isinstance(payload_trace, list) else [])
-            merged_warns = _merge_warnings(warns, parsed_payload if isinstance(parsed_payload, dict) else None)
-
-            _render_dynamic_blocks(
-                console,
-                ui_blocks,
-                diagram_render_images=diagram_render_images,
-                diagram_output_dir=resolved_diagram_output_dir,
-                diagram_format=diagram_format,
-                diagram_open_artifact=diagram_open,
-                diagram_timeout_seconds=diagram_timeout_seconds,
-                project_root=root,
-            )
-            selection_block = _pending_ui_selection_from_blocks(ui_blocks)
-            if selection_block is not None:
-                pending_ui_selection = selection_block
-            turn_record = ChatTurnTelemetry(
-                turn_index=len(session_turns) + 1,
-                timestamp=_now_iso(),
-                question=question,
-                answer_text=answer_text,
-                sources=effective_sources,
-                warnings=merged_warns,
-                trace=_coerce_trace_items(effective_trace_raw),
-                tool_steps_total=len(effective_trace_raw),
-                decisions=_extract_decisions(
-                    answer_text=answer_text,
-                    warnings=merged_warns,
-                    payload=parsed_payload if isinstance(parsed_payload, dict) else None,
-                ),
-            )
-            session_turns.append(turn_record)
-            _render_turn_transparency(
-                console,
-                turn=turn_record,
-                history=session_turns,
-            )
-            _log_chat_turn(
-                run_logger,
-                turn=turn_record,
-                mode="agent-tools" if agent_tools else "classic",
-                dir_mode=dir_mode,
-                coding_agent=False,
-                flow_id=active_flow_id,
-                render_mode="default",
-                fallback_reason="",
-                planning_mode=planning_mode,
-                planning_question_source=planning_question_source,
-                planning_question_index=planning_questions_asked_count,
-                multiline_input=multiline_input,
-                multiline_terminator=multiline_terminator,
-            )
-            _render_answer_sections(
-                console,
-                answer=answer,
-                title="Answer",
-                sources=effective_sources,
-                warnings=merged_warns,
-                trace=[],
-                show_trace=False,
-            )
-
-            # print debug tail if we have one from the last tool run
-            if "debug_tail" in locals() and debug_tail:
-                console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
-
-            logger.info(
-                "Chat response emitted",
-                extra={
-                    "sources": len(sources),
-                    "warnings": len(warns),
-                },
-            )
-
     finally:
         if tool_worker_client is not None:
             tool_worker_client.stop()

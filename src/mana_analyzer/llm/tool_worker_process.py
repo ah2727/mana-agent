@@ -496,7 +496,7 @@ class ToolWorkerClient:
                     for line in self._proc.stderr:
                         line = line.rstrip()
                         if line:
-                            logger.error(f"[Worker STDERR] {line}")
+                            logger.debug(f"[Worker STDERR] {line}")
             except Exception as e:
                 logger.debug(f"[Worker STDERR] Thread error: {e}")
         

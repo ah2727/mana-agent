@@ -205,7 +205,7 @@ When using the apply_patch tool, you MUST provide a unified diff payload.
 
 CODING_AGENT_LANGUAGE_TOOLING_PROMPT = """
 Language-aware tooling and command policy:
-
+* avoid to search all hint file,first ls and recognize file format and use hints.
 1) Detect ecosystem before running install/test commands.
    - Python hints: `pyproject.toml`, `requirements*.txt`, `Pipfile`, `poetry.lock`, `uv.lock`, `tox.ini`.
    - Node/JS/TS hints: `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`.
