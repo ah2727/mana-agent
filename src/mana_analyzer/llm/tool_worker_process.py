@@ -34,6 +34,49 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _PROVIDER_BANNED_KEYS = frozenset({"status"})
 
+# ---------------------------------------------------------------------------
+# Patterns used to detect provider errors related to banned parameters.
+# We check for multiple variants so that different provider error formats
+# are caught reliably, even if "status" isn't literally in the message.
+# ---------------------------------------------------------------------------
+_BANNED_PARAM_ERROR_PATTERNS: list[tuple[str, str]] = [
+    # OpenAI-compatible proxies
+    ("unknown parameter", "status"),
+    ("unrecognized parameter", "status"),
+    ("unexpected parameter", "status"),
+    ("invalid parameter", "status"),
+    # Generic patterns — provider may phrase it differently
+    ("unknown parameter", "input"),
+    ("unrecognized request parameter", ""),
+    ("additional properties", "status"),
+    ("is not allowed", "status"),
+    # Broader catch: any mention of banned keys in a schema/validation error
+    ("status", "not permitted"),
+    ("status", "not allowed"),
+    ("status", "is not expected"),
+]
+
+
+def _is_banned_param_provider_error(error_message: str) -> bool:
+    """Return True if *error_message* looks like a provider rejecting a banned key.
+
+    This function is intentionally broad: it is better to over-detect and
+    retry (stripping the offending key) than to let the error propagate
+    uncaught.
+    """
+    msg = error_message.lower()
+
+    # Fast-path: exact classic pattern
+    if "unknown parameter" in msg and "status" in msg:
+        return True
+
+    # Check all known patterns
+    for pattern_a, pattern_b in _BANNED_PARAM_ERROR_PATTERNS:
+        if pattern_a in msg and (not pattern_b or pattern_b in msg):
+            return True
+
+    return False
+
 
 def _strip_banned_keys(obj: Any) -> Any:
     """Recursively remove keys that are not accepted by the provider API.
@@ -50,6 +93,43 @@ def _strip_banned_keys(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_strip_banned_keys(item) for item in obj]
     return obj
+
+
+def _infer_trace_row_success(row: dict[str, Any]) -> bool:
+    """Determine whether a trace row represents a successful tool execution.
+
+    Strategy (in priority order):
+    1. If ``"status"`` key exists → use it (``"ok"`` means success).
+    2. If ``"error"`` key exists and is truthy → treat as failure.
+    3. If ``"result"`` or ``"output"`` key exists and is truthy → treat as success.
+    4. If the row has a ``"tool_name"`` or ``"tool"`` key → assume success
+       (the tool ran and produced *something*).
+    5. Otherwise → assume failure (we can't tell).
+    """
+    # ── 1. Explicit status field ──
+    status_val = row.get("status")
+    if status_val is not None:
+        return str(status_val).lower().strip() == "ok"
+
+    # ── 2. Explicit error field ──
+    error_val = row.get("error")
+    if error_val:
+        return False
+
+    # ── 3. Has a result / output ──
+    for key in ("result", "output", "content", "response"):
+        val = row.get(key)
+        if val is not None and val != "":
+            return True
+
+    # ── 4. Has a tool identifier → the tool was at least invoked ──
+    tool_id = row.get("tool_name") or row.get("tool") or row.get("name")
+    if tool_id:
+        # If a tool was invoked and there is no explicit error, count as success
+        return True
+
+    # ── 5. Fallback → unknown, treat as failure ──
+    return False
 
 
 class WorkerInitPayload(BaseModel):
@@ -152,7 +232,6 @@ class ToolWorkerClient:
         self._init_payload.model = model_name
         if self._proc and self._proc.poll() is None:
             try:
-                # سعی برای آپدیت درجا
                 self._request("update_model", {"model": model_name}, expect_event=False)
                 logger.info(f"Worker model updated to {model_name} in-place.")
             except Exception:
@@ -220,11 +299,8 @@ class ToolWorkerClient:
     ) -> ToolRunResponse:
         self.start()
 
-        # Prepare the payload safely — strip all provider-banned keys
-        # so that "status" never leaks into the API request body.
         payload_dict = _strip_banned_keys(request.model_dump())
 
-        # Double-check: also sanitize tool_args explicitly
         if "tool_args" in payload_dict:
             payload_dict["tool_args"] = self._prepare_tool_input(payload_dict["tool_args"])
 
@@ -236,9 +312,9 @@ class ToolWorkerClient:
                 on_event=on_event,
             )
         except ToolWorkerProcessError as exc:
-            if self._is_status_param_error(exc):
+            if self._is_banned_param_error(exc):
                 logger.warning(
-                    "Provider rejected 'status' parameter — stripping and retrying. "
+                    "Provider rejected a banned parameter — stripping and retrying. "
                     "Original error: %s",
                     exc,
                 )
@@ -263,10 +339,15 @@ class ToolWorkerClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _is_status_param_error(exc: ToolWorkerProcessError) -> bool:
-        """Detect the specific 'Unknown parameter … status' provider error."""
-        msg = str(exc).lower()
-        return "unknown parameter" in msg and "status" in msg
+    def _is_banned_param_error(exc: ToolWorkerProcessError) -> bool:
+        """Detect provider errors caused by banned parameters (e.g. 'status').
+
+        Uses the broad pattern matcher so we catch all known variants.
+        """
+        return _is_banned_param_provider_error(str(exc))
+
+    # Keep the old name as an alias for backward compatibility
+    _is_status_param_error = _is_banned_param_error
 
     def _prepare_tool_input(self, tool_args: dict[str, Any]) -> dict[str, Any]:
         """
@@ -280,7 +361,6 @@ class ToolWorkerClient:
             return False
         if exc.retriable:
             return True
-        # اگر مدل پیدا نشد یا خطای IO بود، اجازه ریترای بده
         return exc.code in {"worker_io_error", "worker_dead", "model_not_found", "init_failed"}
 
     def _restart(self) -> None:
@@ -313,7 +393,6 @@ class ToolWorkerClient:
             raise ToolWorkerProcessError(code="worker_io_error", message="worker stdio unavailable", retriable=True)
         request_id = uuid.uuid4().hex
 
-        # ── Sanitize the outbound payload so banned keys never reach the wire ──
         sanitized_payload = _strip_banned_keys(payload)
 
         envelope = WorkerEnvelope(type=msg_type, request_id=request_id, payload=sanitized_payload)
@@ -400,18 +479,7 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
 
 
 def _sanitize_trace_for_provider(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return a copy of *trace_rows* with provider-banned keys removed.
-
-    The ``status`` field is perfectly fine for *internal* bookkeeping (we
-    still use it for the ``tools_only_strict`` check), but it must never
-    be forwarded to the upstream LLM provider because some providers
-    (e.g. certain OpenAI-compatible proxies) reject it with::
-
-        Unknown parameter: 'input[N].status'
-
-    This helper creates a sanitised copy that is safe to embed in any
-    payload that will eventually be serialised and sent over the wire.
-    """
+    """Return a copy of *trace_rows* with provider-banned keys removed."""
     return _strip_banned_keys(trace_rows)
 
 
@@ -458,10 +526,20 @@ def _run_tool_request(
     # Build the raw trace — still contains "status" for local logic.
     trace_rows_raw = [item.to_dict() for item in getattr(result, "trace", [])]
 
-    # Use the RAW trace (with status) for the strict-tools check.
-    ok_tools = len(
-        [row for row in trace_rows_raw if str(row.get("status", "")).lower().strip() == "ok"]
-    )
+    # ── Determine successful tool count using the resilient inference ──
+    # Instead of relying solely on row.get("status") == "ok", we use
+    # _infer_trace_row_success() which can recognise success even when
+    # the "status" key is missing entirely.
+    ok_tools = sum(1 for row in trace_rows_raw if _infer_trace_row_success(row))
+
+    if ok_tools == 0 and trace_rows_raw:
+        logger.debug(
+            "No trace rows inferred as successful (total=%d). "
+            "Sample row keys: %s",
+            len(trace_rows_raw),
+            list(trace_rows_raw[0].keys()) if trace_rows_raw else "N/A",
+        )
+
     strict_required = bool(tools_only_strict_default)
     if req.tools_only_strict_override is not None:
         strict_required = bool(req.tools_only_strict_override)
@@ -632,7 +710,7 @@ class _ToolWorkerServer:
                     payload=WorkerError(
                         code="init_failed",
                         message=str(exc),
-                        retriable=True,  # اجازه ریترای برای خطاهای احتمالی شبکه در زمان اینیت
+                        retriable=True,
                     ).model_dump(),
                 )
             )
@@ -648,7 +726,6 @@ class _ToolWorkerServer:
         if new_model:
             try:
                 self._ask_agent.model = new_model
-                # اگر متد آپدیت در AskAgent پیاده‌سازی شده باشد
                 if hasattr(self._ask_agent, "update_model"):
                     self._ask_agent.update_model(new_model)
                 self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"updated": True, "model": new_model}))
@@ -671,7 +748,6 @@ class _ToolWorkerServer:
             )
             return
         try:
-            # ── Sanitize the inbound envelope so "status" never reaches the agent ──
             sanitized_env_payload = _strip_banned_keys(env.payload)
             req = ToolRunRequest.model_validate(sanitized_env_payload)
 
@@ -713,7 +789,6 @@ class _ToolWorkerServer:
                 callbacks=[tool_event_cb],
             )
 
-            # ── Final safety net: strip banned keys from the outbound payload ──
             safe_payload = _strip_banned_keys(response.model_dump())
             self._emit(WorkerReply(type="ok", request_id=env.request_id, payload=safe_payload))
         except ToolWorkerProcessError as exc:
@@ -730,15 +805,17 @@ class _ToolWorkerServer:
                 )
             )
         except Exception as exc:
-            # تشخیص هوشمند خطای مدل نامعتبر (404)
             code = "run_failed"
             err_msg = str(exc).lower()
+            retriable = True
+
             if "model_not_found" in err_msg or "404" in err_msg or "not found" in err_msg:
                 code = "model_not_found"
 
-            # ── Detect the specific "Unknown parameter: status" provider error ──
-            retriable = True
-            if "unknown parameter" in err_msg and "status" in err_msg:
+            # ── Detect provider errors caused by banned parameters ──
+            # Use the broad pattern matcher instead of checking only for
+            # the exact "unknown parameter" + "status" combination.
+            if _is_banned_param_provider_error(err_msg):
                 code = "provider_unknown_param"
                 logger.error(
                     "Provider rejected a banned parameter (likely 'status'). "
@@ -746,6 +823,8 @@ class _ToolWorkerServer:
                     "Original error: %s",
                     exc,
                 )
+                # Still retriable — after restart the keys will be stripped again
+                retriable = True
 
             self._emit(
                 WorkerReply(
