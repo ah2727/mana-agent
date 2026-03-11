@@ -7,11 +7,11 @@ import subprocess
 import sys
 import time
 import uuid
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-# افزودن کتابخانه‌های مورد نیاز برای Retry
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -27,30 +27,27 @@ from mana_analyzer.vector_store.faiss_store import FaissStore
 
 logger = logging.getLogger(__name__)
 
+# Configure logging
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s %(levelname)s %(name)s [%(funcName)s:%(lineno)d] %(message)s'
+    )
+
 # ---------------------------------------------------------------------------
 # Keys that must NEVER be sent to provider APIs as message/input parameters.
-# Some providers (e.g. certain OpenAI-compatible proxies) reject unknown keys
-# such as "status" when they appear inside the `input` / `messages` array.
 # ---------------------------------------------------------------------------
 _PROVIDER_BANNED_KEYS = frozenset({"status"})
 
-# ---------------------------------------------------------------------------
-# Patterns used to detect provider errors related to banned parameters.
-# We check for multiple variants so that different provider error formats
-# are caught reliably, even if "status" isn't literally in the message.
-# ---------------------------------------------------------------------------
 _BANNED_PARAM_ERROR_PATTERNS: list[tuple[str, str]] = [
-    # OpenAI-compatible proxies
     ("unknown parameter", "status"),
     ("unrecognized parameter", "status"),
     ("unexpected parameter", "status"),
     ("invalid parameter", "status"),
-    # Generic patterns — provider may phrase it differently
     ("unknown parameter", "input"),
     ("unrecognized request parameter", ""),
     ("additional properties", "status"),
     ("is not allowed", "status"),
-    # Broader catch: any mention of banned keys in a schema/validation error
     ("status", "not permitted"),
     ("status", "not allowed"),
     ("status", "is not expected"),
@@ -58,32 +55,16 @@ _BANNED_PARAM_ERROR_PATTERNS: list[tuple[str, str]] = [
 
 
 def _is_banned_param_provider_error(error_message: str) -> bool:
-    """Return True if *error_message* looks like a provider rejecting a banned key.
-
-    This function is intentionally broad: it is better to over-detect and
-    retry (stripping the offending key) than to let the error propagate
-    uncaught.
-    """
     msg = error_message.lower()
-
-    # Fast-path: exact classic pattern
     if "unknown parameter" in msg and "status" in msg:
         return True
-
-    # Check all known patterns
     for pattern_a, pattern_b in _BANNED_PARAM_ERROR_PATTERNS:
         if pattern_a in msg and (not pattern_b or pattern_b in msg):
             return True
-
     return False
 
 
 def _strip_banned_keys(obj: Any) -> Any:
-    """Recursively remove keys that are not accepted by the provider API.
-
-    Works on dicts, lists, and nested combinations thereof.  Returns a
-    *new* object — the original is never mutated.
-    """
     if isinstance(obj, dict):
         return {
             k: _strip_banned_keys(v)
@@ -96,11 +77,6 @@ def _strip_banned_keys(obj: Any) -> Any:
 
 
 def _deep_strip_banned_keys_inplace(obj: Any) -> Any:
-    """Recursively remove banned keys IN-PLACE for mutable objects.
-    
-    This is more aggressive than _strip_banned_keys and modifies the original.
-    Use when you need to ensure no banned keys exist anywhere in the object tree.
-    """
     if isinstance(obj, dict):
         keys_to_remove = [k for k in obj if k in _PROVIDER_BANNED_KEYS]
         for k in keys_to_remove:
@@ -114,15 +90,12 @@ def _deep_strip_banned_keys_inplace(obj: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Monkey-patch LangChain and related libraries to strip banned keys
-# BEFORE they reach the API. This is the most reliable approach.
+# Monkey-patch section
 # ---------------------------------------------------------------------------
-
 _PATCHES_APPLIED = False
 
 
 def _apply_global_patches() -> None:
-    """Apply monkey-patches to prevent banned keys from reaching APIs."""
     global _PATCHES_APPLIED
     if _PATCHES_APPLIED:
         return
@@ -152,11 +125,9 @@ def _apply_global_patches() -> None:
 
 
 def _patch_langchain_messages() -> None:
-    """Patch LangChain BaseMessage to strip banned keys on serialization."""
     try:
         from langchain_core.messages import BaseMessage
         
-        # Patch model_dump
         if hasattr(BaseMessage, 'model_dump'):
             _original_model_dump = BaseMessage.model_dump
             
@@ -166,7 +137,6 @@ def _patch_langchain_messages() -> None:
             
             BaseMessage.model_dump = _patched_model_dump
         
-        # Patch dict (older Pydantic)
         if hasattr(BaseMessage, 'dict'):
             _original_dict = BaseMessage.dict
             
@@ -184,16 +154,13 @@ def _patch_langchain_messages() -> None:
 
 
 def _patch_openai_client() -> None:
-    """Patch OpenAI client to strip banned keys from requests."""
     try:
         from openai._base_client import SyncAPIClient, AsyncAPIClient
         
-        # Patch the _build_request method which constructs all API requests
         if hasattr(SyncAPIClient, '_build_request'):
             _original_build_request = SyncAPIClient._build_request
             
             def _patched_build_request(self, options, *args, **kwargs):
-                # Strip banned keys from the json_data before building request
                 if hasattr(options, 'json_data') and options.json_data is not None:
                     options.json_data = _strip_banned_keys(options.json_data)
                 return _original_build_request(self, options, *args, **kwargs)
@@ -218,7 +185,6 @@ def _patch_openai_client() -> None:
 
 
 def _patch_httpx_client() -> None:
-    """Patch httpx to strip banned keys from JSON payloads (last resort)."""
     try:
         import httpx
         
@@ -264,7 +230,6 @@ def _patch_httpx_client() -> None:
 
 
 def _patch_litellm() -> None:
-    """Patch LiteLLM to strip banned keys from messages."""
     try:
         import litellm
         
@@ -298,58 +263,88 @@ _apply_global_patches()
 
 
 def _infer_trace_row_success(row: dict[str, Any]) -> bool:
-    """Determine whether a trace row represents a successful tool execution.
+    """Determine whether a trace row represents a successful tool execution."""
+    logger.debug(f"[_infer_trace_row_success] Evaluating row with keys: {list(row.keys())}")
+    logger.debug(f"[_infer_trace_row_success] Full row content: {json.dumps(row, default=str, ensure_ascii=False)[:500]}")
+    
+    # Check for explicit status field (legacy support before stripping)
+    status_val = row.get("status")
+    if status_val is not None:
+        logger.debug(f"[_infer_trace_row_success] Found status field: {status_val}")
+        if status_val in ("ok", "success"):
+            logger.debug("[_infer_trace_row_success] → SUCCESS (explicit status=ok/success)")
+            return True
+        elif status_val in ("error", "failed"):
+            logger.debug("[_infer_trace_row_success] → FAILURE (explicit status=error/failed)")
+            return False
 
-    This function does NOT depend on the 'status' field, which may be
-    stripped before reaching the provider. Instead, it infers success
-    from other available fields.
-
-    Strategy (in priority order):
-    1. If ``"error"`` key exists and is truthy → treat as failure.
-    2. If ``"result"`` or ``"output"`` key exists and is truthy → treat as success.
-    3. If the row has a ``"tool_name"`` or ``"tool"`` key → assume success
-       (the tool ran and produced *something*).
-    4. Check for explicit success indicators like "success": True.
-    5. Otherwise → assume failure (we can't tell).
-    """
-    # ── 1. Explicit error field → failure ──
+    # Explicit error field → failure
     error_val = row.get("error")
     if error_val:
-        # Check if error is actually meaningful (not empty/None)
         if isinstance(error_val, str) and error_val.strip():
+            logger.debug(f"[_infer_trace_row_success] → FAILURE (error field: {error_val[:100]})")
             return False
         elif isinstance(error_val, (dict, list)) and error_val:
+            logger.debug("[_infer_trace_row_success] → FAILURE (error field is non-empty dict/list)")
             return False
         elif error_val is True:
+            logger.debug("[_infer_trace_row_success] → FAILURE (error=True)")
             return False
 
-    # ── 2. Has a result / output → success ──
-    for key in ("result", "output", "content", "response", "data", "return_value"):
+    # Has a result / output → success
+    success_keys = ("result", "output", "content", "response", "data", "return_value", "tool_output", "observation")
+    for key in success_keys:
         val = row.get(key)
         if val is not None and val != "" and val != [] and val != {}:
+            logger.debug(f"[_infer_trace_row_success] → SUCCESS (found {key}={str(val)[:100]})")
             return True
 
-    # ── 3. Has a tool identifier → the tool was at least invoked ──
-    tool_id = row.get("tool_name") or row.get("tool") or row.get("name") or row.get("action")
-    if tool_id:
-        # If a tool was invoked and there is no explicit error, count as success
-        return True
+    # Has a tool identifier → the tool was at least invoked
+    tool_id_keys = ("tool_name", "tool", "name", "action", "function_name", "tool_call")
+    for key in tool_id_keys:
+        tool_id = row.get(key)
+        if tool_id:
+            logger.debug(f"[_infer_trace_row_success] → SUCCESS (found tool identifier: {key}={tool_id})")
+            return True
 
-    # ── 4. Check for explicit success indicators ──
+    # Check for explicit success indicators
     if row.get("success") is True:
+        logger.debug("[_infer_trace_row_success] → SUCCESS (success=True)")
         return True
     if row.get("completed") is True:
+        logger.debug("[_infer_trace_row_success] → SUCCESS (completed=True)")
         return True
     if row.get("ok") is True:
+        logger.debug("[_infer_trace_row_success] → SUCCESS (ok=True)")
         return True
 
-    # ── 5. Check for tool call ID (indicates tool was executed) ──
-    if row.get("tool_call_id") or row.get("call_id") or row.get("id"):
+    # Check for tool call ID (indicates tool was executed)
+    id_keys = ("tool_call_id", "call_id", "id", "execution_id")
+    for key in id_keys:
+        if row.get(key):
+            logger.debug(f"[_infer_trace_row_success] → SUCCESS (found ID: {key})")
+            return True
+
+    # Check for type field indicating tool message
+    row_type = row.get("type", "")
+    if row_type in ("tool", "tool_result", "function", "function_result", "tool_message"):
+        logger.debug(f"[_infer_trace_row_success] → SUCCESS (type={row_type})")
         return True
 
-    # ── 6. Fallback → unknown, treat as failure ──
+    # Check for role field indicating tool message
+    row_role = row.get("role", "")
+    if row_role in ("tool", "function"):
+        logger.debug(f"[_infer_trace_row_success] → SUCCESS (role={row_role})")
+        return True
+
+    # Fallback → unknown, treat as failure
+    logger.debug("[_infer_trace_row_success] → FAILURE (no success indicators found)")
     return False
 
+
+# ---------------------------------------------------------------------------
+# Pydantic Models
+# ---------------------------------------------------------------------------
 
 class WorkerInitPayload(BaseModel):
     api_key: str
@@ -418,6 +413,10 @@ class ToolWorkerProcessError(RuntimeError):
         self.details = details or {}
 
 
+# ---------------------------------------------------------------------------
+# ToolWorkerClient
+# ---------------------------------------------------------------------------
+
 class ToolWorkerClient:
     def __init__(
         self,
@@ -442,24 +441,29 @@ class ToolWorkerClient:
             tools_only_strict=tools_only_strict,
         )
         self._proc: subprocess.Popen[str] | None = None
+        self._stderr_thread: threading.Thread | None = None
+        logger.info(f"[ToolWorkerClient] Initialized with model={model}, tools_only_strict={tools_only_strict}")
 
     def init_payload_dict(self) -> dict[str, Any]:
         return self._init_payload.model_dump()
 
     def update_model(self, model_name: str) -> None:
-        """Update the model name and sync with the worker process."""
+        logger.info(f"[ToolWorkerClient] Updating model to {model_name}")
         self._init_payload.model = model_name
         if self._proc and self._proc.poll() is None:
             try:
                 self._request("update_model", {"model": model_name}, expect_event=False)
-                logger.info(f"Worker model updated to {model_name} in-place.")
-            except Exception:
-                logger.warning("Failed to update worker model in-place, restarting worker.")
+                logger.info(f"[ToolWorkerClient] Worker model updated to {model_name} in-place.")
+            except Exception as e:
+                logger.warning(f"[ToolWorkerClient] Failed to update worker model in-place: {e}, restarting worker.")
                 self._restart()
 
     def start(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
+            logger.debug("[ToolWorkerClient] Worker already running")
             return
+        
+        logger.info("[ToolWorkerClient] Starting worker process...")
         env = os.environ.copy()
         repo_root = Path(self._init_payload.repo_root).resolve()
         pythonpath_entries: list[str] = []
@@ -471,33 +475,76 @@ class ToolWorkerClient:
         if existing_pythonpath:
             pythonpath_entries.append(existing_pythonpath)
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+        
+        logger.debug(f"[ToolWorkerClient] PYTHONPATH: {env['PYTHONPATH']}")
+        logger.debug(f"[ToolWorkerClient] Python executable: {sys.executable}")
+        
         self._proc = subprocess.Popen(
             [sys.executable, "-m", "mana_analyzer.llm.tool_worker_process"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,  # ✅ Changed from PIPE to DEVNULL
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             env=env,
         )
+        
+        # Start a thread to log stderr
+        def log_stderr():
+            try:
+                if self._proc and self._proc.stderr:
+                    for line in self._proc.stderr:
+                        line = line.rstrip()
+                        if line:
+                            logger.error(f"[Worker STDERR] {line}")
+            except Exception as e:
+                logger.debug(f"[Worker STDERR] Thread error: {e}")
+        
+        self._stderr_thread = threading.Thread(target=log_stderr, daemon=True)
+        self._stderr_thread.start()
+        
+        # Give worker a moment to start
+        time.sleep(0.1)
+        
+        # Check if process died immediately
+        if self._proc.poll() is not None:
+            # Process died, read stderr
+            stderr_output = ""
+            if self._proc.stderr:
+                try:
+                    stderr_output = self._proc.stderr.read()
+                except Exception:
+                    pass
+            logger.error(f"[ToolWorkerClient] Worker died immediately. Exit code: {self._proc.returncode}")
+            logger.error(f"[ToolWorkerClient] Worker stderr: {stderr_output}")
+            raise ToolWorkerProcessError(
+                code="worker_startup_failed",
+                message=f"Worker process died on startup: {stderr_output[:500]}",
+                retriable=True,
+            )
+        
+        logger.info("[ToolWorkerClient] Worker process started, sending init...")
         self._request("init", self._init_payload.model_dump(), expect_event=True)
+        logger.info("[ToolWorkerClient] Worker initialized successfully")
 
     def stop(self) -> None:
         proc = self._proc
         self._proc = None
         if proc is None:
             return
+        logger.info("[ToolWorkerClient] Stopping worker process...")
         if proc.poll() is None:
             try:
                 self._request_with_proc(proc, "shutdown", {}, expect_event=False)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[ToolWorkerClient] Shutdown request failed: {e}")
             if proc.poll() is None:
                 proc.terminate()
                 try:
                     proc.wait(timeout=2)
                 except Exception:
                     proc.kill()
+        logger.info("[ToolWorkerClient] Worker process stopped")
 
     def health(self) -> dict[str, Any]:
         self.start()
@@ -516,12 +563,16 @@ class ToolWorkerClient:
         *,
         on_event: Callable[[WorkerEvent], None] | None = None,
     ) -> ToolRunResponse:
+        logger.info(f"[ToolWorkerClient.run_tools] Starting with question: {request.question[:100]}...")
+        logger.debug(f"[ToolWorkerClient.run_tools] Full request: {request.model_dump()}")
+        
         self.start()
         payload_dict = _strip_banned_keys(request.model_dump())
-        payload_dict = _strip_banned_keys(payload_dict)
         
         if "tool_args" in payload_dict:
             payload_dict["tool_args"] = self._prepare_tool_input(payload_dict["tool_args"])
+
+        logger.debug(f"[ToolWorkerClient.run_tools] Sanitized payload: {json.dumps(payload_dict, default=str)[:500]}")
 
         try:
             response_payload = self._request(
@@ -530,19 +581,24 @@ class ToolWorkerClient:
                 expect_event=False,
                 on_event=on_event,
             )
+            logger.info(f"[ToolWorkerClient.run_tools] Received response with keys: {list(response_payload.keys())}")
+            logger.debug(f"[ToolWorkerClient.run_tools] Response trace count: {len(response_payload.get('trace', []))}")
+            
         except ToolWorkerProcessError as exc:
+            logger.error(f"[ToolWorkerClient.run_tools] ToolWorkerProcessError: code={exc.code}, message={exc}")
+            
             if self._is_banned_param_error(exc):
                 logger.warning(
-                    "Provider rejected a banned parameter — stripping and retrying. "
+                    "[ToolWorkerClient.run_tools] Provider rejected a banned parameter — stripping and retrying. "
                     "Original error: %s",
                     exc,
                 )
                 self._restart()
-                raise  # let @retry handle it after restart
+                raise
 
             if self._can_retry(exc):
                 logger.warning(
-                    "Retrying run_tools due to worker error: %s. Message: %s",
+                    "[ToolWorkerClient.run_tools] Retrying run_tools due to worker error: %s. Message: %s",
                     exc.code,
                     exc,
                 )
@@ -553,26 +609,13 @@ class ToolWorkerClient:
 
         return ToolRunResponse.model_validate(response_payload)
 
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _is_banned_param_error(exc: ToolWorkerProcessError) -> bool:
-        """Detect provider errors caused by banned parameters (e.g. 'status').
-
-        Uses the broad pattern matcher so we catch all known variants.
-        """
         return _is_banned_param_provider_error(str(exc))
 
-    # Keep the old name as an alias for backward compatibility
     _is_status_param_error = _is_banned_param_error
 
     def _prepare_tool_input(self, tool_args: dict[str, Any]) -> dict[str, Any]:
-        """
-        Prepare the tool input for the provider.
-        Strips every key that the provider will reject (e.g. ``status``).
-        """
         return _strip_banned_keys(tool_args)
 
     def _can_retry(self, exc: ToolWorkerProcessError) -> bool:
@@ -580,9 +623,10 @@ class ToolWorkerClient:
             return False
         if exc.retriable:
             return True
-        return exc.code in {"worker_io_error", "worker_dead", "model_not_found", "init_failed"}
+        return exc.code in {"worker_io_error", "worker_dead", "model_not_found", "init_failed", "worker_startup_failed"}
 
     def _restart(self) -> None:
+        logger.info("[ToolWorkerClient] Restarting worker...")
         self.stop()
         self.start()
 
@@ -610,11 +654,21 @@ class ToolWorkerClient:
     ) -> dict[str, Any]:
         if proc.stdin is None or proc.stdout is None:
             raise ToolWorkerProcessError(code="worker_io_error", message="worker stdio unavailable", retriable=True)
+        
+        # Check if process is still alive
+        if proc.poll() is not None:
+            raise ToolWorkerProcessError(
+                code="worker_dead", 
+                message=f"worker process already terminated with code {proc.returncode}", 
+                retriable=True
+            )
+        
         request_id = uuid.uuid4().hex
-
         sanitized_payload = _strip_banned_keys(payload)
-
         envelope = WorkerEnvelope(type=msg_type, request_id=request_id, payload=sanitized_payload)
+        
+        logger.debug(f"[ToolWorkerClient._request_with_proc] Sending {msg_type} request: {request_id}")
+        
         try:
             proc.stdin.write(envelope.model_dump_json() + "\n")
             proc.stdin.flush()
@@ -627,46 +681,66 @@ class ToolWorkerClient:
 
         saw_event = False
         while True:
+            # Check if process died
+            if proc.poll() is not None:
+                raise ToolWorkerProcessError(
+                    code="worker_dead", 
+                    message=f"worker terminated unexpectedly with code {proc.returncode}", 
+                    retriable=True
+                )
+            
             line = proc.stdout.readline()
             if not line:
-                raise ToolWorkerProcessError(code="worker_dead", message="worker terminated unexpectedly", retriable=True)
+                raise ToolWorkerProcessError(code="worker_dead", message="worker terminated unexpectedly (EOF)", retriable=True)
+            
+            logger.debug(f"[ToolWorkerClient._request_with_proc] Received line: {line[:200].strip()}")
+            
             try:
                 reply = WorkerReply.model_validate_json(line.strip())
             except ValidationError as exc:
-                raise ToolWorkerProcessError(
-                    code="worker_protocol_error",
-                    message=f"invalid worker reply: {exc}",
-                    retriable=True,
-                ) from exc
+                logger.warning(f"[ToolWorkerClient._request_with_proc] Invalid reply, skipping: {line[:100]}")
+                continue
+            
             if reply.request_id != request_id:
                 continue
 
             if reply.type == "event":
                 saw_event = True
+                logger.debug(f"[ToolWorkerClient._request_with_proc] Received event: {reply.payload.get('name', 'unknown')}")
                 if on_event is not None:
                     try:
                         on_event(WorkerEvent.model_validate(reply.payload))
                     except Exception:
                         logger.debug("Failed to process worker event", exc_info=True)
                 continue
+            
             if reply.type == "error":
                 err = WorkerError.model_validate(reply.payload)
+                logger.error(f"[ToolWorkerClient._request_with_proc] Received error: {err.code} - {err.message}")
                 raise ToolWorkerProcessError(
                     code=err.code,
                     message=err.message,
-                    retriable=err.retriable,
+                    retriable=bool(err.retriable),
                     details=err.details,
                 )
+            
             if expect_event and not saw_event:
                 raise ToolWorkerProcessError(
                     code="worker_protocol_error",
                     message="expected event before init confirmation",
                     retriable=True,
                 )
+            
+            logger.debug(f"[ToolWorkerClient._request_with_proc] Request {request_id} completed successfully")
             return reply.payload
 
 
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
 def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
+    logger.info(f"[_build_worker_ask_agent] Building AskAgent with model={payload.model}")
     embeddings = OpenAIEmbeddings(
         api_key=payload.api_key,
         model=payload.embed_model,
@@ -694,11 +768,11 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
             build_search_internet_tool(),
         ]
     )
+    logger.info(f"[_build_worker_ask_agent] AskAgent built with {len(ask_agent.tools)} tools")
     return ask_agent
 
 
 def _sanitize_trace_for_provider(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return a copy of *trace_rows* with provider-banned keys removed."""
     return _strip_banned_keys(trace_rows)
 
 
@@ -715,6 +789,10 @@ def _run_tool_request(
     tools_only_strict_default: bool,
     callbacks: list[BaseCallbackHandler] | None = None,
 ) -> ToolRunResponse:
+    logger.debug("=== EXECUTOR START ===")
+    logger.debug("Question: %s", req.question)
+    logger.debug("tools_only_strict_default=%s", tools_only_strict_default)
+
     if req.index_dirs:
         result = ask_agent.run_multi(
             question=req.question,
@@ -742,41 +820,58 @@ def _run_tool_request(
             callbacks=callbacks,
         )
 
-    # Build the raw trace — still contains "status" for local logic.
-    trace_rows_raw = [item.to_dict() for item in getattr(result, "trace", [])]
+    logger.debug("Agent execution finished")
 
-    # ── Determine successful tool count using the resilient inference ──
-    # Instead of relying solely on row.get("status") == "ok", we use
-    # _infer_trace_row_success() which can recognise success even when
-    # the "status" key is missing entirely.
-    ok_tools = sum(1 for row in trace_rows_raw if _infer_trace_row_success(row))
+    raw_trace = getattr(result, "trace", [])
+    logger.debug("Trace length: %d", len(raw_trace))
 
-    if ok_tools == 0 and trace_rows_raw:
-        logger.debug(
-            "No trace rows inferred as successful (total=%d). "
-            "Sample row keys: %s",
-            len(trace_rows_raw),
-            list(trace_rows_raw[0].keys()) if trace_rows_raw else "N/A",
-        )
+    trace_rows_raw = []
+    for i, item in enumerate(raw_trace):
+        if hasattr(item, "to_dict"):
+            row = item.to_dict()
+        elif isinstance(item, dict):
+            row = dict(item)
+        else:
+            row = {"raw_item": str(item), "type": type(item).__name__}
+        trace_rows_raw.append(row)
+        logger.debug("TRACE RAW [%d]: %s", i, json.dumps(row, default=str)[:500])
+
+    ok_tools = 0
+    for i, row in enumerate(trace_rows_raw):
+        success = _infer_trace_row_success(row)
+        logger.debug("TRACE CHECK [%d] success=%s keys=%s", i, success, list(row.keys()))
+        if success:
+            ok_tools += 1
+
+    logger.debug("Successful tools detected: %d", ok_tools)
 
     strict_required = bool(tools_only_strict_default)
     if req.tools_only_strict_override is not None:
         strict_required = bool(req.tools_only_strict_override)
+
+    logger.debug("Strict mode evaluation -> strict_required=%s ok_tools=%d", strict_required, ok_tools)
+
     if strict_required and ok_tools <= 0:
+        logger.error("TOOLS ONLY VIOLATION")
+        logger.error("TRACE DUMP START")
+        for r in trace_rows_raw:
+            logger.error(json.dumps(r, default=str))
+        logger.error("TRACE DUMP END")
+
         raise ToolWorkerProcessError(
             code="tools_only_violation",
             message="tools-only mode requires at least one successful tool call",
             retriable=False,
-            details={"trace_count": len(trace_rows_raw)},
+            details={"trace_count": len(trace_rows_raw), "trace_sample": trace_rows_raw[:3]},
         )
 
-    # Sanitize trace before it leaves the process — remove "status" and
-    # any other keys the provider would reject.
-    trace_rows_safe = _sanitize_trace_for_provider(trace_rows_raw)
-    trace_rows_safe = _strip_banned_keys(trace_rows_safe)
+    trace_rows_safe = _strip_banned_keys(trace_rows_raw)
+    logger.debug("Sanitized trace rows: %d", len(trace_rows_safe))
+    logger.debug("=== EXECUTOR END ===")
+
     return ToolRunResponse(
         answer=str(getattr(result, "answer", "")),
-        sources=[_strip_banned_keys(item.to_dict()) for item in getattr(result, "sources", [])],
+        sources=[_strip_banned_keys(s.to_dict() if hasattr(s, 'to_dict') else dict(s)) for s in getattr(result, "sources", [])],
         mode=str(getattr(result, "mode", "agent-tools")),
         trace=trace_rows_safe,
         warnings=[str(item) for item in getattr(result, "warnings", [])],
@@ -797,6 +892,10 @@ def run_tool_request_once(
     )
 
 
+# ---------------------------------------------------------------------------
+# Callback Handler
+# ---------------------------------------------------------------------------
+
 class _WorkerToolEventCallback(BaseCallbackHandler):
     """Emit per-tool events from worker process back to parent client."""
 
@@ -805,8 +904,10 @@ class _WorkerToolEventCallback(BaseCallbackHandler):
         self._emit_reply = emit_reply
         self._tool: str | None = None
         self._t0: float = 0.0
+        logger.debug(f"[_WorkerToolEventCallback] Initialized for request {request_id}")
 
     def _emit(self, *, name: str, message: str, data: dict[str, Any] | None = None) -> None:
+        logger.debug(f"[_WorkerToolEventCallback] Emitting event: {name}")
         self._emit_reply(
             WorkerReply(
                 type="event",
@@ -815,7 +916,7 @@ class _WorkerToolEventCallback(BaseCallbackHandler):
             )
         )
 
-    def on_tool_start(self, serialized, input_str: str, **kwargs) -> None:  # type: ignore[override]
+    def on_tool_start(self, serialized: dict[str, Any] | None, input_str: str, **kwargs: Any) -> None:
         _ = kwargs
         tool = str((serialized or {}).get("name") or "tool")
         self._tool = tool
@@ -828,7 +929,7 @@ class _WorkerToolEventCallback(BaseCallbackHandler):
             msg += f" | args: {args}"
         self._emit(name="tool_start", message=msg, data={"tool": tool, "args": args})
 
-    def on_tool_end(self, output: str, **kwargs) -> None:  # type: ignore[override]
+    def on_tool_end(self, output: str, **kwargs: Any) -> None:
         _ = (output, kwargs)
         tool = self._tool or "tool"
         dt = max(0.0, time.time() - self._t0)
@@ -839,7 +940,7 @@ class _WorkerToolEventCallback(BaseCallbackHandler):
             data={"tool": tool, "duration_seconds": round(dt, 3)},
         )
 
-    def on_tool_error(self, error: BaseException, **kwargs) -> None:  # type: ignore[override]
+    def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
         _ = kwargs
         tool = self._tool or "tool"
         self._tool = None
@@ -847,6 +948,10 @@ class _WorkerToolEventCallback(BaseCallbackHandler):
         msg = f"TOOL error: {tool}" + (f" - {err}" if err else "")
         self._emit(name="tool_error", message=msg, data={"tool": tool, "error": err})
 
+
+# ---------------------------------------------------------------------------
+# Turn Tool State
+# ---------------------------------------------------------------------------
 
 @dataclass
 class TurnToolExecutionState:
@@ -865,6 +970,10 @@ class TurnToolExecutionState:
         return True
 
 
+# ---------------------------------------------------------------------------
+# Worker Server
+# ---------------------------------------------------------------------------
+
 class _ToolWorkerServer:
     def __init__(self) -> None:
         self._ask_agent: AskAgent | None = None
@@ -872,13 +981,19 @@ class _ToolWorkerServer:
         self._turn_tool_state = TurnToolExecutionState()
 
     def run(self) -> int:
+        logger.info("[_ToolWorkerServer] Starting worker server...")
+        
         for raw in sys.stdin:
             line = raw.strip()
             if not line:
                 continue
+            
+            logger.debug(f"[_ToolWorkerServer] Received: {line[:200]}")
+            
             try:
                 env = WorkerEnvelope.model_validate_json(line)
             except ValidationError as exc:
+                logger.error(f"[_ToolWorkerServer] Invalid request: {exc}")
                 self._emit(
                     WorkerReply(
                         type="error",
@@ -891,6 +1006,7 @@ class _ToolWorkerServer:
                     )
                 )
                 continue
+            
             if env.type == "init":
                 self._handle_init(env)
                 continue
@@ -902,13 +1018,17 @@ class _ToolWorkerServer:
                 continue
             if env.type == "shutdown":
                 self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"shutdown": True}))
+                logger.info("[_ToolWorkerServer] Shutdown requested, exiting...")
                 return 0
             if env.type == "run_tools":
                 self._handle_run_tools(env)
                 continue
+        
+        logger.info("[_ToolWorkerServer] stdin closed, exiting...")
         return 0
 
     def _handle_init(self, env: WorkerEnvelope) -> None:
+        logger.info("[_ToolWorkerServer] Handling init...")
         try:
             payload = WorkerInitPayload.model_validate(env.payload)
             self._ask_agent = _build_worker_ask_agent(payload)
@@ -921,7 +1041,9 @@ class _ToolWorkerServer:
                 )
             )
             self._emit(WorkerReply(type="ok", request_id=env.request_id, payload={"initialized": True}))
+            logger.info("[_ToolWorkerServer] Init completed successfully")
         except Exception as exc:
+            logger.error(f"[_ToolWorkerServer] Init failed: {exc}", exc_info=True)
             self._emit(
                 WorkerReply(
                     type="error",
@@ -935,7 +1057,6 @@ class _ToolWorkerServer:
             )
 
     def _handle_update_model(self, env: WorkerEnvelope) -> None:
-        """Dynamically update the model name of the active AskAgent."""
         if self._ask_agent is None:
             self._emit(WorkerReply(type="error", request_id=env.request_id,
                                    payload=WorkerError(code="not_initialized", message="worker not initialized").model_dump()))
@@ -953,6 +1074,8 @@ class _ToolWorkerServer:
                                        payload=WorkerError(code="update_failed", message=str(exc)).model_dump()))
 
     def _handle_run_tools(self, env: WorkerEnvelope) -> None:
+        logger.info(f"[_ToolWorkerServer] Handling run_tools request: {env.request_id}")
+        
         if self._ask_agent is None:
             self._emit(
                 WorkerReply(
@@ -966,6 +1089,7 @@ class _ToolWorkerServer:
                 )
             )
             return
+        
         try:
             sanitized_env_payload = _strip_banned_keys(env.payload)
             req = ToolRunRequest.model_validate(sanitized_env_payload)
@@ -1000,6 +1124,7 @@ class _ToolWorkerServer:
                     )
                     return
                 logger.info("Registered tool execution for turn: tool=%s turn=%s", tool_name, env.request_id)
+            
             tool_event_cb = _WorkerToolEventCallback(request_id=env.request_id, emit_reply=self._emit)
             response = _run_tool_request(
                 ask_agent=self._ask_agent,
@@ -1010,7 +1135,10 @@ class _ToolWorkerServer:
 
             safe_payload = _strip_banned_keys(response.model_dump())
             self._emit(WorkerReply(type="ok", request_id=env.request_id, payload=safe_payload))
+            logger.info(f"[_ToolWorkerServer] run_tools completed: {env.request_id}")
+            
         except ToolWorkerProcessError as exc:
+            logger.error(f"[_ToolWorkerServer] ToolWorkerProcessError: {exc.code} - {exc}")
             self._emit(
                 WorkerReply(
                     type="error",
@@ -1024,6 +1152,7 @@ class _ToolWorkerServer:
                 )
             )
         except Exception as exc:
+            logger.error(f"[_ToolWorkerServer] Unexpected error: {exc}", exc_info=True)
             code = "run_failed"
             err_msg = str(exc).lower()
             retriable = True
@@ -1031,18 +1160,13 @@ class _ToolWorkerServer:
             if "model_not_found" in err_msg or "404" in err_msg or "not found" in err_msg:
                 code = "model_not_found"
 
-            # ── Detect provider errors caused by banned parameters ──
-            # Use the broad pattern matcher instead of checking only for
-            # the exact "unknown parameter" + "status" combination.
             if _is_banned_param_provider_error(err_msg):
                 code = "provider_unknown_param"
                 logger.error(
                     "Provider rejected a banned parameter (likely 'status'). "
-                    "This should have been stripped — please report this as a bug. "
                     "Original error: %s",
                     exc,
                 )
-                # Still retriable — after restart the keys will be stripped again
                 retriable = True
 
             self._emit(
@@ -1059,12 +1183,25 @@ class _ToolWorkerServer:
 
     @staticmethod
     def _emit(reply: WorkerReply) -> None:
-        sys.stdout.write(reply.model_dump_json() + "\n")
-        sys.stdout.flush()
+        try:
+            output = reply.model_dump_json() + "\n"
+            sys.stdout.write(output)
+            sys.stdout.flush()
+            logger.debug(f"[_ToolWorkerServer] Emitted: {output[:200].strip()}")
+        except Exception as e:
+            logger.error(f"[_ToolWorkerServer] Failed to emit reply: {e}")
 
 
 def main() -> int:
-    return _ToolWorkerServer().run()
+    """Main entry point for the worker process."""
+    try:
+        logger.info("[main] Tool worker process starting...")
+        return _ToolWorkerServer().run()
+    except Exception as e:
+        logger.error(f"[main] Fatal error in worker: {e}", exc_info=True)
+        # Write error to stderr so parent can see it
+        print(f"FATAL: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
