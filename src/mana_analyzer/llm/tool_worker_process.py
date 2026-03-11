@@ -95,40 +95,259 @@ def _strip_banned_keys(obj: Any) -> Any:
     return obj
 
 
+def _deep_strip_banned_keys_inplace(obj: Any) -> Any:
+    """Recursively remove banned keys IN-PLACE for mutable objects.
+    
+    This is more aggressive than _strip_banned_keys and modifies the original.
+    Use when you need to ensure no banned keys exist anywhere in the object tree.
+    """
+    if isinstance(obj, dict):
+        keys_to_remove = [k for k in obj if k in _PROVIDER_BANNED_KEYS]
+        for k in keys_to_remove:
+            del obj[k]
+        for v in obj.values():
+            _deep_strip_banned_keys_inplace(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            _deep_strip_banned_keys_inplace(item)
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# Monkey-patch LangChain and related libraries to strip banned keys
+# BEFORE they reach the API. This is the most reliable approach.
+# ---------------------------------------------------------------------------
+
+_PATCHES_APPLIED = False
+
+
+def _apply_global_patches() -> None:
+    """Apply monkey-patches to prevent banned keys from reaching APIs."""
+    global _PATCHES_APPLIED
+    if _PATCHES_APPLIED:
+        return
+    _PATCHES_APPLIED = True
+    
+    try:
+        _patch_langchain_messages()
+    except Exception as e:
+        logger.debug(f"Could not patch LangChain messages: {e}")
+    
+    try:
+        _patch_openai_client()
+    except Exception as e:
+        logger.debug(f"Could not patch OpenAI client: {e}")
+    
+    try:
+        _patch_httpx_client()
+    except Exception as e:
+        logger.debug(f"Could not patch httpx: {e}")
+    
+    try:
+        _patch_litellm()
+    except Exception as e:
+        logger.debug(f"Could not patch LiteLLM: {e}")
+    
+    logger.debug("Global patches applied (or skipped if unavailable)")
+
+
+def _patch_langchain_messages() -> None:
+    """Patch LangChain BaseMessage to strip banned keys on serialization."""
+    try:
+        from langchain_core.messages import BaseMessage
+        
+        # Patch model_dump
+        if hasattr(BaseMessage, 'model_dump'):
+            _original_model_dump = BaseMessage.model_dump
+            
+            def _patched_model_dump(self, *args, **kwargs):
+                result = _original_model_dump(self, *args, **kwargs)
+                return _strip_banned_keys(result)
+            
+            BaseMessage.model_dump = _patched_model_dump
+        
+        # Patch dict (older Pydantic)
+        if hasattr(BaseMessage, 'dict'):
+            _original_dict = BaseMessage.dict
+            
+            def _patched_dict(self, *args, **kwargs):
+                result = _original_dict(self, *args, **kwargs)
+                return _strip_banned_keys(result)
+            
+            BaseMessage.dict = _patched_dict
+        
+        logger.debug("Patched LangChain BaseMessage serialization")
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug(f"Could not patch LangChain messages: {e}")
+
+
+def _patch_openai_client() -> None:
+    """Patch OpenAI client to strip banned keys from requests."""
+    try:
+        from openai._base_client import SyncAPIClient, AsyncAPIClient
+        
+        # Patch the _build_request method which constructs all API requests
+        if hasattr(SyncAPIClient, '_build_request'):
+            _original_build_request = SyncAPIClient._build_request
+            
+            def _patched_build_request(self, options, *args, **kwargs):
+                # Strip banned keys from the json_data before building request
+                if hasattr(options, 'json_data') and options.json_data is not None:
+                    options.json_data = _strip_banned_keys(options.json_data)
+                return _original_build_request(self, options, *args, **kwargs)
+            
+            SyncAPIClient._build_request = _patched_build_request
+        
+        if hasattr(AsyncAPIClient, '_build_request'):
+            _original_async_build_request = AsyncAPIClient._build_request
+            
+            def _patched_async_build_request(self, options, *args, **kwargs):
+                if hasattr(options, 'json_data') and options.json_data is not None:
+                    options.json_data = _strip_banned_keys(options.json_data)
+                return _original_async_build_request(self, options, *args, **kwargs)
+            
+            AsyncAPIClient._build_request = _patched_async_build_request
+        
+        logger.debug("Patched OpenAI client request building")
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug(f"Could not patch OpenAI client: {e}")
+
+
+def _patch_httpx_client() -> None:
+    """Patch httpx to strip banned keys from JSON payloads (last resort)."""
+    try:
+        import httpx
+        
+        _original_request = httpx.Client.request
+        _original_async_request = httpx.AsyncClient.request
+        
+        def _sanitize_content(content: Any) -> Any:
+            if content is None:
+                return None
+            try:
+                if isinstance(content, bytes):
+                    data = json.loads(content.decode('utf-8'))
+                    return json.dumps(_strip_banned_keys(data)).encode('utf-8')
+                elif isinstance(content, str):
+                    data = json.loads(content)
+                    return json.dumps(_strip_banned_keys(data))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
+            return content
+        
+        def _patched_request(self, method, url, *args, **kwargs):
+            if 'json' in kwargs and kwargs['json'] is not None:
+                kwargs['json'] = _strip_banned_keys(kwargs['json'])
+            if 'content' in kwargs and kwargs['content'] is not None:
+                kwargs['content'] = _sanitize_content(kwargs['content'])
+            return _original_request(self, method, url, *args, **kwargs)
+        
+        async def _patched_async_request(self, method, url, *args, **kwargs):
+            if 'json' in kwargs and kwargs['json'] is not None:
+                kwargs['json'] = _strip_banned_keys(kwargs['json'])
+            if 'content' in kwargs and kwargs['content'] is not None:
+                kwargs['content'] = _sanitize_content(kwargs['content'])
+            return await _original_async_request(self, method, url, *args, **kwargs)
+        
+        httpx.Client.request = _patched_request
+        httpx.AsyncClient.request = _patched_async_request
+        
+        logger.debug("Patched httpx client")
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug(f"Could not patch httpx: {e}")
+
+
+def _patch_litellm() -> None:
+    """Patch LiteLLM to strip banned keys from messages."""
+    try:
+        import litellm
+        
+        _original_completion = litellm.completion
+        _original_acompletion = getattr(litellm, 'acompletion', None)
+        
+        def _patched_completion(*args, **kwargs):
+            if 'messages' in kwargs:
+                kwargs['messages'] = _strip_banned_keys(kwargs['messages'])
+            return _original_completion(*args, **kwargs)
+        
+        litellm.completion = _patched_completion
+        
+        if _original_acompletion is not None:
+            async def _patched_acompletion(*args, **kwargs):
+                if 'messages' in kwargs:
+                    kwargs['messages'] = _strip_banned_keys(kwargs['messages'])
+                return await _original_acompletion(*args, **kwargs)
+            
+            litellm.acompletion = _patched_acompletion
+        
+        logger.debug("Patched LiteLLM")
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug(f"Could not patch LiteLLM: {e}")
+
+
+# Apply patches immediately when module is loaded
+_apply_global_patches()
+
+
 def _infer_trace_row_success(row: dict[str, Any]) -> bool:
     """Determine whether a trace row represents a successful tool execution.
 
+    This function does NOT depend on the 'status' field, which may be
+    stripped before reaching the provider. Instead, it infers success
+    from other available fields.
+
     Strategy (in priority order):
-    1. If ``"status"`` key exists → use it (``"ok"`` means success).
-    2. If ``"error"`` key exists and is truthy → treat as failure.
-    3. If ``"result"`` or ``"output"`` key exists and is truthy → treat as success.
-    4. If the row has a ``"tool_name"`` or ``"tool"`` key → assume success
+    1. If ``"error"`` key exists and is truthy → treat as failure.
+    2. If ``"result"`` or ``"output"`` key exists and is truthy → treat as success.
+    3. If the row has a ``"tool_name"`` or ``"tool"`` key → assume success
        (the tool ran and produced *something*).
+    4. Check for explicit success indicators like "success": True.
     5. Otherwise → assume failure (we can't tell).
     """
-    # ── 1. Explicit status field ──
-    status_val = row.get("status")
-    if status_val is not None:
-        return str(status_val).lower().strip() == "ok"
-
-    # ── 2. Explicit error field ──
+    # ── 1. Explicit error field → failure ──
     error_val = row.get("error")
     if error_val:
-        return False
+        # Check if error is actually meaningful (not empty/None)
+        if isinstance(error_val, str) and error_val.strip():
+            return False
+        elif isinstance(error_val, (dict, list)) and error_val:
+            return False
+        elif error_val is True:
+            return False
 
-    # ── 3. Has a result / output ──
-    for key in ("result", "output", "content", "response"):
+    # ── 2. Has a result / output → success ──
+    for key in ("result", "output", "content", "response", "data", "return_value"):
         val = row.get(key)
-        if val is not None and val != "":
+        if val is not None and val != "" and val != [] and val != {}:
             return True
 
-    # ── 4. Has a tool identifier → the tool was at least invoked ──
-    tool_id = row.get("tool_name") or row.get("tool") or row.get("name")
+    # ── 3. Has a tool identifier → the tool was at least invoked ──
+    tool_id = row.get("tool_name") or row.get("tool") or row.get("name") or row.get("action")
     if tool_id:
         # If a tool was invoked and there is no explicit error, count as success
         return True
 
-    # ── 5. Fallback → unknown, treat as failure ──
+    # ── 4. Check for explicit success indicators ──
+    if row.get("success") is True:
+        return True
+    if row.get("completed") is True:
+        return True
+    if row.get("ok") is True:
+        return True
+
+    # ── 5. Check for tool call ID (indicates tool was executed) ──
+    if row.get("tool_call_id") or row.get("call_id") or row.get("id"):
+        return True
+
+    # ── 6. Fallback → unknown, treat as failure ──
     return False
 
 
@@ -256,7 +475,7 @@ class ToolWorkerClient:
             [sys.executable, "-m", "mana_analyzer.llm.tool_worker_process"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,  # ✅ Changed from PIPE to DEVNULL
             text=True,
             bufsize=1,
             env=env,
@@ -298,9 +517,9 @@ class ToolWorkerClient:
         on_event: Callable[[WorkerEvent], None] | None = None,
     ) -> ToolRunResponse:
         self.start()
-
         payload_dict = _strip_banned_keys(request.model_dump())
-
+        payload_dict = _strip_banned_keys(payload_dict)
+        
         if "tool_args" in payload_dict:
             payload_dict["tool_args"] = self._prepare_tool_input(payload_dict["tool_args"])
 
@@ -554,7 +773,7 @@ def _run_tool_request(
     # Sanitize trace before it leaves the process — remove "status" and
     # any other keys the provider would reject.
     trace_rows_safe = _sanitize_trace_for_provider(trace_rows_raw)
-
+    trace_rows_safe = _strip_banned_keys(trace_rows_safe)
     return ToolRunResponse(
         answer=str(getattr(result, "answer", "")),
         sources=[_strip_banned_keys(item.to_dict()) for item in getattr(result, "sources", [])],
