@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 from langchain_core.callbacks.base import BaseCallbackHandler
 from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_analyzer.llm.prompts import ASK_AGENT_SYSTEM_PROMPT
+from mana_analyzer.analysis.chunker import CodeChunker
+from mana_analyzer.services.structure_service import StructureService
 from mana_analyzer.llm.run_logger import LlmRunLogger
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
@@ -41,6 +43,15 @@ class _ReadFileInput(BaseModel):
 
 class _RunCommandInput(BaseModel):
     cmd: str = Field(description="Shell command to execute in project root")
+
+class _ChunkFileInput(BaseModel):
+    path: str = Field(description="Absolute or project-relative file path")
+
+class _ListToolsInput(BaseModel):
+    pass
+
+class _LsInput(BaseModel):
+    pass
 
 
 class AskAgent:
@@ -711,6 +722,21 @@ class AskAgent:
                     )
                 )
 
+        # chunking and listing helpers
+        def chunk_file(path: str) -> str:
+            fp = Path(self.project_root / path).resolve()
+            text = fp.read_text(encoding="utf-8")
+            chunks = CodeChunker()._chunk_text(text)
+            return json.dumps({"chunks": chunks})
+
+        def list_tools() -> str:
+            names = [tool.name for tool in base_tools + list(self.tools or [])]
+            return json.dumps({"tools": names})
+
+        def ls() -> str:
+            dirs = StructureService._list_directories(self.project_root)
+            return json.dumps({"directories": dirs})
+
         base_tools: list[BaseTool] = [
             StructuredTool.from_function(
                 func=semantic_search,
@@ -722,10 +748,9 @@ class AskAgent:
                 func=read_file,
                 name="read_file",
                 description=(
-                    "Read a repository file and return JSON metadata plus content. "
-                    "Use mode='full' once for small/medium files you expect to revisit; "
-                    "later reads may be served from flow cache. "
-                    "Use mode='line' for targeted slices or when full mode is blocked."
+                    "Read a repository file: call read_file(path, mode='full') first; "
+                    "if full mode exceeds caps, call chunk_file(path). "
+                    "Use mode='line' for targeted slices."
                 ),
                 args_schema=_ReadFileInput,
             ),
@@ -735,11 +760,28 @@ class AskAgent:
                 description="Run a non-destructive shell command in project root and return JSON stdout/stderr.",
                 args_schema=_RunCommandInput,
             ),
+            StructuredTool.from_function(
+                func=chunk_file,
+                name="chunk_file",
+                description="Chunk a file into text parts when full-mode read is blocked.",
+                args_schema=_ChunkFileInput,
+            ),
+            StructuredTool.from_function(
+                func=list_tools,
+                name="list_tools",
+                description="List available tool names.",
+                args_schema=_ListToolsInput,
+            ),
+            StructuredTool.from_function(
+                func=ls,
+                name="ls",
+                description="List project directories relative to the root.",
+                args_schema=_LsInput,
+            ),
         ]
 
-        # ✅ NEW: include any externally-registered tools (write_file/apply_patch/etc)
+        # include externally-registered tools (write_file/apply_patch/etc)
         all_tools = [*base_tools, *list(getattr(self, "tools", []) or [])]
-
         return all_tools, traces, sources, warnings
 
     # ✅ NEW: public "ask" API (what your CodingAgent expects)

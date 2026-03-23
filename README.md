@@ -228,7 +228,7 @@ If Redis/RQ is unavailable at runtime, the CLI falls back to the local executor 
 
 - Coding execution is tool-first: inspect/search first, then edit, then verify. Primary mutation path is `apply_patch`; fallback is `write_file`.
 - Repository mutation tools: `apply_patch`, `write_file`.
-- Repository execution/inspection tools: `read_file`, `semantic_search`, `run_command`.
+- Repository execution/inspection tools: `read_file`, `semantic_search`, `run_command`, `chunk_file`, `list_tools`, `ls`.
 - Patch format requirement for `apply_patch`: use unified diff text (`diff --git`, `---`, `+++`, `@@` hunks). Wrapper formats like `*** Begin Patch` are rejected by tool policy and prompts.
 - Language-aware tooling matrix (install/test commands + ignore paths): [`docs/coding-agent-language-tooling.md`](docs/coding-agent-language-tooling.md).
 

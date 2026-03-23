@@ -1396,10 +1396,13 @@ class CodingAgent:
             flow_context=flow_context,
         )
         return {
-            "allowed_tools": [
+        "allowed_tools": [
                 "semantic_search",
                 "read_file",
                 "run_command",
+                "chunk_file",
+                "list_tools",
+                "ls",
                 "apply_patch",
                 "write_file",
                 "search_internet",

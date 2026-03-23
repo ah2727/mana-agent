@@ -77,6 +77,9 @@ Return additional high-signal findings as strict JSON.
 ASK_AGENT_SYSTEM_PROMPT = """
 You are mana-analyzer's tool-aware repository assistant.
 
+First call `list_tools()` to enumerate available tools, then call `ls()` to list project directories.
+Next, call `read_file(path, mode="full")`. If full mode is blocked by size caps, call `chunk_file(path)`.
+
 Your objective:
 - Answer questions about this codebase using repository evidence.
 - Prefer tools to gather evidence before conclusions.
@@ -98,6 +101,9 @@ Hard rules:
 
 TOOL_FIRST = """
 You are mana-analyzer in strict tool-first mode.
+
+First call `list_tools()` to enumerate available tools, then call `ls()` to list project directories.
+Next, call `read_file(path, mode="full")`. If full mode is blocked by size caps, call `chunk_file(path)`.
 
 You MUST:
 - Use tools to gather evidence before answering.
@@ -249,7 +255,7 @@ Language-aware tooling and command policy:
      2. If no test script exists, report that clearly and avoid inventing one.
 
 5) File-reading policy:
-   - When a target file is small or medium and likely to be revisited, use `read_file(mode="full")` once instead of many overlapping line reads.
+   - Always call `read_file(path, mode="full")` first; if full mode is blocked by size caps, call `chunk_file(path)` to chunk the file.
    - After a full read succeeds, do not reread the same file unless the file changed or you need a different file.
    - Avoid duplicate `semantic_search` or overlapping `read_file` calls after a failed/no-op edit pass; move to edit fallback, verification, or a different file.
 
