@@ -11,19 +11,19 @@ Coding agent wrapper with:
 from __future__ import annotations
 from tenacity import retry, stop_after_attempt, wait_exponential
 import ast
-import dataclasses
 import inspect
 import json
 import logging
+import os
 import re
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal, Optional, Protocol, Sequence
+from typing import Any, Optional, Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 from mana_analyzer.llm.prompts import (
     CODING_AGENT_RECOGNITION_PROMPT,
@@ -34,12 +34,17 @@ from mana_analyzer.llm.prompts import (
     FULL_AUTO_EXECUTION_PROMPT,
     TOOLSMANAGER_PROMPT
 )
-from mana_analyzer.llm.tools_manager import (
-    ToolsManagerBatch,
-    ToolsManagerDecisionProvider,
-    ToolsManagerOrchestrator,
-    ToolsPlan,
+from mana_analyzer.llm.tools_manager import ToolsManagerOrchestrator
+from mana_analyzer.llm.coding_agent_models import (
+    AskAgentLike,
+    DynamicReadPolicy,
+    ExecutionDecision,
+    FlowChecklist,
+    FlowStep,
+    as_jsonable,
 )
+from mana_analyzer.llm.coding_agent_prompt import CODING_SYSTEM_PROMPT
+from mana_analyzer.llm.coding_agent_tools_provider import CodingAgentToolsManagerDecisionProvider
 
 
 from mana_analyzer.llm.tool_worker_process import (
@@ -52,80 +57,7 @@ from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.tools import build_write_file_tool,build_apply_patch_tool
 
 logger = logging.getLogger(__name__)
-
-
-CODING_SYSTEM_PROMPT = """\
-You are an expert Coding Orchestrator Agent.
-Your primary role is to analyze requests, formulate a plan, and select the right tools for the job.
-If any tools not exist you can access command with run_command.
-## ORCHESTRATION & TOOL EXECUTION POLICY
-1. Core Decision Maker: You are the high-level planner. Decide WHAT needs to be done and output the complete tool calls required for the current step.
-2. Do Not Micromanage: The underlying ToolsManager is highly robust. If you request an `apply_patch` with strategy "auto", the ToolsManager will automatically attempt native shell commands (Git/patch), Python computation, and direct file writes.
-3. Trust the Fallbacks: DO NOT attempt to manually retry a failed file operation unless the tool explicitly reports a total, unrecoverable failure. 
-4. Batch Processing: Whenever possible, yield all parallel tool intents in a single response to minimize execution round-trips.
-
-## APPLY_PATCH RULES
-When modifying existing files, prefer the `apply_patch` tool.
-Always use `strategy_hint="auto"` unless you specifically know a file requires a complete overwrite, in which case you may use `write_file`.
-
-## PROJECT RECOGNIZE 
-recognize project with run_command and command you perfers and only use same language hint like go.mod if go,requirement.txt if python.
-
-
-"""
-
-
-class FlowStep(BaseModel):
-    """Represents a planned step with tooling guidance and execution status."""
-
-    id: str
-    title: str
-    reason: str
-    status: Literal["pending", "in_progress", "done", "blocked"] = "pending"
-    requires_tools: list[str] = Field(default_factory=list)
-
-
-class FlowChecklist(BaseModel):
-    """Structured plan capturing the objective, constraints, acceptance criteria, and steps."""
-
-    objective: str
-    constraints: list[str] = Field(default_factory=list)
-    acceptance: list[str] = Field(default_factory=list)
-    steps: list[FlowStep] = Field(default_factory=list)
-    next_action: str = ""
-
-
-class ExecutionDecision(BaseModel):
-    phase: Literal["discover", "inspect", "edit", "verify", "answer", "blocked"]
-    tool_call_allowed: bool
-    why: str
-
-
-class DynamicReadPolicy(BaseModel):
-    """LLM-selected read policy for one coding turn (full-auto only)."""
-
-    read_budget: int
-    read_line_window: int
-    reason: str = ""
-
-
-class AskAgentLike(Protocol):
-    tools: list[Any]
-
-    def ask(self, question: str, **kwargs: Any) -> Any:  # pragma: no cover
-        ...
-
-
-def _as_jsonable(obj: Any) -> Any:
-    if dataclasses.is_dataclass(obj):
-        return dataclasses.asdict(obj)
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, (list, tuple)):
-        return [_as_jsonable(x) for x in obj]
-    if isinstance(obj, dict):
-        return {str(k): _as_jsonable(v) for k, v in obj.items()}
-    return obj
+_as_jsonable = as_jsonable
 
 
 class CodingAgent:
@@ -443,9 +375,10 @@ class CodingAgent:
         repo_only_internet_default: bool = True,
         tool_worker_client: ToolWorkerClient | None = None,
         full_auto_mode: bool = False,
+        planner_model: str | None = None,
     ) -> None:
         self.api_key = api_key
-        self.base_url = base_url
+        self.base_url = str(base_url or os.getenv("OPENAI_BASE_URL") or "").strip() or None
         self.repo_root = repo_root.resolve()
         self.ask_agent: AskAgentLike = ask_agent
         self.allowed_prefixes = allowed_prefixes
@@ -461,14 +394,8 @@ class CodingAgent:
         self.repo_only_internet_default = bool(repo_only_internet_default)
         self.tool_worker_client = tool_worker_client
         self.full_auto_mode = bool(full_auto_mode)
+        self.planner_model = str(planner_model).strip() if planner_model else None
         self.tools_manager_orchestrator: ToolsManagerOrchestrator | None = None
-
-        planner_kwargs = {
-            "api_key": api_key,
-            "model": str(getattr(ask_agent, "model", "gpt-4.1-mini")),
-        }
-        if base_url:
-            planner_kwargs["base_url"] = base_url
         self._setup_planner()
 
         if hasattr(self.ask_agent, "tools"):
@@ -496,8 +423,18 @@ class CodingAgent:
     def _setup_planner(self):
         """تنظیم و مقداردهی اولیه LLM با قابلیت Retry"""
         try:
-            # استفاده از مدل موجود در ask_agent یا مقدار پیش‌فرض
-            current_model = str(getattr(self.ask_agent, "model", "gpt-4o"))
+            env_planner_model = str(
+                os.getenv("OPENAI_CODING_PLANNER_MODEL")
+                or os.getenv("CODING_AGENT_PLANNER_MODEL")
+                or ""
+            ).strip()
+            current_model = (
+                env_planner_model
+                or str(self.planner_model or "").strip()
+                or str(getattr(self.ask_agent, "model", "")).strip()
+                or str(os.getenv("OPENAI_CHAT_MODEL") or "").strip()
+                or "gpt-4.1-mini"
+            )
             
             planner_kwargs = {
                 "api_key": self.api_key, # فرض بر این است که self.api_key در کلاس موجود است
@@ -1114,6 +1051,43 @@ class CodingAgent:
         if payload is not None and isinstance(payload.get("answer"), str):
             return str(payload["answer"]).strip()
         return (answer or "").strip()
+
+    @staticmethod
+    def _is_provider_bad_response_status_error(exc: ToolWorkerProcessError) -> bool:
+        text = str(exc or "").lower()
+        if exc.code not in {"run_failed", "model_not_found"}:
+            return False
+        return "bad_response_status_code" in text or ("error code: 400" in text and "openai_error" in text)
+
+    def _stringify_worker_fallback_result(
+        self,
+        fallback_result: Any,
+        *,
+        worker_exc: ToolWorkerProcessError,
+        mode: str,
+    ) -> str:
+        existing_payload = self._extract_payload(self._stringify(fallback_result)) or {}
+        answer_text = ""
+        if isinstance(existing_payload.get("answer"), str):
+            answer_text = str(existing_payload.get("answer") or "").strip()
+        if not answer_text:
+            answer_text = str(fallback_result or "").strip()
+        warnings: list[str] = []
+        for item in existing_payload.get("warnings", []) if isinstance(existing_payload.get("warnings"), list) else []:
+            text = str(item).strip()
+            if text:
+                warnings.append(text)
+        warnings.append(f"tool_worker_provider_error: {worker_exc}")
+        warnings.append("tool_worker_direct_agent_fallback_used")
+        payload = {
+            "answer": answer_text,
+            "sources": existing_payload.get("sources", []),
+            "mode": mode,
+            "trace": existing_payload.get("trace", []),
+            "warnings": warnings,
+            "fallback_reason": "tool_worker_bad_response_status_code",
+        }
+        return self._stringify(payload)
 
     @classmethod
     def _trace_read_metrics(cls, trace: list[dict[str, Any]]) -> dict[str, int]:
@@ -1933,6 +1907,25 @@ class CodingAgent:
                             "fallback_retry_attempted": True,
                         }
                     )
+                if self._is_provider_bad_response_status_error(exc):
+                    logger.warning("Tool worker provider error; falling back to direct ask_agent.run: %s", exc)
+                    fallback_result = self._invoke_run_like(
+                        "run",
+                        question=request,
+                        index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
+                        k=k,
+                        max_steps=max_steps,
+                        timeout_seconds=timeout_seconds,
+                        callbacks=callbacks,
+                        system_prompt=effective_prompt,
+                        tool_policy=tool_policy,
+                        flow_id=flow_id,
+                    )
+                    return self._stringify_worker_fallback_result(
+                        fallback_result,
+                        worker_exc=exc,
+                        mode="agent-tools",
+                    )
                 raise
         if hasattr(self.ask_agent, "run"):
             return self._stringify(
@@ -2030,6 +2023,45 @@ class CodingAgent:
                             "fallback_retry_attempted": True,
                         }
                     )
+                if self._is_provider_bad_response_status_error(exc):
+                    logger.warning("Tool worker provider error; falling back to direct ask_agent call: %s", exc)
+                    if hasattr(self.ask_agent, "run_multi"):
+                        fallback_result = self._invoke_run_like(
+                            "run_multi",
+                            question=request,
+                            index_dirs=resolved,
+                            k=k,
+                            max_steps=max_steps,
+                            timeout_seconds=timeout_seconds,
+                            callbacks=callbacks,
+                            system_prompt=effective_prompt,
+                            tool_policy=tool_policy,
+                            flow_id=flow_id,
+                        )
+                    else:
+                        stitched = (
+                            f"{request}\n\n"
+                            "DIR-MODE CONTEXT:\n"
+                            f"- index_dirs:\n  - " + "\n  - ".join(resolved) + "\n"
+                            "- Use these indexes when searching context.\n"
+                        )
+                        fallback_result = self._invoke_run_like(
+                            "run",
+                            question=stitched,
+                            index_dir=resolved[0],
+                            k=k,
+                            max_steps=max_steps,
+                            timeout_seconds=timeout_seconds,
+                            callbacks=callbacks,
+                            system_prompt=effective_prompt,
+                            tool_policy=tool_policy,
+                            flow_id=flow_id,
+                        )
+                    return self._stringify_worker_fallback_result(
+                        fallback_result,
+                        worker_exc=exc,
+                        mode="agent-tools",
+                    )
                 raise
         if hasattr(self.ask_agent, "run_multi"):
             return self._stringify(
@@ -2088,10 +2120,9 @@ class CodingAgent:
             sig = inspect.signature(self.ask_agent.ask)
             if "tool_use" in sig.parameters:
                 kwargs["tool_use"] = True
-            if "system_prompt" in sig.parameters:
+            if "system_prompt" or "instructions" in sig.parameters:
                 kwargs["system_prompt"] = system_prompt
-            elif "instructions" in sig.parameters:
-                kwargs["instructions"] = system_prompt
+
         except Exception:
             pass
         if "system_prompt" not in kwargs and "instructions" not in kwargs:
@@ -2288,106 +2319,3 @@ class CodingAgent:
         if not target:
             return False
         return self.coding_memory_service.is_conflicting_request(target, request)
-class CodingAgentToolsManagerDecisionProvider(ToolsManagerDecisionProvider):
-    def __init__(self, agent: "CodingAgent") -> None:
-        self.agent = agent
-
-    def plan_with_source(
-        self,
-        *,
-        request: str,
-        flow_context: str | None,
-        pass_index: int,
-        pass_cap: int,
-        previous_plan: ToolsPlan | None,
-        pass_logs: Sequence[dict[str, Any]],
-        warnings: Sequence[str],
-        changed_files: Sequence[str],
-        latest_answer: str,
-    ) -> tuple[ToolsPlan, list[str], str]:
-        payload = {
-            "request": request,
-            "flow_context": (flow_context or "none").strip(),
-            "pass_index": int(pass_index),
-            "pass_cap": int(pass_cap),
-            "previous_plan": previous_plan.model_dump() if previous_plan is not None else None,
-            "pass_logs": list(pass_logs)[-4:],
-            "warnings": list(warnings)[-12:],
-            "changed_files": list(changed_files),
-            "latest_answer": str(latest_answer or "")[:1500],
-        }
-        human_prompt = json.dumps(payload, ensure_ascii=False, indent=2)
-
-        raw = self.agent._invoke_tools_planner(human_prompt)
-        parsed = self.agent.tools_manager_orchestrator.parse_tools_plan(
-            raw,
-            request=request,
-            previous_plan=previous_plan,
-        )
-        if parsed is not None:
-            return parsed, [], "planner"
-
-        repair_raw = self.agent._repair_tools_planner(raw, human_prompt)
-        repaired = self.agent.tools_manager_orchestrator.parse_repair(
-            repair_raw,
-            "plan",
-            request=request,
-            previous_plan=previous_plan,
-        )
-        if isinstance(repaired, ToolsPlan):
-            return repaired, ["head_tools_planner parse failed; attempting repair"], "planner_repair"
-
-        fallback_plan = self.agent.tools_manager_orchestrator._deterministic_fallback_plan(
-            request=request,
-            flow_context=flow_context,
-            previous_plan=previous_plan,
-            reason="planner_parse_failed",
-        )
-        issues = ["head_tools_planner parse failed; attempting repair", "head_tools_planner repair failed; using deterministic fallback"]
-        return fallback_plan, issues, "deterministic_fallback"
-
-    def build_batch(
-        self,
-        *,
-        request: str,
-        flow_context: str | None,
-        plan: ToolsPlan,
-        pass_index: int,
-        pass_cap: int,
-        pass_logs: Sequence[dict[str, Any]],
-        warnings: Sequence[str],
-        changed_files: Sequence[str],
-        latest_answer: str,
-    ) -> tuple[ToolsManagerBatch | None, list[str]]:
-        payload = {
-            "request": request,
-            "flow_context": (flow_context or "").strip(),
-            "planner": plan.model_dump(),
-            "pass_index": int(pass_index),
-            "pass_cap": int(pass_cap),
-            "pass_logs": list(pass_logs)[-4:],
-            "warnings": list(warnings)[-10:],
-            "changed_files": list(changed_files),
-            "latest_answer": str(latest_answer or "")[:1500],
-        }
-        human_prompt = json.dumps(payload, ensure_ascii=False, indent=2)
-        raw = self.agent._invoke_tools_batcher(human_prompt)
-        batch = self.agent.tools_manager_orchestrator.parse_tools_batch(
-            raw,
-            planner_step_id=plan.current_step_id,
-        )
-        if batch is not None:
-            return batch, []
-
-        repair_raw = self.agent._repair_tools_batcher(raw, human_prompt)
-        repaired_batch = self.agent.tools_manager_orchestrator.parse_repair(
-            repair_raw,
-            "batch",
-            request=request,
-            previous_plan=plan,
-            planner_step_id=plan.current_step_id,
-        )
-        if isinstance(repaired_batch, ToolsManagerBatch):
-            return repaired_batch, ["toolsmanager batch invalid; attempting repair"]
-
-        return None, ["toolsmanager batch invalid; attempting repair", "toolsmanager repair failed"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -12,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, before_sleep_log
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field, ValidationError
@@ -64,6 +65,67 @@ def _is_banned_param_provider_error(error_message: str) -> bool:
     return False
 
 
+_NON_RETRIABLE_HTTP_STATUS_CODES = frozenset({400, 401, 403, 404, 405, 409, 410, 413, 414, 422})
+_RETRIABLE_HTTP_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def _extract_http_status_code(exc: BaseException) -> int | None:
+    for attr in ("status_code", "http_status", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+
+    msg = str(exc)
+    patterns = (
+        r"\berror code:\s*(\d{3})\b",
+        r"\bstatus(?:_code)?\D+(\d{3})\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, msg, flags=re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+def _is_likely_retriable_runtime_error(exc: BaseException) -> bool:
+    status_code = _extract_http_status_code(exc)
+    if status_code in _RETRIABLE_HTTP_STATUS_CODES:
+        return True
+    if status_code in _NON_RETRIABLE_HTTP_STATUS_CODES:
+        return False
+
+    msg = str(exc).lower()
+    retriable_markers = (
+        "rate limit",
+        "timeout",
+        "timed out",
+        "temporar",
+        "overloaded",
+        "service unavailable",
+        "connection reset",
+        "connection aborted",
+        "network",
+    )
+    non_retriable_markers = (
+        "invalid request",
+        "invalid parameter",
+        "validation",
+        "malformed",
+        "parse error",
+        "unsupported",
+        "not implemented",
+    )
+
+    if any(marker in msg for marker in non_retriable_markers):
+        return False
+    if any(marker in msg for marker in retriable_markers):
+        return True
+    return False
+
+
 def _strip_banned_keys(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {
@@ -87,6 +149,156 @@ def _deep_strip_banned_keys_inplace(obj: Any) -> Any:
         for item in obj:
             _deep_strip_banned_keys_inplace(item)
     return obj
+
+
+_CHAT_ALLOWED_MESSAGE_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+_ROLE_ALIASES = {
+    "ai": "assistant",
+    "assistant_tool": "tool",
+    "human": "user",
+}
+
+
+def _sanitize_chat_message_content(content: Any) -> str | list[dict[str, Any]] | None:
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        normalized_parts: list[dict[str, Any]] = []
+        for item in content:
+            if not isinstance(item, dict):
+                normalized_parts.append({"type": "text", "text": str(item)})
+                continue
+            item_type = str(item.get("type", "text") or "text")
+            if item_type == "text":
+                text_value = item.get("text", "")
+                if not isinstance(text_value, str):
+                    text_value = json.dumps(text_value, ensure_ascii=False)
+                normalized_parts.append({"type": "text", "text": text_value})
+                continue
+            normalized_parts.append({"type": item_type, "text": json.dumps(item, ensure_ascii=False)})
+        return normalized_parts
+    if isinstance(content, (dict, tuple, set)):
+        return json.dumps(content, ensure_ascii=False)
+    return str(content)
+
+
+def _sanitize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
+    if not isinstance(tool_calls, list):
+        return []
+    clean_calls: list[dict[str, Any]] = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        call_id = call.get("id")
+        if call_id is None:
+            call_id = "call_generated"
+        fn = call.get("function", {}) if isinstance(call.get("function"), dict) else {}
+        fn_name = str(fn.get("name") or "tool")
+        arguments = fn.get("arguments", "{}")
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+        clean_calls.append(
+            {
+                "id": str(call_id),
+                "type": "function",
+                "function": {
+                    "name": fn_name,
+                    "arguments": arguments,
+                },
+            }
+        )
+    return clean_calls
+
+
+def _sanitize_chat_message(message: Any) -> dict[str, Any] | None:
+    if not isinstance(message, dict):
+        if isinstance(message, str):
+            return {"role": "user", "content": message}
+        return None
+
+    role_raw = str(message.get("role", "user") or "user").strip().lower()
+    role = _ROLE_ALIASES.get(role_raw, role_raw)
+    if role not in _CHAT_ALLOWED_MESSAGE_ROLES:
+        role = "user"
+
+    clean: dict[str, Any] = {"role": role}
+
+    if role == "assistant":
+        tool_calls = _sanitize_tool_calls(message.get("tool_calls"))
+        if tool_calls:
+            clean["tool_calls"] = tool_calls
+
+    if role in {"tool", "function"}:
+        tool_call_id = message.get("tool_call_id") or message.get("id")
+        if tool_call_id is not None:
+            clean["tool_call_id"] = str(tool_call_id)
+        elif role == "tool":
+            clean["role"] = "assistant"
+
+    content = _sanitize_chat_message_content(message.get("content", ""))
+    if content is None and clean.get("tool_calls"):
+        content = ""
+    if isinstance(content, str):
+        clean["content"] = content
+    elif isinstance(content, list):
+        clean["content"] = content
+    else:
+        clean["content"] = ""
+
+    name = message.get("name")
+    if isinstance(name, str) and name.strip():
+        clean["name"] = name.strip()
+
+    return clean
+
+
+def _sanitize_tools_payload(tools: Any) -> list[dict[str, Any]]:
+    if not isinstance(tools, list):
+        return []
+    clean_tools: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        fn_name = fn.get("name")
+        if not isinstance(fn_name, str) or not fn_name.strip():
+            continue
+        description = fn.get("description", "")
+        if not isinstance(description, str):
+            description = str(description)
+        parameters = fn.get("parameters", {})
+        if not isinstance(parameters, dict):
+            parameters = {}
+        clean_tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": fn_name.strip(),
+                    "description": description,
+                    "parameters": parameters,
+                },
+            }
+        )
+    return clean_tools
+
+
+def _sanitize_openai_json_payload(payload: Any) -> Any:
+    sanitized = _strip_banned_keys(payload)
+    if not isinstance(sanitized, dict):
+        return sanitized
+
+    if "messages" in sanitized and isinstance(sanitized.get("messages"), list):
+        sanitized["messages"] = [
+            msg for msg in (_sanitize_chat_message(item) for item in sanitized.get("messages", [])) if msg is not None
+        ]
+        if "tools" in sanitized:
+            sanitized["tools"] = _sanitize_tools_payload(sanitized.get("tools"))
+
+    return sanitized
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +374,7 @@ def _patch_openai_client() -> None:
             
             def _patched_build_request(self, options, *args, **kwargs):
                 if hasattr(options, 'json_data') and options.json_data is not None:
-                    options.json_data = _strip_banned_keys(options.json_data)
+                    options.json_data = _sanitize_openai_json_payload(options.json_data)
                 return _original_build_request(self, options, *args, **kwargs)
             
             SyncAPIClient._build_request = _patched_build_request
@@ -172,7 +384,7 @@ def _patch_openai_client() -> None:
             
             def _patched_async_build_request(self, options, *args, **kwargs):
                 if hasattr(options, 'json_data') and options.json_data is not None:
-                    options.json_data = _strip_banned_keys(options.json_data)
+                    options.json_data = _sanitize_openai_json_payload(options.json_data)
                 return _original_async_build_request(self, options, *args, **kwargs)
             
             AsyncAPIClient._build_request = _patched_async_build_request
@@ -197,24 +409,24 @@ def _patch_httpx_client() -> None:
             try:
                 if isinstance(content, bytes):
                     data = json.loads(content.decode('utf-8'))
-                    return json.dumps(_strip_banned_keys(data)).encode('utf-8')
+                    return json.dumps(_sanitize_openai_json_payload(data)).encode('utf-8')
                 elif isinstance(content, str):
                     data = json.loads(content)
-                    return json.dumps(_strip_banned_keys(data))
+                    return json.dumps(_sanitize_openai_json_payload(data))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
             return content
         
         def _patched_request(self, method, url, *args, **kwargs):
             if 'json' in kwargs and kwargs['json'] is not None:
-                kwargs['json'] = _strip_banned_keys(kwargs['json'])
+                kwargs['json'] = _sanitize_openai_json_payload(kwargs['json'])
             if 'content' in kwargs and kwargs['content'] is not None:
                 kwargs['content'] = _sanitize_content(kwargs['content'])
             return _original_request(self, method, url, *args, **kwargs)
         
         async def _patched_async_request(self, method, url, *args, **kwargs):
             if 'json' in kwargs and kwargs['json'] is not None:
-                kwargs['json'] = _strip_banned_keys(kwargs['json'])
+                kwargs['json'] = _sanitize_openai_json_payload(kwargs['json'])
             if 'content' in kwargs and kwargs['content'] is not None:
                 kwargs['content'] = _sanitize_content(kwargs['content'])
             return await _original_async_request(self, method, url, *args, **kwargs)
@@ -349,7 +561,6 @@ def _infer_trace_row_success(row: dict[str, Any]) -> bool:
 class WorkerInitPayload(BaseModel):
     api_key: str
     model: str
-    embed_model: str = "text-embedding-3-small"
     base_url: str | None = None
     project_root: str
     repo_root: str
@@ -413,6 +624,21 @@ class ToolWorkerProcessError(RuntimeError):
         self.details = details or {}
 
 
+_CLIENT_RETRYABLE_CODES = frozenset({"worker_io_error", "worker_dead", "model_not_found", "init_failed", "worker_startup_failed"})
+
+
+def _should_retry_run_tools_exception(exc: BaseException) -> bool:
+    if isinstance(exc, IOError):
+        return True
+    if isinstance(exc, ToolWorkerProcessError):
+        if exc.code == "tools_only_violation":
+            return False
+        if exc.retriable:
+            return True
+        return exc.code in _CLIENT_RETRYABLE_CODES
+    return False
+
+
 # ---------------------------------------------------------------------------
 # ToolWorkerClient
 # ---------------------------------------------------------------------------
@@ -426,15 +652,14 @@ class ToolWorkerClient:
         repo_root: Path,
         project_root: Path,
         base_url: str | None = None,
-        embed_model: str = "text-embedding-3-small",
         allowed_prefixes: list[str] | None = None,
         tools_only_strict: bool = True,
     ) -> None:
+        resolved_base_url = str(base_url or os.getenv("OPENAI_BASE_URL") or "").strip() or None
         self._init_payload = WorkerInitPayload(
             api_key=api_key,
             model=model,
-            embed_model=embed_model,
-            base_url=base_url,
+            base_url=resolved_base_url,
             project_root=str(project_root.resolve()),
             repo_root=str(repo_root.resolve()),
             allowed_prefixes=allowed_prefixes,
@@ -442,7 +667,12 @@ class ToolWorkerClient:
         )
         self._proc: subprocess.Popen[str] | None = None
         self._stderr_thread: threading.Thread | None = None
-        logger.info(f"[ToolWorkerClient] Initialized with model={model}, tools_only_strict={tools_only_strict}")
+        logger.info(
+            "[ToolWorkerClient] Initialized with model=%s, base_url=%s, tools_only_strict=%s",
+            model,
+            resolved_base_url or "<default>",
+            tools_only_strict,
+        )
 
     def init_payload_dict(self) -> dict[str, Any]:
         return self._init_payload.model_dump()
@@ -553,7 +783,7 @@ class ToolWorkerClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((ToolWorkerProcessError, IOError)),
+        retry=retry_if_exception(_should_retry_run_tools_exception),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
@@ -623,7 +853,7 @@ class ToolWorkerClient:
             return False
         if exc.retriable:
             return True
-        return exc.code in {"worker_io_error", "worker_dead", "model_not_found", "init_failed", "worker_startup_failed"}
+        return exc.code in _CLIENT_RETRYABLE_CODES
 
     def _restart(self) -> None:
         logger.info("[ToolWorkerClient] Restarting worker...")
@@ -743,7 +973,6 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
     logger.info(f"[_build_worker_ask_agent] Building AskAgent with model={payload.model}")
     embeddings = OpenAIEmbeddings(
         api_key=payload.api_key,
-        model=payload.embed_model,
         base_url=payload.base_url,
     )
     search_service = SearchService(store=FaissStore(embeddings))
@@ -1138,6 +1367,7 @@ class _ToolWorkerServer:
             logger.info(f"[_ToolWorkerServer] run_tools completed: {env.request_id}")
             
         except ToolWorkerProcessError as exc:
+            logger.error(f"[_ToolWorkerServer] Raw exception type={type(exc)} message={exc}")
             logger.error(f"[_ToolWorkerServer] ToolWorkerProcessError: {exc.code} - {exc}")
             self._emit(
                 WorkerReply(
@@ -1155,7 +1385,7 @@ class _ToolWorkerServer:
             logger.error(f"[_ToolWorkerServer] Unexpected error: {exc}", exc_info=True)
             code = "run_failed"
             err_msg = str(exc).lower()
-            retriable = True
+            retriable = _is_likely_retriable_runtime_error(exc)
 
             if "model_not_found" in err_msg or "404" in err_msg or "not found" in err_msg:
                 code = "model_not_found"

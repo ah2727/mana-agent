@@ -32,6 +32,7 @@ from mana_analyzer.commands.ui_helpers import (
     UNLIMITED_AGENT_MAX_STEPS,
     _build_flow_summary_payload,
     _checkpoint_decisions_from_pass_window,
+    _coerce_trace_items,
     _log_chat_turn,
     _pending_ui_selection_from_blocks,
     _read_chat_input,
@@ -43,12 +44,17 @@ from mana_analyzer.commands.ui_helpers import (
     _render_selection_block,
     _render_turn_transparency,
     _register_tool_if_missing,
+    _now_iso,
     _resolve_payload_checklist_counts,
     _resolve_ui_selection_input,
+    _extract_structured_answer,
+    _extract_decisions,
+    _effective_ui_blocks,
     _run_with_live_buffer,
     _resolve_agent_max_steps,
     _log_call,
     _log_return,
+    _log_exception,
     _EDIT_INTENT_TOKENS,
     _EDIT_TARGET_PATTERN,
 )
@@ -103,7 +109,6 @@ console = Console()
 logger = logging.getLogger(__name__)
 OUTPUT_DIR: Path | None = None
 LLM_DEBUG_MODE: bool = False
-UNLIMITED_AGENT_MAX_STEPS = 1_000_000_000
 
 
 def _looks_like_edit_request(question: str) -> bool:
@@ -1251,7 +1256,7 @@ def ask(
         help="Use temporary index(es) and delete them after answering (ignored if --index-dir is set).",
     ),
     dir_mode: bool = typer.Option(False, "--dir-mode", help="Enable directory-aware ask mode."),
-    root_dir: str | None = typer.Option(None, "--root-dir", help="Root directory to scan when --dir-mode is enabled."),
+    root_dir: str | None = typer.Option(None, "--root-dir", help="Project root used for tool execution and default index paths."),
     max_indexes: int = typer.Option(0, "--max-indexes", help="Maximum discovered indexes to use (0 means no limit)."),
     auto_index_missing: bool = typer.Option(
         True,
@@ -1274,6 +1279,9 @@ def ask(
         extra={"question": question, "k": k, "model_override": model, "dir_mode": dir_mode, "index_dir": index_dir, "ephemeral_index": ephemeral_index},
     )
     settings = Settings()
+    root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
+    if root.is_file():
+        root = root.parent
     resolved_k = k or settings.default_top_k
     effective_agent_max_steps = _resolve_agent_max_steps(
         agent_max_steps,
@@ -1281,22 +1289,14 @@ def ask(
         min_steps=1,
     )
 
-    # For agent tools, project_root matters (file reads)
-    # In dir-mode we set to root later; in classic, cwd is fine
-    service = _build_ask_service_compat(settings, model_override=model)
+    # For agent tools, project_root matters (file reads/commands).
+    service = _build_ask_service_compat(settings, model_override=model, project_root=root)
 
     tmp_single: tempfile.TemporaryDirectory | None = None
     tmp_dir_mode_root: tempfile.TemporaryDirectory | None = None
 
     try:
         if dir_mode:
-            root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
-            if root.is_file():
-                root = root.parent
-
-            # rebuild AskService with correct root for tool file reads
-            service = _build_ask_service_compat(settings, model_override=model, project_root=root)
-
             logger.debug(
                 "Resolved ask dir-mode parameters",
                 extra={
@@ -1425,13 +1425,13 @@ def ask(
                 index_service = build_index_service(settings)
                 _index_service_index_compat(
                     index_service,
-                    target_path=Path.cwd(),
+                    target_path=root,
                     index_dir=resolved_index_dir,
                     rebuild=False,
                     vectors=True,
                 )
             else:
-                resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
+                resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(root)
 
             logger.debug(
                 "Resolved ask parameters",
@@ -1935,7 +1935,7 @@ def chat(
     root_dir: str | None = typer.Option(
         None,
         "--root-dir",
-        help="Root directory to scan when --dir-mode is enabled.",
+        help="Project root used for tool execution and default index paths.",
     ),
     max_indexes: int = typer.Option(
         0,
@@ -2217,10 +2217,7 @@ def chat(
         raise typer.BadParameter("--multiline-terminator must be a non-empty line token.")
     resolved_k = k or settings.default_top_k
 
-    if dir_mode:
-        root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
-    else:
-        root = Path.cwd().resolve()
+    root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
     if root.is_file():
         root = root.parent
 
@@ -2262,6 +2259,8 @@ def chat(
     tools_manager_orchestrator: ToolsManagerOrchestrator | None = None
     tools_executor_instance: LocalToolsExecutor | RedisRQToolsExecutor | None = None
     effective_model = model or settings.openai_chat_model
+    effective_tool_worker_model = settings.openai_tool_worker_model or effective_model
+    effective_base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
 
     def _build_tools_executor(worker_client: ToolWorkerClient):
         if tools_execution_config.backend != "redis":
@@ -2291,9 +2290,8 @@ def chat(
         if tool_worker_process:
             tool_worker_client = ToolWorkerClient(
                 api_key=settings.openai_api_key,
-                model=effective_model,
-                base_url=settings.openai_base_url,
-                embed_model=settings.openai_embed_model,
+                model=effective_tool_worker_model,
+                base_url=effective_base_url,
                 repo_root=root,
                 project_root=root,
                 allowed_prefixes=None,
@@ -2303,7 +2301,7 @@ def chat(
         # ✅ IMPORTANT: allow_prefixes=None => unrestricted under repo_root
         coding_agent_instance = CodingAgent(
             api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
+            base_url=effective_base_url,
             repo_root=root,
             ask_agent=ask_service.ask_agent,
             allowed_prefixes=None,
@@ -2316,6 +2314,7 @@ def chat(
             repo_only_internet_default=True,
             tool_worker_client=tool_worker_client,
             full_auto_mode=(execution_profile == "full-auto"),
+            planner_model=settings.openai_coding_planner_model,
         )
 
     if coding_agent_instance is not None and auto_execute_plan and tool_worker_client is not None:
@@ -2470,13 +2469,13 @@ def chat(
                 index_service = build_index_service(settings)
                 _index_service_index_compat(
                     index_service,
-                    target_path=Path.cwd(),
+                    target_path=root,
                     index_dir=resolved_index_dir,
                     rebuild=False,
                     vectors=True,
                 )
             else:
-                resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(Path.cwd())
+                resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(root)
 
             _emit_text(
                 "mana-analyzer chat\n"
@@ -2633,9 +2632,8 @@ def chat(
             if tool_worker_client is None:
                 tool_worker_client = ToolWorkerClient(
                     api_key=settings.openai_api_key,
-                    model=model or settings.openai_chat_model,
-                    base_url=settings.openai_base_url,
-                    embed_model=settings.openai_embed_model,
+                    model=settings.openai_tool_worker_model or model or settings.openai_chat_model,
+                    base_url=effective_base_url,
                     repo_root=root,
                     project_root=root,
                     allowed_prefixes=None,
@@ -2652,7 +2650,7 @@ def chat(
             tools_manager_orchestrator = ToolsManagerOrchestrator(
                 api_key=settings.openai_api_key,
                 model=model or settings.openai_chat_model,
-                base_url=settings.openai_base_url,
+                base_url=effective_base_url,
                 worker_client=tool_worker_client,
                 repo_root=root,
                 execution_config=tools_execution_config,
@@ -3562,9 +3560,12 @@ def chat(
                         payload_warnings = [str(w).strip() for w in parsed_payload["warnings"] if str(w).strip()]
                     if isinstance(parsed_payload.get("trace"), list):
                         payload_trace = parsed_payload["trace"]
-                    payload_ui_blocks = _effective_ui_blocks(answer_text, parsed_payload)
-                else:
-                    payload_ui_blocks = _effective_ui_blocks(answer_text, None)
+                try:
+                    payload_ui_blocks = _effective_ui_blocks(answer_text, parsed_payload if isinstance(parsed_payload, dict) else None)
+                except Exception as exc:
+                    _log_exception("chat.effective_ui_blocks", exc)
+                    payload_ui_blocks = []
+                    payload_warnings.append("ui_blocks_render_fallback: failed to process ui_blocks payload")
                 merged_warns = list(warns)
                 for warning in payload_warnings:
                     if warning not in merged_warns:

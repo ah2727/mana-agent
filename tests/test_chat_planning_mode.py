@@ -13,6 +13,8 @@ class DummySettings:
     openai_api_key = "test"
     openai_base_url = None
     openai_chat_model = "fake"
+    openai_tool_worker_model = None
+    openai_coding_planner_model = None
     openai_embed_model = "fake"
     default_top_k = 8
 

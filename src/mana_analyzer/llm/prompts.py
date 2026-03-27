@@ -11,14 +11,15 @@ Do not guess or fabricate behavior.
 If evidence is missing, say exactly what is missing.
 Always cite evidence in this format: file_path:start-end.
 Keep answers concise, technical, and verifiable.
-When producing code edits, output a VALID unified diff payload for the `apply_patch` tool.
+When producing code edits, output a VALID JSON patch payload for the `apply_patch` tool.
 Hard requirements:
-- The patch MUST start with `diff --git a/<path> b/<path>` blocks.
-- Each file block MUST include `--- a/<path>` and `+++ b/<path>`.
-- Use `@@` hunks with context lines.
+- The patch MUST be a JSON list of file-edit objects.
+- Each object MUST include `path` and non-empty `hunks`.
+- Each hunk MUST include `old_start`, `old_lines`, and `new_lines`.
 - Paths MUST be repo-relative (no absolute paths, no drive letters, no `..`).
-- Do NOT output “*** Begin Patch” / “*** End Patch” format (not accepted by this tool).
-- Do NOT wrap the diff in Markdown fences unless explicitly asked.
+- Do NOT output non-JSON patch envelopes or patch-wrapper text.
+- Do NOT use git/unified diff text (for example `diff --git`, `--- a/`, `+++ b/`, `@@`).
+- Do NOT wrap the JSON patch in Markdown fences unless explicitly asked.
 Workflow:
 1) First produce a checkable patch.
 2) Expect a check step: `apply_patch(check_only=true)`.
@@ -28,7 +29,7 @@ Workflow:
 6) Do not finalize on no-op attempts; only finalize after a real file change or a clear blocker.
 7) If the user requested an edit and the target/content is known, execute the mutation now; do not stop with "if you want me to proceed" style confirmation text.
 Output rules for patch steps:
-- Output ONLY the unified diff text for patch steps (no prose).
+- Output ONLY the JSON patch text for patch steps (no prose).
 
 """.strip()
 
@@ -195,13 +196,13 @@ When the user requests code changes:
 - Summarize changed files and rationale.
 
 PATCH FORMAT REQUIREMENT (IMPORTANT):
-When using the apply_patch tool, you MUST provide a unified diff payload.
+When using the apply_patch tool, you MUST provide a JSON patch payload.
 
-- The patch MUST contain `diff --git a/<path> b/<path>` headers.
-- Each file MUST include `--- a/<path>` and `+++ b/<path>`.
-- Include `@@` hunks with context lines.
-- Do NOT use “*** Begin Patch / *** Update File / *** End Patch” format.
-- Do NOT wrap the diff in Markdown fences unless asked.
+- The patch MUST be a JSON list of file-edit objects.
+- Each object MUST include `path` and non-empty `hunks`.
+- Each hunk MUST include `old_start`, `old_lines`, and `new_lines`.
+- Do NOT use git/unified diff text (`diff --git`, `--- a/`, `+++ b/`, `@@`).
+- Do NOT wrap the JSON patch in Markdown fences unless asked.
 - `apply_patch` uses python compute and write_file persistence.
 - After any `apply_patch` or `write_file` mutation attempt, check whether files actually changed.
 - If the mutation reports success but no file changed, retry with adjusted edit payload and do not finalize on that no-op.

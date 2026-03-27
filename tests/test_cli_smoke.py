@@ -116,6 +116,8 @@ class DummySettings:
     openai_api_key = "test"
     openai_base_url = None
     openai_chat_model = "fake"
+    openai_tool_worker_model = None
+    openai_coding_planner_model = None
     openai_embed_model = "fake"
     default_top_k = 8
     coding_flow_max_turns = 5
@@ -365,6 +367,53 @@ def test_analyze_fail_on_warning(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 1
 
 
+def test_ask_root_dir_applies_project_root_in_classic_mode(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, Path | None] = {"project_root": None}
+
+    def _build_ask_service(_settings, model_override=None, project_root=None):
+        _ = model_override
+        captured["project_root"] = project_root
+        return FakeAskService()
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", _build_ask_service)
+
+    result = runner.invoke(
+        app,
+        ["ask", "what", "--root-dir", str(tmp_path), "--json"],
+    )
+    assert result.exit_code == 0
+    assert captured["project_root"] == tmp_path.resolve()
+
+
+def test_ask_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, str] = {"index_dir": ""}
+
+    class _AskService(FakeAskService):
+        def ask_with_tools(
+            self,
+            index_dir: str,
+            question: str,
+            k: int,
+            max_steps: int = 6,
+            timeout_seconds: int = 30,
+        ) -> AskResponse:
+            _ = (question, k, max_steps, timeout_seconds)
+            captured["index_dir"] = str(index_dir)
+            hit = SearchHit(0.9, "/tmp/good.py", 1, 3, "add", "snippet")
+            return AskResponse(answer="Tool answer. /tmp/good.py:1-3", sources=[hit])
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
+
+    result = runner.invoke(
+        app,
+        ["ask", "what", "--root-dir", str(tmp_path), "--json"],
+    )
+    assert result.exit_code == 0
+    assert captured["index_dir"] == str((tmp_path / ".mana_index").resolve())
+
+
 def test_analyze_fail_on_merged_findings(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
@@ -507,6 +556,107 @@ def test_chat_transparency_sections_always_render_in_normal_mode(monkeypatch, tm
     assert result.stdout.count("Decisions") >= 2
     assert result.stdout.count("History") >= 2
     assert "Session History" in result.stdout
+
+
+def test_chat_root_dir_applies_to_worker_and_coding_agent_in_classic_mode(monkeypatch, tmp_path: Path) -> None:
+    class _AskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        init_kwargs: dict[str, object] = {}
+
+        def __init__(self, **kwargs: object) -> None:
+            _FakeWorkerClient.init_kwargs = dict(kwargs)
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        init_kwargs: dict[str, object] = {}
+
+        def __init__(self, **kwargs: object) -> None:
+            _FakeCodingAgent.init_kwargs = dict(kwargs)
+
+        def get_active_flow_id(self) -> str | None:
+            return None
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--root-dir", str(tmp_path)],
+        input="quit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeWorkerClient.init_kwargs.get("repo_root") == tmp_path.resolve()
+    assert _FakeWorkerClient.init_kwargs.get("project_root") == tmp_path.resolve()
+    assert _FakeCodingAgent.init_kwargs.get("repo_root") == tmp_path.resolve()
+
+
+def test_chat_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tmp_path: Path) -> None:
+    class _AskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        seen_index_dir: str = ""
+
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return None
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, request: str, **kwargs: object) -> dict:
+            _ = request
+            _FakeCodingAgent.seen_index_dir = str(kwargs.get("index_dir") or "")
+            return {
+                "answer": "ok",
+                "changed_files": [],
+                "diff": "",
+                "warnings": [],
+                "flow_id": None,
+                "plan": {"objective": "noop", "steps": []},
+                "progress": {"phase": "answer", "why": "done", "tool_call_allowed": False},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--root-dir", str(tmp_path)],
+        input="hello\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeCodingAgent.seen_index_dir == str((tmp_path / ".mana_index").resolve())
 
 
 def test_chat_transparency_uses_trace_steps_in_agent_tools_mode(monkeypatch, tmp_path: Path) -> None:
@@ -1878,6 +2028,73 @@ def test_chat_ignores_malformed_ui_blocks_and_falls_back_to_answer(monkeypatch, 
     result = runner.invoke(
         app,
         ["chat", "--agent-tools"],
+        input="hello\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "Fallback answer" in result.stdout
+
+
+def test_chat_handles_effective_ui_blocks_failure_without_crash(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-ui-blocks"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, request: str, **_kwargs: object) -> dict:
+            _ = request
+            payload = {
+                "answer": "Fallback answer",
+                "ui_blocks": [{"type": "diagram", "title": "Flow", "content": "graph LR; A-->B;"}],
+            }
+            return {
+                "answer": json.dumps(payload),
+                "changed_files": [],
+                "diff": "",
+                "warnings": [],
+                "flow_id": self.active,
+                "plan": {"objective": "Handle request", "steps": []},
+                "progress": {"phase": "answer", "why": "done", "tool_call_allowed": False},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr(
+        "mana_analyzer.commands.cli._effective_ui_blocks",
+        lambda _answer, _payload: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = runner.invoke(
+        app,
+        ["chat"],
         input="hello\nquit\n",
     )
     assert result.exit_code == 0

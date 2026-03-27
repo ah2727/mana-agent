@@ -12,13 +12,13 @@ def test_apply_patch_tool_accepts_patch_alias(monkeypatch, tmp_path: Path) -> No
     def _fake_safe_apply_patch(
         *,
         repo_root: Path,
-        diff: str,
+        patch: str,
         allowed_prefixes,
         check_only: bool,
         **_kwargs: object,
     ) -> dict:
         captured["repo_root"] = repo_root
-        captured["diff"] = diff
+        captured["patch"] = patch
         captured["allowed_prefixes"] = allowed_prefixes
         captured["check_only"] = check_only
         return {"ok": True, "touched_files": ["sample.py"], "check_only": check_only}
@@ -29,7 +29,7 @@ def test_apply_patch_tool_accepts_patch_alias(monkeypatch, tmp_path: Path) -> No
     result = tool.invoke({"patch": "*** Begin Patch\n*** End Patch", "check_only": True})
 
     assert result["ok"] is True
-    assert captured["diff"] == "*** Begin Patch\n*** End Patch"
+    assert captured["patch"] == "*** Begin Patch\n*** End Patch"
     assert captured["check_only"] is True
 
 

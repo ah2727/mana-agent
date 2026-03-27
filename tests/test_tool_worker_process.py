@@ -234,6 +234,60 @@ def test_tool_worker_client_run_tools_forwards_events(monkeypatch) -> None:
     client.stop()
 
 
+def test_tool_worker_client_does_not_retry_non_retriable_run_failed(monkeypatch) -> None:
+    run_tools_calls = 0
+
+    def _make_proc(*_args, **_kwargs):
+        def _handle_write(text: str) -> None:
+            nonlocal run_tools_calls
+            req = json.loads(text.strip())
+            rid = req["request_id"]
+            kind = req["type"]
+            if kind == "init":
+                proc.stdout.push({"type": "event", "request_id": rid, "payload": {"name": "initialized"}})
+                proc.stdout.push(_reply_ok(rid, {"status": "ok"}))
+                return
+            if kind == "run_tools":
+                run_tools_calls += 1
+                proc.stdout.push(
+                    _reply_error(
+                        rid,
+                        "run_failed",
+                        "Error code: 400 - {'error': {'message': 'openai_error', 'type': 'bad_response_status_code'}}",
+                        retriable=False,
+                    )
+                )
+                return
+            if kind == "shutdown":
+                proc.stdout.push(_reply_ok(rid, {"status": "bye"}))
+                proc._alive = False
+
+        proc = _FakeProc(_handle_write)
+        return proc
+
+    monkeypatch.setattr(twp.subprocess, "Popen", _make_proc)
+    client = twp.ToolWorkerClient(
+        api_key="x",
+        model="fake-model",
+        repo_root=Path("/tmp"),
+        project_root=Path("/tmp"),
+    )
+
+    with pytest.raises(twp.ToolWorkerProcessError) as excinfo:
+        client.run_tools(
+            twp.ToolRunRequest(
+                question="q",
+                index_dir="/tmp/.mana_index",
+                k=4,
+                max_steps=4,
+                timeout_seconds=5,
+            )
+        )
+    assert excinfo.value.code == "run_failed"
+    assert run_tools_calls == 1
+    client.stop()
+
+
 def test_tool_worker_server_enforces_tools_only_violation(monkeypatch) -> None:
     class _FakeAskAgent:
         def run(self, **_kwargs):
@@ -430,6 +484,135 @@ def test_tool_worker_server_allows_same_tool_name_in_new_turn(monkeypatch) -> No
     server._handle_run_tools(twp.WorkerEnvelope(type="run_tools", request_id="turn-b", payload=payload))
 
     assert len(calls) == 2
+
+
+def test_tool_worker_server_marks_bad_request_as_non_retriable(monkeypatch) -> None:
+    class _FakeAskAgent:
+        def run(self, **_kwargs):
+            raise RuntimeError(
+                "Error code: 400 - {'error': {'message': 'openai_error', 'type': 'bad_response_status_code'}}"
+            )
+
+    server = twp._ToolWorkerServer()
+    server._ask_agent = _FakeAskAgent()  # type: ignore[assignment]
+    emitted: list[twp.WorkerReply] = []
+    monkeypatch.setattr(twp._ToolWorkerServer, "_emit", staticmethod(lambda reply: emitted.append(reply)))
+
+    server._handle_run_tools(
+        twp.WorkerEnvelope(
+            type="run_tools",
+            request_id="req-bad-400",
+            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana_index").model_dump(),
+        )
+    )
+
+    assert emitted
+    assert emitted[-1].type == "error"
+    assert emitted[-1].payload["code"] == "run_failed"
+    assert emitted[-1].payload["retriable"] is False
+
+
+def test_tool_worker_server_marks_rate_limit_as_retriable(monkeypatch) -> None:
+    class _FakeAskAgent:
+        def run(self, **_kwargs):
+            raise RuntimeError("Error code: 429 - rate limit exceeded")
+
+    server = twp._ToolWorkerServer()
+    server._ask_agent = _FakeAskAgent()  # type: ignore[assignment]
+    emitted: list[twp.WorkerReply] = []
+    monkeypatch.setattr(twp._ToolWorkerServer, "_emit", staticmethod(lambda reply: emitted.append(reply)))
+
+    server._handle_run_tools(
+        twp.WorkerEnvelope(
+            type="run_tools",
+            request_id="req-rate-429",
+            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana_index").model_dump(),
+        )
+    )
+
+    assert emitted
+    assert emitted[-1].type == "error"
+    assert emitted[-1].payload["code"] == "run_failed"
+    assert emitted[-1].payload["retriable"] is True
+
+
+def test_sanitize_openai_json_payload_normalizes_chat_messages() -> None:
+    payload = {
+        "model": "x",
+        "messages": [
+            {
+                "role": "ai",
+                "content": {"nested": "value"},
+                "kwargs": {"junk": True},
+                "status": "completed",
+            },
+            {
+                "role": "assistant_tool",
+                "content": {"ok": True},
+                "tool_call_id": 123,
+                "trace": [{"a": 1}],
+            },
+        ],
+    }
+
+    out = twp._sanitize_openai_json_payload(payload)
+    assert isinstance(out, dict)
+    messages = out["messages"]
+    assert messages[0]["role"] == "assistant"
+    assert isinstance(messages[0]["content"], str)
+    assert "kwargs" not in messages[0]
+    assert "status" not in messages[0]
+    assert messages[1]["role"] == "tool"
+    assert messages[1]["tool_call_id"] == "123"
+    assert isinstance(messages[1]["content"], str)
+
+
+def test_sanitize_openai_json_payload_normalizes_tool_calls_and_tools() -> None:
+    payload = {
+        "model": "x",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": 99,
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": {"path": "README.md"}},
+                        "extra": "drop",
+                    }
+                ],
+            }
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "description": {"bad": "shape"},
+                    "parameters": {"type": "object"},
+                    "strict": True,
+                },
+                "metadata": {"bad": True},
+            }
+        ],
+    }
+
+    out = twp._sanitize_openai_json_payload(payload)
+    msg = out["messages"][0]
+    assert msg["role"] == "assistant"
+    assert msg["content"] == ""
+    assert msg["tool_calls"][0]["id"] == "99"
+    assert msg["tool_calls"][0]["function"]["arguments"] == '{"path": "README.md"}'
+    tool = out["tools"][0]
+    assert tool == {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "{'bad': 'shape'}",
+            "parameters": {"type": "object"},
+        },
+    }
 
 
 def test_run_tool_request_once_enforces_tools_only_policy(monkeypatch) -> None:

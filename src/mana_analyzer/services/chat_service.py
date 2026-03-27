@@ -82,7 +82,7 @@ class ChatService:
             resolved = (
                 Path(index_dir).expanduser().resolve()
                 if index_dir is not None
-                else default_index_dir(Path.cwd())
+                else default_index_dir(self._root_dir)
             )
             self._index_dirs = [resolved]
             self._max_indexes = 0

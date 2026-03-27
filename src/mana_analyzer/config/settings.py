@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openai_chat_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_CHAT_MODEL")
+    openai_tool_worker_model: str | None = Field(default=None, alias="OPENAI_TOOL_WORKER_MODEL")
+    openai_coding_planner_model: str | None = Field(default=None, alias="OPENAI_CODING_PLANNER_MODEL")
     openai_embed_model: str = Field(default="text-embedding-3-small", alias="OPENAI_EMBED_MODEL")
     default_top_k: int = Field(default=8, alias="DEFAULT_TOP_K")
     coding_flow_max_turns: int = Field(default=5, alias="CODING_FLOW_MAX_TURNS")
