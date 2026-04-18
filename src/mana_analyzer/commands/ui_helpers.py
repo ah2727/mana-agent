@@ -28,6 +28,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from mana_analyzer.config.settings import default_diagrams_dir
 from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.llm.run_logger import LlmRunLogger
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
@@ -872,7 +873,7 @@ def _render_diagram_block(
     if fmt != "mermaid" or not render_images:
         return
 
-    effective_dir = output_dir or (project_root or Path.cwd()).resolve() / ".mana_diagrams"
+    effective_dir = output_dir or default_diagrams_dir((project_root or Path.cwd()).resolve())
     artifact_path, error = _render_mermaid_artifact(
         content,
         output_dir=effective_dir,

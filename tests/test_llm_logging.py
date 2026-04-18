@@ -101,12 +101,12 @@ def test_ask_agent_logs_each_run(tmp_path: Path) -> None:
     agent = AskAgent.__new__(AskAgent)
     agent.search_service = _FakeSearchService()
     agent.project_root = tmp_path.resolve()
-    agent._resolved_index = tmp_path / ".mana_index"
+    agent._resolved_index = tmp_path / ".mana/index"
     agent.model = "fake-agent"
     agent.run_logger = LlmRunLogger(log_file)
     agent.llm = _FakeLLM([_FakeAIMessage("done /tmp/a.py:1-2", tool_calls=[])])
 
-    result = agent.run("where?", tmp_path / ".mana_index", 3, max_steps=2, timeout_seconds=2)
+    result = agent.run("where?", tmp_path / ".mana/index", 3, max_steps=2, timeout_seconds=2)
     assert "done" in result.answer
     rows = _read_rows(log_file)
     assert len(rows) == 1

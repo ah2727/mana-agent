@@ -1,0 +1,2247 @@
+{
+  "title": "Project Structure Analysis",
+  "generated_by": "llm",
+  "line_count": 560,
+  "analysis_lines": [
+    {
+      "line_number": 1,
+      "text": "This repository centers on a Python package under src/mana_analyzer and follows a src-layout packaging strategy."
+    },
+    {
+      "line_number": 2,
+      "text": "The src layout isolates importable package code from project tooling files, reducing accidental local import leakage."
+    },
+    {
+      "line_number": 3,
+      "text": "Top-level configuration files indicate a mature CLI project with testing, linting, packaging, and environment setup support."
+    },
+    {
+      "line_number": 4,
+      "text": "The presence of pyproject.toml suggests modern Python build metadata and dependency declaration patterns."
+    },
+    {
+      "line_number": 5,
+      "text": "requirements.txt appears alongside pyproject.toml, implying compatibility for both editable installs and direct requirement pin workflows."
+    },
+    {
+      "line_number": 6,
+      "text": "README.md functions as the human entry point and documents major capabilities such as indexing, analysis, graphing, and chat workflows."
+    },
+    {
+      "line_number": 7,
+      "text": "LICENSE at repository root indicates open-source distribution intent and clarifies downstream usage permissions."
+    },
+    {
+      "line_number": 8,
+      "text": "install.sh suggests project bootstrapping support for users who prefer scripted setup over manual dependency commands."
+    },
+    {
+      "line_number": 9,
+      "text": "TODO.md implies active roadmap management and confirms the codebase is still evolving with tracked follow-up work."
+    },
+    {
+      "line_number": 10,
+      "text": "The docs/ directory provides task-focused guidance, which is a positive signal for contributor onboarding and troubleshooting."
+    },
+    {
+      "line_number": 11,
+      "text": "The tests/ hierarchy demonstrates a commitment to executable validation and regression protection."
+    },
+    {
+      "line_number": 12,
+      "text": "Hidden folders such as .mana_index and .mana_logs reveal persistent runtime artifacts for indexing and observability."
+    },
+    {
+      "line_number": 13,
+      "text": "The project appears to separate runtime outputs from source code, minimizing accidental coupling of generated and authored assets."
+    },
+    {
+      "line_number": 14,
+      "text": "A dedicated llm module under src/mana_analyzer signals explicit abstraction for model-facing logic."
+    },
+    {
+      "line_number": 15,
+      "text": "A dedicated tools module indicates the agent architecture is organized around callable actions rather than monolithic prompts."
+    },
+    {
+      "line_number": 16,
+      "text": "The vector_store module indicates retrieval-augmented capabilities, likely powering semantic search and grounded answer generation."
+    },
+    {
+      "line_number": 17,
+      "text": "The analysis module likely contains static inspection and chunking logic that feeds both reports and retrieval indexing."
+    },
+    {
+      "line_number": 18,
+      "text": "The commands module implies a command-oriented CLI API with one entrypoint per high-level user task."
+    },
+    {
+      "line_number": 19,
+      "text": "The services module likely orchestrates workflows by composing parsers, analyzers, storage, and LLM clients."
+    },
+    {
+      "line_number": 20,
+      "text": "The config module indicates centralized environment and settings handling, reducing duplicated configuration parsing code."
+    },
+    {
+      "line_number": 21,
+      "text": "The dependencies and describe modules suggest dedicated subsystems for dependency mapping and high-level repository summaries."
+    },
+    {
+      "line_number": 22,
+      "text": "The parsers module indicates multi-language or multi-format extraction support rather than Python-only assumptions."
+    },
+    {
+      "line_number": 23,
+      "text": "The utils module likely provides common glue code, and should remain carefully bounded to prevent uncontrolled growth."
+    },
+    {
+      "line_number": 24,
+      "text": "The repository includes both .venv and venv folders, which may reflect local experimentation and should stay ignored by version control."
+    },
+    {
+      "line_number": 25,
+      "text": "The build/ directory suggests local packaging artifacts; these are useful for distribution checks but should not drive source-of-truth logic."
+    },
+    {
+      "line_number": 26,
+      "text": "The project contains logs/ and hidden log folders, indicating extensive run history that can aid debugging."
+    },
+    {
+      "line_number": 27,
+      "text": "Workflow orientation appears strong: analyze, index, ask, scan, and chat capabilities are represented in documentation and package layout."
+    },
+    {
+      "line_number": 28,
+      "text": "Directory naming generally uses clear intent-revealing terms, improving discoverability for new maintainers."
+    },
+    {
+      "line_number": 29,
+      "text": "Most subsystem names are nouns (analysis, services, parsers), which supports stable conceptual boundaries."
+    },
+    {
+      "line_number": 30,
+      "text": "The codebase seems to balance product features with infrastructure concerns like logging, diagnostics, and structured outputs."
+    },
+    {
+      "line_number": 31,
+      "text": "The presence of tests fixtures hints that behavior is validated against representative repository examples."
+    },
+    {
+      "line_number": 32,
+      "text": "Configuration is likely environment-driven, which aligns with CLI tool usage in local and CI environments."
+    },
+    {
+      "line_number": 33,
+      "text": "The package likely exposes a Typer-based CLI, inferred from command naming and developer documentation patterns."
+    },
+    {
+      "line_number": 34,
+      "text": "The architecture appears layered enough to support future provider swaps for LLM and vector storage backends."
+    },
+    {
+      "line_number": 35,
+      "text": "File organization indicates this project is intended for real-world repositories rather than toy examples."
+    },
+    {
+      "line_number": 36,
+      "text": "Separation between analysis and llm logic is a favorable design for deterministic fallbacks and testability."
+    },
+    {
+      "line_number": 37,
+      "text": "The project likely benefits from explicit contracts between services and tools to keep agent behavior predictable."
+    },
+    {
+      "line_number": 38,
+      "text": "A persistent memory artifact in .mana_index suggests conversational continuity for agent sessions."
+    },
+    {
+      "line_number": 39,
+      "text": "Observed structure aligns with a platform-style CLI rather than a single-purpose script collection."
+    },
+    {
+      "line_number": 40,
+      "text": "Overall repository topology reflects a thoughtful evolution toward modular, agent-assisted code intelligence workflows."
+    },
+    {
+      "line_number": 41,
+      "text": "Top-level directory review 1: `.git` contains approximately 1016 files and 264 nested directories."
+    },
+    {
+      "line_number": 42,
+      "text": "Hidden workspace directory `.git` appears to store operational metadata and should remain excluded from release artifacts."
+    },
+    {
+      "line_number": 43,
+      "text": "Top-level directory review 2: `.github` contains approximately 1 files and 1 nested directories."
+    },
+    {
+      "line_number": 44,
+      "text": "Hidden workspace directory `.github` appears to store operational metadata and should remain excluded from release artifacts."
+    },
+    {
+      "line_number": 45,
+      "text": "Top-level directory review 3: `.mana_cache` contains approximately 1 files and 0 nested directories."
+    },
+    {
+      "line_number": 46,
+      "text": "Hidden workspace directory `.mana_cache` appears to store operational metadata and should remain excluded from release artifacts."
+    },
+    {
+      "line_number": 47,
+      "text": "Top-level directory review 4: `.mana_diagrams` contains approximately 0 files and 0 nested directories."
+    },
+    {
+      "line_number": 48,
+      "text": "Hidden workspace directory `.mana_diagrams` appears to store operational metadata and should remain excluded from release artifacts."
+    },
+    {
+      "line_number": 49,
+      "text": "Top-level directory review 5: `.mana_index` contains approximately 3 files and 0 nested directories."
+    },
+    {
+      "line_number": 50,
+      "text": "Hidden workspace directory `.mana_index` appears to store operational metadata and should remain excluded from release artifacts."
+    },
+    {
+      "line_number": 51,
+      "text": "Top-level directory review 6: `.mana_llm_logs` contains approximately 19 files and 0 nested directories."
+    },
+    {
+      "line_number": 52,
+      "text": "Hidden workspace directory `.mana_llm_logs` appears to store operational metadata and should remain excluded from release artifacts."
+    },
+    {
+      "line_number": 53,
+      "text": "Top-level directory review 7: `.mana_logs` contains approximately 19 files and 0 nested directories."
+    },
+    {
+      "line_number": 54,
+      "text": "Hidden workspace directory `.mana_logs` appears to store operational metadata and should remain excluded from release artifacts."
+    },
+    {
+      "line_number": 55,
+      "text": "Top-level directory review 8: `.pytest_cache` contains approximately 5 files and 2 nested directories."
+    },
+    {
+      "line_number": 56,
+      "text": "Hidden workspace directory `.pytest_cache` appears to store operational metadata and should remain excluded from release artifacts."
+    },
+    {
+      "line_number": 57,
+      "text": "Top-level directory review 9: `.venv` contains approximately 18479 files and 2422 nested directories."
+    },
+    {
+      "line_number": 58,
+      "text": "Hidden workspace directory `.venv` appears to store operational metadata and should remain excluded from release artifacts."
+    },
+    {
+      "line_number": 59,
+      "text": "Top-level directory review 10: `build` contains approximately 83 files and 15 nested directories."
+    },
+    {
+      "line_number": 60,
+      "text": "Environment or build directory `build` represents generated state and should not be treated as canonical project logic."
+    },
+    {
+      "line_number": 61,
+      "text": "Top-level directory review 11: `docs` contains approximately 4 files and 0 nested directories."
+    },
+    {
+      "line_number": 62,
+      "text": "Core engineering directory `docs` is foundational to product correctness, discoverability, and maintainability."
+    },
+    {
+      "line_number": 63,
+      "text": "Top-level directory review 12: `logs` contains approximately 13 files and 0 nested directories."
+    },
+    {
+      "line_number": 64,
+      "text": "Supporting directory `logs` likely serves auxiliary workflows and should include ownership notes if it grows over time."
+    },
+    {
+      "line_number": 65,
+      "text": "Top-level directory review 13: `patch` contains approximately 1 files and 0 nested directories."
+    },
+    {
+      "line_number": 66,
+      "text": "Supporting directory `patch` likely serves auxiliary workflows and should include ownership notes if it grows over time."
+    },
+    {
+      "line_number": 67,
+      "text": "Top-level directory review 14: `src` contains approximately 206 files and 25 nested directories."
+    },
+    {
+      "line_number": 68,
+      "text": "Core engineering directory `src` is foundational to product correctness, discoverability, and maintainability."
+    },
+    {
+      "line_number": 69,
+      "text": "Top-level directory review 15: `tests` contains approximately 189 files and 6 nested directories."
+    },
+    {
+      "line_number": 70,
+      "text": "Core engineering directory `tests` is foundational to product correctness, discoverability, and maintainability."
+    },
+    {
+      "line_number": 71,
+      "text": "Top-level directory review 16: `venv` contains approximately 14402 files and 1753 nested directories."
+    },
+    {
+      "line_number": 72,
+      "text": "Environment or build directory `venv` represents generated state and should not be treated as canonical project logic."
+    },
+    {
+      "line_number": 73,
+      "text": "Source module 1: `src/mana_analyzer/__pycache__` contains 0 Python files and 1 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 74,
+      "text": "Module `__pycache__` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 75,
+      "text": "As `__pycache__` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 76,
+      "text": "Directory `__pycache__` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 77,
+      "text": "Source module 2: `src/mana_analyzer/analysis` contains 4 Python files and 13 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 78,
+      "text": "Module `analysis` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 79,
+      "text": "As `analysis` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 80,
+      "text": "Directory `analysis` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 81,
+      "text": "Source module 3: `src/mana_analyzer/commands` contains 14 Python files and 32 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 82,
+      "text": "Module `commands` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 83,
+      "text": "As `commands` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 84,
+      "text": "Directory `commands` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 85,
+      "text": "Source module 4: `src/mana_analyzer/config` contains 2 Python files and 7 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 86,
+      "text": "Module `config` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 87,
+      "text": "As `config` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 88,
+      "text": "Directory `config` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 89,
+      "text": "Source module 5: `src/mana_analyzer/dependencies` contains 2 Python files and 2 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 90,
+      "text": "Module `dependencies` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 91,
+      "text": "As `dependencies` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 92,
+      "text": "Directory `dependencies` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 93,
+      "text": "Source module 6: `src/mana_analyzer/describe` contains 3 Python files and 3 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 94,
+      "text": "Module `describe` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 95,
+      "text": "As `describe` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 96,
+      "text": "Directory `describe` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 97,
+      "text": "Source module 7: `src/mana_analyzer/llm` contains 15 Python files and 45 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 98,
+      "text": "Module `llm` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 99,
+      "text": "As `llm` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 100,
+      "text": "Directory `llm` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 101,
+      "text": "Source module 8: `src/mana_analyzer/parsers` contains 3 Python files and 10 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 102,
+      "text": "Module `parsers` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 103,
+      "text": "As `parsers` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 104,
+      "text": "Directory `parsers` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 105,
+      "text": "Source module 9: `src/mana_analyzer/services` contains 20 Python files and 42 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 106,
+      "text": "Module `services` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 107,
+      "text": "As `services` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 108,
+      "text": "Directory `services` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 109,
+      "text": "Source module 10: `src/mana_analyzer/tools` contains 5 Python files and 15 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 110,
+      "text": "Module `tools` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 111,
+      "text": "As `tools` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 112,
+      "text": "Directory `tools` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 113,
+      "text": "Source module 11: `src/mana_analyzer/utils` contains 7 Python files and 19 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 114,
+      "text": "Module `utils` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 115,
+      "text": "As `utils` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 116,
+      "text": "Directory `utils` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 117,
+      "text": "Source module 12: `src/mana_analyzer/vector_store` contains 2 Python files and 7 total files, indicating its relative implementation weight."
+    },
+    {
+      "line_number": 118,
+      "text": "Module `vector_store` should preserve a clear public surface so cross-module dependencies remain intentional and reviewable."
+    },
+    {
+      "line_number": 119,
+      "text": "As `vector_store` evolves, adding narrow integration tests around module boundaries will reduce regression risk from internal refactors."
+    },
+    {
+      "line_number": 120,
+      "text": "Directory `vector_store` benefits from concise docstrings and README notes when behavior is non-obvious to first-time contributors."
+    },
+    {
+      "line_number": 121,
+      "text": "File sample 1: `src/mana_analyzer/__init__.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 122,
+      "text": "`src/mana_analyzer/__init__.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 123,
+      "text": "If `src/mana_analyzer/__init__.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 124,
+      "text": "Change management for `src/mana_analyzer/__init__.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 125,
+      "text": "File sample 2: `src/mana_analyzer/analysis/__init__.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 126,
+      "text": "`src/mana_analyzer/analysis/__init__.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 127,
+      "text": "If `src/mana_analyzer/analysis/__init__.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 128,
+      "text": "Change management for `src/mana_analyzer/analysis/__init__.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 129,
+      "text": "File sample 3: `src/mana_analyzer/analysis/checks.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 130,
+      "text": "`src/mana_analyzer/analysis/checks.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 131,
+      "text": "If `src/mana_analyzer/analysis/checks.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 132,
+      "text": "Change management for `src/mana_analyzer/analysis/checks.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 133,
+      "text": "File sample 4: `src/mana_analyzer/analysis/chunker.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 134,
+      "text": "`src/mana_analyzer/analysis/chunker.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 135,
+      "text": "If `src/mana_analyzer/analysis/chunker.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 136,
+      "text": "Change management for `src/mana_analyzer/analysis/chunker.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 137,
+      "text": "File sample 5: `src/mana_analyzer/analysis/models.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 138,
+      "text": "`src/mana_analyzer/analysis/models.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 139,
+      "text": "If `src/mana_analyzer/analysis/models.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 140,
+      "text": "Change management for `src/mana_analyzer/analysis/models.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 141,
+      "text": "File sample 6: `src/mana_analyzer/commands/__init__.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 142,
+      "text": "`src/mana_analyzer/commands/__init__.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 143,
+      "text": "If `src/mana_analyzer/commands/__init__.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 144,
+      "text": "Change management for `src/mana_analyzer/commands/__init__.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 145,
+      "text": "File sample 7: `src/mana_analyzer/commands/analyze_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 146,
+      "text": "`src/mana_analyzer/commands/analyze_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 147,
+      "text": "If `src/mana_analyzer/commands/analyze_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 148,
+      "text": "Change management for `src/mana_analyzer/commands/analyze_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 149,
+      "text": "File sample 8: `src/mana_analyzer/commands/ask_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 150,
+      "text": "`src/mana_analyzer/commands/ask_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 151,
+      "text": "If `src/mana_analyzer/commands/ask_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 152,
+      "text": "Change management for `src/mana_analyzer/commands/ask_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 153,
+      "text": "File sample 9: `src/mana_analyzer/commands/chat_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 154,
+      "text": "`src/mana_analyzer/commands/chat_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 155,
+      "text": "If `src/mana_analyzer/commands/chat_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 156,
+      "text": "Change management for `src/mana_analyzer/commands/chat_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 157,
+      "text": "File sample 10: `src/mana_analyzer/commands/cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 158,
+      "text": "`src/mana_analyzer/commands/cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 159,
+      "text": "If `src/mana_analyzer/commands/cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 160,
+      "text": "Change management for `src/mana_analyzer/commands/cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 161,
+      "text": "File sample 11: `src/mana_analyzer/commands/cli_internal.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 162,
+      "text": "`src/mana_analyzer/commands/cli_internal.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 163,
+      "text": "If `src/mana_analyzer/commands/cli_internal.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 164,
+      "text": "Change management for `src/mana_analyzer/commands/cli_internal.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 165,
+      "text": "File sample 12: `src/mana_analyzer/commands/deps_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 166,
+      "text": "`src/mana_analyzer/commands/deps_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 167,
+      "text": "If `src/mana_analyzer/commands/deps_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 168,
+      "text": "Change management for `src/mana_analyzer/commands/deps_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 169,
+      "text": "File sample 13: `src/mana_analyzer/commands/describe_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 170,
+      "text": "`src/mana_analyzer/commands/describe_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 171,
+      "text": "If `src/mana_analyzer/commands/describe_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 172,
+      "text": "Change management for `src/mana_analyzer/commands/describe_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 173,
+      "text": "File sample 14: `src/mana_analyzer/commands/flow_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 174,
+      "text": "`src/mana_analyzer/commands/flow_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 175,
+      "text": "If `src/mana_analyzer/commands/flow_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 176,
+      "text": "Change management for `src/mana_analyzer/commands/flow_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 177,
+      "text": "File sample 15: `src/mana_analyzer/commands/graph_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 178,
+      "text": "`src/mana_analyzer/commands/graph_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 179,
+      "text": "If `src/mana_analyzer/commands/graph_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 180,
+      "text": "Change management for `src/mana_analyzer/commands/graph_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 181,
+      "text": "File sample 16: `src/mana_analyzer/commands/main_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 182,
+      "text": "`src/mana_analyzer/commands/main_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 183,
+      "text": "If `src/mana_analyzer/commands/main_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 184,
+      "text": "Change management for `src/mana_analyzer/commands/main_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 185,
+      "text": "File sample 17: `src/mana_analyzer/commands/report_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 186,
+      "text": "`src/mana_analyzer/commands/report_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 187,
+      "text": "If `src/mana_analyzer/commands/report_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 188,
+      "text": "Change management for `src/mana_analyzer/commands/report_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 189,
+      "text": "File sample 18: `src/mana_analyzer/commands/search_cli.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 190,
+      "text": "`src/mana_analyzer/commands/search_cli.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 191,
+      "text": "If `src/mana_analyzer/commands/search_cli.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 192,
+      "text": "Change management for `src/mana_analyzer/commands/search_cli.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 193,
+      "text": "File sample 19: `src/mana_analyzer/commands/ui_helpers.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 194,
+      "text": "`src/mana_analyzer/commands/ui_helpers.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 195,
+      "text": "If `src/mana_analyzer/commands/ui_helpers.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 196,
+      "text": "Change management for `src/mana_analyzer/commands/ui_helpers.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 197,
+      "text": "File sample 20: `src/mana_analyzer/config/__init__.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 198,
+      "text": "`src/mana_analyzer/config/__init__.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 199,
+      "text": "If `src/mana_analyzer/config/__init__.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 200,
+      "text": "Change management for `src/mana_analyzer/config/__init__.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 201,
+      "text": "File sample 21: `src/mana_analyzer/config/settings.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 202,
+      "text": "`src/mana_analyzer/config/settings.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 203,
+      "text": "If `src/mana_analyzer/config/settings.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 204,
+      "text": "Change management for `src/mana_analyzer/config/settings.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 205,
+      "text": "File sample 22: `src/mana_analyzer/dependencies/__init__.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 206,
+      "text": "`src/mana_analyzer/dependencies/__init__.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 207,
+      "text": "If `src/mana_analyzer/dependencies/__init__.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 208,
+      "text": "Change management for `src/mana_analyzer/dependencies/__init__.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 209,
+      "text": "File sample 23: `src/mana_analyzer/dependencies/dependency_service.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 210,
+      "text": "`src/mana_analyzer/dependencies/dependency_service.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 211,
+      "text": "If `src/mana_analyzer/dependencies/dependency_service.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 212,
+      "text": "Change management for `src/mana_analyzer/dependencies/dependency_service.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 213,
+      "text": "File sample 24: `src/mana_analyzer/describe/build.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 214,
+      "text": "`src/mana_analyzer/describe/build.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 215,
+      "text": "If `src/mana_analyzer/describe/build.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 216,
+      "text": "Change management for `src/mana_analyzer/describe/build.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 217,
+      "text": "File sample 25: `src/mana_analyzer/describe/describe_service.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 218,
+      "text": "`src/mana_analyzer/describe/describe_service.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 219,
+      "text": "If `src/mana_analyzer/describe/describe_service.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 220,
+      "text": "Change management for `src/mana_analyzer/describe/describe_service.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 221,
+      "text": "File sample 26: `src/mana_analyzer/describe/file_summary_executor.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 222,
+      "text": "`src/mana_analyzer/describe/file_summary_executor.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 223,
+      "text": "If `src/mana_analyzer/describe/file_summary_executor.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 224,
+      "text": "Change management for `src/mana_analyzer/describe/file_summary_executor.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 225,
+      "text": "File sample 27: `src/mana_analyzer/llm/__init__.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 226,
+      "text": "`src/mana_analyzer/llm/__init__.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 227,
+      "text": "If `src/mana_analyzer/llm/__init__.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 228,
+      "text": "Change management for `src/mana_analyzer/llm/__init__.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 229,
+      "text": "File sample 28: `src/mana_analyzer/llm/analyze_chain.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 230,
+      "text": "`src/mana_analyzer/llm/analyze_chain.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 231,
+      "text": "If `src/mana_analyzer/llm/analyze_chain.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 232,
+      "text": "Change management for `src/mana_analyzer/llm/analyze_chain.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 233,
+      "text": "File sample 29: `src/mana_analyzer/llm/ask_agent.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 234,
+      "text": "`src/mana_analyzer/llm/ask_agent.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 235,
+      "text": "If `src/mana_analyzer/llm/ask_agent.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 236,
+      "text": "Change management for `src/mana_analyzer/llm/ask_agent.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 237,
+      "text": "File sample 30: `src/mana_analyzer/llm/coding_agent.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 238,
+      "text": "`src/mana_analyzer/llm/coding_agent.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 239,
+      "text": "If `src/mana_analyzer/llm/coding_agent.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 240,
+      "text": "Change management for `src/mana_analyzer/llm/coding_agent.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 241,
+      "text": "File sample 31: `src/mana_analyzer/llm/coding_agent_models.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 242,
+      "text": "`src/mana_analyzer/llm/coding_agent_models.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 243,
+      "text": "If `src/mana_analyzer/llm/coding_agent_models.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 244,
+      "text": "Change management for `src/mana_analyzer/llm/coding_agent_models.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 245,
+      "text": "File sample 32: `src/mana_analyzer/llm/coding_agent_prompt.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 246,
+      "text": "`src/mana_analyzer/llm/coding_agent_prompt.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 247,
+      "text": "If `src/mana_analyzer/llm/coding_agent_prompt.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 248,
+      "text": "Change management for `src/mana_analyzer/llm/coding_agent_prompt.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 249,
+      "text": "File sample 33: `src/mana_analyzer/llm/coding_agent_tools_provider.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 250,
+      "text": "`src/mana_analyzer/llm/coding_agent_tools_provider.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 251,
+      "text": "If `src/mana_analyzer/llm/coding_agent_tools_provider.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 252,
+      "text": "Change management for `src/mana_analyzer/llm/coding_agent_tools_provider.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 253,
+      "text": "File sample 34: `src/mana_analyzer/llm/prompts.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 254,
+      "text": "`src/mana_analyzer/llm/prompts.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 255,
+      "text": "If `src/mana_analyzer/llm/prompts.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 256,
+      "text": "Change management for `src/mana_analyzer/llm/prompts.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 257,
+      "text": "File sample 35: `src/mana_analyzer/llm/qna_chain.py` participates in the core package and should maintain focused responsibilities per module intent."
+    },
+    {
+      "line_number": 258,
+      "text": "`src/mana_analyzer/llm/qna_chain.py` should avoid leaking configuration retrieval logic into business logic unless it is the designated config integration point."
+    },
+    {
+      "line_number": 259,
+      "text": "If `src/mana_analyzer/llm/qna_chain.py` mixes orchestration and parsing concerns, consider extracting helper functions to improve readability and unit-test granularity."
+    },
+    {
+      "line_number": 260,
+      "text": "Change management for `src/mana_analyzer/llm/qna_chain.py` should include targeted tests that validate both success paths and common error conditions."
+    },
+    {
+      "line_number": 261,
+      "text": "The repository currently includes 38 Python test files, giving a broad but likely uneven coverage profile."
+    },
+    {
+      "line_number": 262,
+      "text": "Fixture assets under tests/fixtures currently include 6 files, which supports realistic parser and workflow validation."
+    },
+    {
+      "line_number": 263,
+      "text": "Test naming appears path-based, which improves traceability from failures back to owning functional areas."
+    },
+    {
+      "line_number": 264,
+      "text": "A healthy next step is mapping each top-level service command to at least one smoke test and one failure-mode test."
+    },
+    {
+      "line_number": 265,
+      "text": "Agent-oriented features generally need deterministic stubs to prevent flaky behavior from external model variance."
+    },
+    {
+      "line_number": 266,
+      "text": "Vector-search behavior should be tested with fixed embeddings fixtures to keep retrieval assertions stable over time."
+    },
+    {
+      "line_number": 267,
+      "text": "CLI command tests should validate both human-readable output and structured JSON output when available."
+    },
+    {
+      "line_number": 268,
+      "text": "Integration tests are especially valuable where indexing, retrieval, and agent tool invocation interact in sequence."
+    },
+    {
+      "line_number": 269,
+      "text": "When tests grow, separating fast unit suites from slower end-to-end suites can keep developer feedback loops short."
+    },
+    {
+      "line_number": 270,
+      "text": "Regression tests should accompany bug fixes that involve parsing edge cases or tool-call orchestration state."
+    },
+    {
+      "line_number": 271,
+      "text": "Test file inspection 1: `tests/conftest.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 272,
+      "text": "`tests/conftest.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 273,
+      "text": "Test file inspection 2: `tests/fixtures/sample_project/bad_module.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 274,
+      "text": "`tests/fixtures/sample_project/bad_module.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 275,
+      "text": "Test file inspection 3: `tests/fixtures/sample_project/good_module.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 276,
+      "text": "`tests/fixtures/sample_project/good_module.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 277,
+      "text": "Test file inspection 4: `tests/fixtures/sample_project/no_doc.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 278,
+      "text": "`tests/fixtures/sample_project/no_doc.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 279,
+      "text": "Test file inspection 5: `tests/parsers/test_parser_adapters.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 280,
+      "text": "`tests/parsers/test_parser_adapters.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 281,
+      "text": "Test file inspection 6: `tests/test_apply_patch_json_only.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 282,
+      "text": "`tests/test_apply_patch_json_only.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 283,
+      "text": "Test file inspection 7: `tests/test_ask_agent.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 284,
+      "text": "`tests/test_ask_agent.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 285,
+      "text": "Test file inspection 8: `tests/test_ask_service.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 286,
+      "text": "`tests/test_ask_service.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 287,
+      "text": "Test file inspection 9: `tests/test_chat_planning_mode.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 288,
+      "text": "`tests/test_chat_planning_mode.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 289,
+      "text": "Test file inspection 10: `tests/test_checks.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 290,
+      "text": "`tests/test_checks.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 291,
+      "text": "Test file inspection 11: `tests/test_chunker.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 292,
+      "text": "`tests/test_chunker.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 293,
+      "text": "Test file inspection 12: `tests/test_cli_answer_extract.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 294,
+      "text": "`tests/test_cli_answer_extract.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 295,
+      "text": "Test file inspection 13: `tests/test_cli_flow.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 296,
+      "text": "`tests/test_cli_flow.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 297,
+      "text": "Test file inspection 14: `tests/test_cli_smoke.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 298,
+      "text": "`tests/test_cli_smoke.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 299,
+      "text": "Test file inspection 15: `tests/test_cli_ux_helpers.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 300,
+      "text": "`tests/test_cli_ux_helpers.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 301,
+      "text": "Test file inspection 16: `tests/test_coding_agent.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 302,
+      "text": "`tests/test_coding_agent.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 303,
+      "text": "Test file inspection 17: `tests/test_coding_memory_service.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 304,
+      "text": "`tests/test_coding_memory_service.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 305,
+      "text": "Test file inspection 18: `tests/test_dependency_service.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 306,
+      "text": "`tests/test_dependency_service.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 307,
+      "text": "Test file inspection 19: `tests/test_describe_service.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 308,
+      "text": "`tests/test_describe_service.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 309,
+      "text": "Test file inspection 20: `tests/test_index_discovery.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 310,
+      "text": "`tests/test_index_discovery.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 311,
+      "text": "Test file inspection 21: `tests/test_index_incremental.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 312,
+      "text": "`tests/test_index_incremental.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 313,
+      "text": "Test file inspection 22: `tests/test_llm_analyze_chain.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 314,
+      "text": "`tests/test_llm_analyze_chain.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 315,
+      "text": "Test file inspection 23: `tests/test_llm_analyze_service.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 316,
+      "text": "`tests/test_llm_analyze_service.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 317,
+      "text": "Test file inspection 24: `tests/test_llm_logging.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 318,
+      "text": "`tests/test_llm_logging.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 319,
+      "text": "Test file inspection 25: `tests/test_logging_setup.py` contributes to confidence in subsystem stability and should keep assertions behavior-centric."
+    },
+    {
+      "line_number": 320,
+      "text": "`tests/test_logging_setup.py` can provide stronger long-term value when each test case documents the scenario intent in its function name."
+    },
+    {
+      "line_number": 321,
+      "text": "Documentation directory currently includes 4 Markdown files, indicating focused but compact written guidance."
+    },
+    {
+      "line_number": 322,
+      "text": "Documentation review 1: `docs/coding-agent-language-tooling.md` should stay synchronized with CLI flags and runtime behavior to avoid onboarding drift."
+    },
+    {
+      "line_number": 323,
+      "text": "When updating `docs/coding-agent-language-tooling.md`, include at least one runnable command example so users can validate behavior quickly."
+    },
+    {
+      "line_number": 324,
+      "text": "Documentation review 2: `docs/coding-flows.md` should stay synchronized with CLI flags and runtime behavior to avoid onboarding drift."
+    },
+    {
+      "line_number": 325,
+      "text": "When updating `docs/coding-flows.md`, include at least one runnable command example so users can validate behavior quickly."
+    },
+    {
+      "line_number": 326,
+      "text": "Documentation review 3: `docs/debugging.md` should stay synchronized with CLI flags and runtime behavior to avoid onboarding drift."
+    },
+    {
+      "line_number": 327,
+      "text": "When updating `docs/debugging.md`, include at least one runnable command example so users can validate behavior quickly."
+    },
+    {
+      "line_number": 328,
+      "text": "Documentation review 4: `docs/optional-deps.md` should stay synchronized with CLI flags and runtime behavior to avoid onboarding drift."
+    },
+    {
+      "line_number": 329,
+      "text": "When updating `docs/optional-deps.md`, include at least one runnable command example so users can validate behavior quickly."
+    },
+    {
+      "line_number": 330,
+      "text": "Recommendation 330: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 331,
+      "text": "Recommendation 331: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 332,
+      "text": "Recommendation 332: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 333,
+      "text": "Recommendation 333: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 334,
+      "text": "Recommendation 334: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 335,
+      "text": "Recommendation 335: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 336,
+      "text": "Recommendation 336: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 337,
+      "text": "Recommendation 337: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 338,
+      "text": "Recommendation 338: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 339,
+      "text": "Recommendation 339: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 340,
+      "text": "Recommendation 340: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 341,
+      "text": "Recommendation 341: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 342,
+      "text": "Recommendation 342: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 343,
+      "text": "Recommendation 343: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 344,
+      "text": "Recommendation 344: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 345,
+      "text": "Recommendation 345: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 346,
+      "text": "Recommendation 346: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 347,
+      "text": "Recommendation 347: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 348,
+      "text": "Recommendation 348: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 349,
+      "text": "Recommendation 349: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 350,
+      "text": "Recommendation 350: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 351,
+      "text": "Recommendation 351: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 352,
+      "text": "Recommendation 352: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 353,
+      "text": "Recommendation 353: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 354,
+      "text": "Recommendation 354: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 355,
+      "text": "Recommendation 355: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 356,
+      "text": "Recommendation 356: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 357,
+      "text": "Recommendation 357: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 358,
+      "text": "Recommendation 358: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 359,
+      "text": "Recommendation 359: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 360,
+      "text": "Recommendation 360: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 361,
+      "text": "Recommendation 361: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 362,
+      "text": "Recommendation 362: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 363,
+      "text": "Recommendation 363: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 364,
+      "text": "Recommendation 364: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 365,
+      "text": "Recommendation 365: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 366,
+      "text": "Recommendation 366: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 367,
+      "text": "Recommendation 367: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 368,
+      "text": "Recommendation 368: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 369,
+      "text": "Recommendation 369: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 370,
+      "text": "Recommendation 370: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 371,
+      "text": "Recommendation 371: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 372,
+      "text": "Recommendation 372: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 373,
+      "text": "Recommendation 373: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 374,
+      "text": "Recommendation 374: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 375,
+      "text": "Recommendation 375: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 376,
+      "text": "Recommendation 376: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 377,
+      "text": "Recommendation 377: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 378,
+      "text": "Recommendation 378: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 379,
+      "text": "Recommendation 379: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 380,
+      "text": "Recommendation 380: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 381,
+      "text": "Recommendation 381: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 382,
+      "text": "Recommendation 382: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 383,
+      "text": "Recommendation 383: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 384,
+      "text": "Recommendation 384: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 385,
+      "text": "Recommendation 385: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 386,
+      "text": "Recommendation 386: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 387,
+      "text": "Recommendation 387: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 388,
+      "text": "Recommendation 388: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 389,
+      "text": "Recommendation 389: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 390,
+      "text": "Recommendation 390: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 391,
+      "text": "Recommendation 391: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 392,
+      "text": "Recommendation 392: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 393,
+      "text": "Recommendation 393: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 394,
+      "text": "Recommendation 394: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 395,
+      "text": "Recommendation 395: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 396,
+      "text": "Recommendation 396: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 397,
+      "text": "Recommendation 397: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 398,
+      "text": "Recommendation 398: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 399,
+      "text": "Recommendation 399: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 400,
+      "text": "Recommendation 400: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 401,
+      "text": "Recommendation 401: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 402,
+      "text": "Recommendation 402: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 403,
+      "text": "Recommendation 403: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 404,
+      "text": "Recommendation 404: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 405,
+      "text": "Recommendation 405: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 406,
+      "text": "Recommendation 406: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 407,
+      "text": "Recommendation 407: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 408,
+      "text": "Recommendation 408: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 409,
+      "text": "Recommendation 409: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 410,
+      "text": "Recommendation 410: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 411,
+      "text": "Recommendation 411: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 412,
+      "text": "Recommendation 412: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 413,
+      "text": "Recommendation 413: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 414,
+      "text": "Recommendation 414: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 415,
+      "text": "Recommendation 415: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 416,
+      "text": "Recommendation 416: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 417,
+      "text": "Recommendation 417: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 418,
+      "text": "Recommendation 418: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 419,
+      "text": "Recommendation 419: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 420,
+      "text": "Recommendation 420: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 421,
+      "text": "Recommendation 421: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 422,
+      "text": "Recommendation 422: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 423,
+      "text": "Recommendation 423: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 424,
+      "text": "Recommendation 424: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 425,
+      "text": "Recommendation 425: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 426,
+      "text": "Recommendation 426: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 427,
+      "text": "Recommendation 427: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 428,
+      "text": "Recommendation 428: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 429,
+      "text": "Recommendation 429: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 430,
+      "text": "Recommendation 430: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 431,
+      "text": "Recommendation 431: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 432,
+      "text": "Recommendation 432: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 433,
+      "text": "Recommendation 433: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 434,
+      "text": "Recommendation 434: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 435,
+      "text": "Recommendation 435: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 436,
+      "text": "Recommendation 436: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 437,
+      "text": "Recommendation 437: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 438,
+      "text": "Recommendation 438: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 439,
+      "text": "Recommendation 439: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 440,
+      "text": "Recommendation 440: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 441,
+      "text": "Recommendation 441: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 442,
+      "text": "Recommendation 442: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 443,
+      "text": "Recommendation 443: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 444,
+      "text": "Recommendation 444: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 445,
+      "text": "Recommendation 445: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 446,
+      "text": "Recommendation 446: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 447,
+      "text": "Recommendation 447: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 448,
+      "text": "Recommendation 448: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 449,
+      "text": "Recommendation 449: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 450,
+      "text": "Recommendation 450: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 451,
+      "text": "Recommendation 451: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 452,
+      "text": "Recommendation 452: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 453,
+      "text": "Recommendation 453: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 454,
+      "text": "Recommendation 454: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 455,
+      "text": "Recommendation 455: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 456,
+      "text": "Recommendation 456: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 457,
+      "text": "Recommendation 457: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 458,
+      "text": "Recommendation 458: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 459,
+      "text": "Recommendation 459: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 460,
+      "text": "Recommendation 460: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 461,
+      "text": "Recommendation 461: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 462,
+      "text": "Recommendation 462: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 463,
+      "text": "Recommendation 463: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 464,
+      "text": "Recommendation 464: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 465,
+      "text": "Recommendation 465: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 466,
+      "text": "Recommendation 466: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 467,
+      "text": "Recommendation 467: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 468,
+      "text": "Recommendation 468: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 469,
+      "text": "Recommendation 469: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 470,
+      "text": "Recommendation 470: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 471,
+      "text": "Recommendation 471: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 472,
+      "text": "Recommendation 472: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 473,
+      "text": "Recommendation 473: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 474,
+      "text": "Recommendation 474: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 475,
+      "text": "Recommendation 475: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 476,
+      "text": "Recommendation 476: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 477,
+      "text": "Recommendation 477: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 478,
+      "text": "Recommendation 478: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 479,
+      "text": "Recommendation 479: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 480,
+      "text": "Recommendation 480: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 481,
+      "text": "Recommendation 481: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 482,
+      "text": "Recommendation 482: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 483,
+      "text": "Recommendation 483: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 484,
+      "text": "Recommendation 484: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 485,
+      "text": "Recommendation 485: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 486,
+      "text": "Recommendation 486: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 487,
+      "text": "Recommendation 487: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 488,
+      "text": "Recommendation 488: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 489,
+      "text": "Recommendation 489: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 490,
+      "text": "Recommendation 490: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 491,
+      "text": "Recommendation 491: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 492,
+      "text": "Recommendation 492: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 493,
+      "text": "Recommendation 493: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 494,
+      "text": "Recommendation 494: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 495,
+      "text": "Recommendation 495: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 496,
+      "text": "Recommendation 496: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 497,
+      "text": "Recommendation 497: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 498,
+      "text": "Recommendation 498: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 499,
+      "text": "Recommendation 499: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 500,
+      "text": "Recommendation 500: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 501,
+      "text": "Recommendation 501: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 502,
+      "text": "Recommendation 502: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 503,
+      "text": "Recommendation 503: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 504,
+      "text": "Recommendation 504: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 505,
+      "text": "Recommendation 505: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 506,
+      "text": "Recommendation 506: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 507,
+      "text": "Recommendation 507: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 508,
+      "text": "Recommendation 508: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 509,
+      "text": "Recommendation 509: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 510,
+      "text": "Recommendation 510: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 511,
+      "text": "Recommendation 511: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 512,
+      "text": "Recommendation 512: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 513,
+      "text": "Recommendation 513: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 514,
+      "text": "Recommendation 514: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 515,
+      "text": "Recommendation 515: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 516,
+      "text": "Recommendation 516: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 517,
+      "text": "Recommendation 517: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 518,
+      "text": "Recommendation 518: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 519,
+      "text": "Recommendation 519: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 520,
+      "text": "Recommendation 520: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 521,
+      "text": "Recommendation 521: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 522,
+      "text": "Recommendation 522: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 523,
+      "text": "Recommendation 523: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 524,
+      "text": "Recommendation 524: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 525,
+      "text": "Recommendation 525: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 526,
+      "text": "Recommendation 526: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 527,
+      "text": "Recommendation 527: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 528,
+      "text": "Recommendation 528: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 529,
+      "text": "Recommendation 529: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 530,
+      "text": "Recommendation 530: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 531,
+      "text": "Recommendation 531: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 532,
+      "text": "Recommendation 532: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 533,
+      "text": "Recommendation 533: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 534,
+      "text": "Recommendation 534: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 535,
+      "text": "Recommendation 535: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 536,
+      "text": "Recommendation 536: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 537,
+      "text": "Recommendation 537: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 538,
+      "text": "Recommendation 538: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 539,
+      "text": "Recommendation 539: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 540,
+      "text": "Recommendation 540: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    },
+    {
+      "line_number": 541,
+      "text": "Recommendation 541: Create a lightweight architecture decision record for major subsystem boundaries, including llm, tools, and vector_store."
+    },
+    {
+      "line_number": 542,
+      "text": "Recommendation 542: Add module ownership notes for high-change areas to streamline review routing and reduce coordination overhead."
+    },
+    {
+      "line_number": 543,
+      "text": "Recommendation 543: Introduce a periodic dead-code scan to keep utility modules from accumulating stale helper functions."
+    },
+    {
+      "line_number": 544,
+      "text": "Recommendation 544: Prefer typed protocol interfaces for pluggable providers to decouple runtime selection from concrete implementation classes."
+    },
+    {
+      "line_number": 545,
+      "text": "Recommendation 545: Keep command handlers thin by delegating workflow logic to services, preserving testability and CLI clarity."
+    },
+    {
+      "line_number": 546,
+      "text": "Recommendation 546: Ensure parser outputs share a normalized schema so downstream analysis stages avoid format-specific branching."
+    },
+    {
+      "line_number": 547,
+      "text": "Recommendation 547: Adopt a stable event log schema for agent tool execution to simplify debugging and future telemetry ingestion."
+    },
+    {
+      "line_number": 548,
+      "text": "Recommendation 548: Document expected filesystem side effects for each command to improve predictability in CI and constrained environments."
+    },
+    {
+      "line_number": 549,
+      "text": "Recommendation 549: Guard optional dependency imports with clear fallback messages to avoid runtime confusion for first-time users."
+    },
+    {
+      "line_number": 550,
+      "text": "Recommendation 550: Track index version metadata in one place so migration behavior stays explicit and recoverable."
+    },
+    {
+      "line_number": 551,
+      "text": "Recommendation 551: Separate prompt templates from orchestration logic to reduce accidental coupling between policy and execution code."
+    },
+    {
+      "line_number": 552,
+      "text": "Recommendation 552: Add explicit timeout and retry policies for provider calls, with conservative defaults and overridable settings."
+    },
+    {
+      "line_number": 553,
+      "text": "Recommendation 553: Use structured error classes for parser and tool failures so CLI responses can remain consistent and actionable."
+    },
+    {
+      "line_number": 554,
+      "text": "Recommendation 554: Create a small benchmark suite for indexing and retrieval to detect performance regressions early."
+    },
+    {
+      "line_number": 555,
+      "text": "Recommendation 555: Normalize path handling through shared helpers to prevent platform-specific issues across macOS, Linux, and Windows."
+    },
+    {
+      "line_number": 556,
+      "text": "Recommendation 556: Ensure every JSON-producing command has a schema contract documented in docs and covered by tests."
+    },
+    {
+      "line_number": 557,
+      "text": "Recommendation 557: Constrain global state usage inside agent workflows to improve reproducibility across runs."
+    },
+    {
+      "line_number": 558,
+      "text": "Recommendation 558: Promote deterministic test fixtures for all LLM-adjacent behavior where feasible."
+    },
+    {
+      "line_number": 559,
+      "text": "Recommendation 559: Review logging verbosity defaults to maintain signal while avoiding excessive log growth in routine usage."
+    },
+    {
+      "line_number": 560,
+      "text": "Recommendation 560: Define explicit dependency direction rules so lower-level utility modules do not import higher-level service orchestration modules."
+    }
+  ]
+}

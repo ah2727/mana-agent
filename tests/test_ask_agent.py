@@ -57,7 +57,7 @@ def _build_agent(tmp_path: Path) -> AskAgent:
     agent = AskAgent.__new__(AskAgent)
     agent.search_service = _FakeSearchService()
     agent.project_root = tmp_path.resolve()
-    agent._resolved_index = tmp_path / ".mana_index"
+    agent._resolved_index = tmp_path / ".mana/index"
     return agent
 
 
@@ -75,7 +75,7 @@ def test_ask_agent_enforces_max_steps(tmp_path: Path) -> None:
             ),
         ]
     )
-    result = agent.run("How?", tmp_path / ".mana_index", 2, max_steps=1, timeout_seconds=2)
+    result = agent.run("How?", tmp_path / ".mana/index", 2, max_steps=1, timeout_seconds=2)
     assert "step limit" in result.answer.lower()
     assert result.trace
 
@@ -326,7 +326,7 @@ def test_ask_agent_collects_trace_and_sources(tmp_path: Path) -> None:
             _FakeAIMessage("Answer with /tmp/example.py:3-8", tool_calls=[]),
         ]
     )
-    result = agent.run("Where is demo?", tmp_path / ".mana_index", 3, max_steps=3, timeout_seconds=2)
+    result = agent.run("Where is demo?", tmp_path / ".mana/index", 3, max_steps=3, timeout_seconds=2)
     assert "example.py:3-8" in result.answer
     assert result.sources
     assert any(item.tool_name == "semantic_search" for item in result.trace)
@@ -346,15 +346,15 @@ def test_ask_agent_extracts_text_from_list_content_blocks(tmp_path: Path) -> Non
         ]
     )
 
-    result = agent.run("Why?", tmp_path / ".mana_index", 3, max_steps=2, timeout_seconds=2)
+    result = agent.run("Why?", tmp_path / ".mana/index", 3, max_steps=2, timeout_seconds=2)
     assert result.answer == "Only the final answer should be shown."
 
 
 def test_ask_agent_run_multi_uses_all_indexes(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
     agent.llm = _FakeLLM([_FakeAIMessage("Answer with citations", tool_calls=[])])
-    first = tmp_path / "a" / ".mana_index"
-    second = tmp_path / "b" / ".mana_index"
+    first = tmp_path / "a" / ".mana/index"
+    second = tmp_path / "b" / ".mana/index"
     result = agent.run_multi("Where?", [first, second], 3, max_steps=2, timeout_seconds=2)
     assert result.mode == "agent-tools"
     assert len(agent._resolved_indexes) == 2
@@ -368,8 +368,8 @@ def test_ask_agent_run_multi_continues_when_presearch_has_no_hits(tmp_path: Path
 
     agent = _build_agent(tmp_path)
     agent.search_service = _NoHitSearchService()
-    first = tmp_path / "a" / ".mana_index"
-    second = tmp_path / "b" / ".mana_index"
+    first = tmp_path / "a" / ".mana/index"
+    second = tmp_path / "b" / ".mana/index"
     captured: dict[str, object] = {}
 
     def _fake_run(**kwargs):
@@ -421,7 +421,7 @@ def test_ask_agent_invokes_externally_registered_tool(tmp_path: Path) -> None:
         ]
     )
 
-    result = agent.run("Need latest info", tmp_path / ".mana_index", 2, max_steps=3, timeout_seconds=2)
+    result = agent.run("Need latest info", tmp_path / ".mana/index", 2, max_steps=3, timeout_seconds=2)
     assert result.answer == "Done"
 
 
@@ -443,7 +443,7 @@ def test_ask_agent_does_not_disable_search_internet_after_repeated_calls(tmp_pat
         ]
     )
 
-    result = agent.run("Need latest info", tmp_path / ".mana_index", 2, max_steps=5, timeout_seconds=2)
+    result = agent.run("Need latest info", tmp_path / ".mana/index", 2, max_steps=5, timeout_seconds=2)
     assert result.answer == "Done"
     assert not any("disabled after repeated calls without progress" in str(w) for w in result.warnings)
 
@@ -465,7 +465,7 @@ def test_ask_agent_reports_search_internet_failure_once(tmp_path: Path) -> None:
         ]
     )
 
-    result = agent.run("Need latest info", tmp_path / ".mana_index", 2, max_steps=4, timeout_seconds=2)
+    result = agent.run("Need latest info", tmp_path / ".mana/index", 2, max_steps=4, timeout_seconds=2)
     assert result.answer == "Done"
     matches = [w for w in result.warnings if "search_internet failed: DuckDuckGo fallback failed" in str(w)]
     assert len(matches) == 1
@@ -492,7 +492,7 @@ def test_ask_agent_suppresses_missing_backend_search_warning(tmp_path: Path) -> 
         ]
     )
 
-    result = agent.run("Need latest info", tmp_path / ".mana_index", 2, max_steps=3, timeout_seconds=2)
+    result = agent.run("Need latest info", tmp_path / ".mana/index", 2, max_steps=3, timeout_seconds=2)
     assert result.answer == "Done"
     assert not any("search_internet failed:" in str(w) for w in result.warnings)
 
@@ -531,6 +531,6 @@ def test_ask_agent_keeps_looping_after_apply_patch_failures_for_write_file_fallb
         ]
     )
 
-    result = agent.run("Implement change", tmp_path / ".mana_index", 2, max_steps=6, timeout_seconds=2)
+    result = agent.run("Implement change", tmp_path / ".mana/index", 2, max_steps=6, timeout_seconds=2)
     assert result.answer == "Done"
     assert any("apply_patch disabled after repeated failures" in str(w) for w in result.warnings)

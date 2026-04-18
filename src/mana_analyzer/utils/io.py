@@ -16,6 +16,7 @@ EXCLUDED_DIRS = {
     "node_modules",
     "build",
     "dist",
+    ".mana",
     ".mana_index",
     ".next",
     "coverage",
@@ -135,25 +136,36 @@ def _matches_ignore(relative_path: str, patterns: list[str]) -> bool:
 def iter_source_files(root: str | Path, extensions: set[str] | None = None) -> list[Path]:
     root_path = Path(root).resolve()
     allowed = extensions or SOURCE_EXTENSIONS
+    
     if root_path.is_file():
-        if root_path.suffix in allowed:
-            return [root_path]
-        return []
+        return [root_path] if root_path.suffix.lower() in allowed else []
 
     ignore_patterns = load_ignore_patterns(root_path)
-    files: list[Path] = []
-    for path in root_path.rglob("*"):
-        if not path.is_file():
-            continue
-        if path.suffix not in allowed:
-            continue
-        if any(part in EXCLUDED_DIRS for part in path.parts):
-            continue
-        relative = str(path.relative_to(root_path))
-        if _matches_ignore(relative, ignore_patterns):
-            continue
-        files.append(path)
-    return sorted(files)
+    found_files: list[Path] = []
+
+    # Use os.walk for better performance and easy directory skipping
+    import os
+    for res_root, dirs, files in os.walk(root_path):
+        # 1. Prune excluded directories in-place (stops walk from entering them)
+        dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS and not d.startswith('.')]
+        
+        rel_dir = os.path.relpath(res_root, root_path)
+        
+        for file in files:
+            file_path = Path(res_root) / file
+            
+            # 2. Check Extension (Case Insensitive)
+            if file_path.suffix.lower() not in allowed:
+                continue
+                
+            # 3. Check Ignore Patterns (relative to root)
+            rel_file_path = os.path.join(rel_dir, file) if rel_dir != "." else file
+            if _matches_ignore(rel_file_path, ignore_patterns):
+                continue
+                
+            found_files.append(file_path)
+
+    return sorted(found_files)
 
 
 def iter_python_files(root: str | Path) -> list[Path]:

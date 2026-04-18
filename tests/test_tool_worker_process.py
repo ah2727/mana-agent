@@ -156,7 +156,7 @@ def test_tool_worker_client_restarts_once_on_worker_failure(monkeypatch) -> None
     response = client.run_tools(
         twp.ToolRunRequest(
             question="q",
-            index_dir="/tmp/.mana_index",
+            index_dir="/tmp/.mana/index",
             k=4,
             max_steps=4,
             timeout_seconds=5,
@@ -221,7 +221,7 @@ def test_tool_worker_client_run_tools_forwards_events(monkeypatch) -> None:
     response = client.run_tools(
         twp.ToolRunRequest(
             question="q",
-            index_dir="/tmp/.mana_index",
+            index_dir="/tmp/.mana/index",
             k=4,
             max_steps=4,
             timeout_seconds=5,
@@ -277,7 +277,7 @@ def test_tool_worker_client_does_not_retry_non_retriable_run_failed(monkeypatch)
         client.run_tools(
             twp.ToolRunRequest(
                 question="q",
-                index_dir="/tmp/.mana_index",
+                index_dir="/tmp/.mana/index",
                 k=4,
                 max_steps=4,
                 timeout_seconds=5,
@@ -302,7 +302,7 @@ def test_tool_worker_server_enforces_tools_only_violation(monkeypatch) -> None:
         twp.WorkerEnvelope(
             type="run_tools",
             request_id="req-1",
-            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana_index").model_dump(),
+            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana/index").model_dump(),
         )
     )
     assert emitted
@@ -334,7 +334,7 @@ def test_tool_worker_server_accepts_successful_tool_trace(monkeypatch) -> None:
         twp.WorkerEnvelope(
             type="run_tools",
             request_id="req-2",
-            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana_index").model_dump(),
+            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana/index").model_dump(),
         )
     )
     assert emitted
@@ -358,7 +358,7 @@ def test_tool_worker_server_allows_no_tool_success_when_override_disabled(monkey
             request_id="req-override",
             payload=twp.ToolRunRequest(
                 question="x",
-                index_dir="/tmp/.mana_index",
+                index_dir="/tmp/.mana/index",
                 tools_only_strict_override=False,
             ).model_dump(),
         )
@@ -397,7 +397,7 @@ def test_tool_worker_server_emits_tool_events(monkeypatch) -> None:
         twp.WorkerEnvelope(
             type="run_tools",
             request_id="req-events",
-            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana_index").model_dump(),
+            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana/index").model_dump(),
         )
     )
 
@@ -432,12 +432,12 @@ def test_tool_worker_server_blocks_duplicate_tool_name_within_turn(monkeypatch) 
 
     first_payload = twp.ToolRunRequest(
         question="run once",
-        index_dir="/tmp/.mana_index",
+        index_dir="/tmp/.mana/index",
         tool_name="read_file",
     ).model_dump()
     second_payload = twp.ToolRunRequest(
         question="run twice",
-        index_dir="/tmp/.mana_index",
+        index_dir="/tmp/.mana/index",
         tool_name="read_file",
     ).model_dump()
 
@@ -475,7 +475,7 @@ def test_tool_worker_server_allows_same_tool_name_in_new_turn(monkeypatch) -> No
 
     payload = twp.ToolRunRequest(
         question="run",
-        index_dir="/tmp/.mana_index",
+        index_dir="/tmp/.mana/index",
         tool_name="read_file",
     ).model_dump()
 
@@ -502,7 +502,7 @@ def test_tool_worker_server_marks_bad_request_as_non_retriable(monkeypatch) -> N
         twp.WorkerEnvelope(
             type="run_tools",
             request_id="req-bad-400",
-            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana_index").model_dump(),
+            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana/index").model_dump(),
         )
     )
 
@@ -526,7 +526,7 @@ def test_tool_worker_server_marks_rate_limit_as_retriable(monkeypatch) -> None:
         twp.WorkerEnvelope(
             type="run_tools",
             request_id="req-rate-429",
-            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana_index").model_dump(),
+            payload=twp.ToolRunRequest(question="x", index_dir="/tmp/.mana/index").model_dump(),
         )
     )
 
@@ -628,7 +628,7 @@ def test_run_tool_request_once_enforces_tools_only_policy(monkeypatch) -> None:
         repo_root="/tmp",
         tools_only_strict=True,
     )
-    req = twp.ToolRunRequest(question="q", index_dir="/tmp/.mana_index")
+    req = twp.ToolRunRequest(question="q", index_dir="/tmp/.mana/index")
 
     with pytest.raises(twp.ToolWorkerProcessError) as excinfo:
         twp.run_tool_request_once(init_payload=init_payload, request=req)
@@ -650,7 +650,7 @@ def test_run_tool_request_once_respects_tools_only_override(monkeypatch) -> None
     )
     req = twp.ToolRunRequest(
         question="q",
-        index_dir="/tmp/.mana_index",
+        index_dir="/tmp/.mana/index",
         tools_only_strict_override=False,
     )
 
@@ -674,7 +674,7 @@ def test_run_tool_request_forwards_flow_id_to_ask_agent() -> None:
 
     response = twp._run_tool_request(
         ask_agent=_FakeAskAgent(),  # type: ignore[arg-type]
-        req=twp.ToolRunRequest(question="q", index_dir="/tmp/.mana_index", flow_id="flow-worker-1"),
+        req=twp.ToolRunRequest(question="q", index_dir="/tmp/.mana/index", flow_id="flow-worker-1"),
         tools_only_strict_default=False,
         callbacks=None,
     )

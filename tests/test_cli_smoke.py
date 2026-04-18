@@ -259,7 +259,7 @@ def test_cli_commands(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("mana_analyzer.commands.cli.build_dependency_service", lambda: FakeDependencyService())
     monkeypatch.setattr("mana_analyzer.commands.cli.build_describe_service", fake_build_describe_service)
     monkeypatch.setattr("mana_analyzer.commands.cli.discover_subprojects", lambda root: [])
-    monkeypatch.setattr("mana_analyzer.commands.cli.discover_index_dirs", lambda root: [Path(root) / ".mana_index"])
+    monkeypatch.setattr("mana_analyzer.commands.cli.discover_index_dirs", lambda root: [Path(root) / ".mana/index"])
 
     idx = tmp_path / "idx"
 
@@ -411,7 +411,7 @@ def test_ask_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tmp
         ["ask", "what", "--root-dir", str(tmp_path), "--json"],
     )
     assert result.exit_code == 0
-    assert captured["index_dir"] == str((tmp_path / ".mana_index").resolve())
+    assert captured["index_dir"] == str((tmp_path / ".mana/index").resolve())
 
 
 def test_analyze_fail_on_merged_findings(monkeypatch, tmp_path: Path) -> None:
@@ -440,10 +440,10 @@ def test_analyze_full_structure_writes_markdown_artifact(monkeypatch, tmp_path: 
     monkeypatch.setattr("mana_analyzer.commands.cli.StructureService", FakeStructureService)
     monkeypatch.setattr("mana_analyzer.commands.cli.build_describe_service", lambda *_args, **_kwargs: FakeDescribeService())
 
-    result = runner.invoke(app, ["analyze", str(tmp_path), "--full-structure", "--output-format", "both"])
+    result = runner.invoke(app, ["analyze", str(tmp_path), "--full-structure", "--output-format", "all"])
     assert result.exit_code == 0
 
-    out_dir = tmp_path / ".mana_logs"
+    out_dir = tmp_path / ".mana/logs"
     md_files = sorted(out_dir.glob("*-analyze.md"))
     json_files = sorted(out_dir.glob("*-analyze.json"))
 
@@ -656,7 +656,7 @@ def test_chat_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tm
         input="hello\nquit\n",
     )
     assert result.exit_code == 0
-    assert _FakeCodingAgent.seen_index_dir == str((tmp_path / ".mana_index").resolve())
+    assert _FakeCodingAgent.seen_index_dir == str((tmp_path / ".mana/index").resolve())
 
 
 def test_chat_transparency_uses_trace_steps_in_agent_tools_mode(monkeypatch, tmp_path: Path) -> None:

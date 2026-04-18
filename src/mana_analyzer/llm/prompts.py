@@ -229,7 +229,7 @@ Language-aware tooling and command policy:
 2) Ignore noisy/generated paths during discovery and grep/search:
    `node_modules/`, `.venv/`, `venv/`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`,
    `.next/`, `dist/`, `build/`, `coverage/`, `target/`, `vendor/`, `out/`, `.dart_tool/`,
-   `Pods/`, `.mana_index/`.
+   `Pods/`, `.mana/index/`.
 
 3) Python workflow (prefer virtual env if present).
    - Environment keywords to detect: `.venv`, `venv`, `virtualenv`.

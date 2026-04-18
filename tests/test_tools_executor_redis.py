@@ -146,8 +146,8 @@ def test_redis_executor_keeps_deterministic_input_order(monkeypatch) -> None:
     results = executor.run_batch(
         run_id="run-1",
         requests=[
-            BatchToolRequest(request_index=0, request=ToolRunRequest(question="q0", index_dir="/tmp/.mana_index")),
-            BatchToolRequest(request_index=1, request=ToolRunRequest(question="q1", index_dir="/tmp/.mana_index")),
+            BatchToolRequest(request_index=0, request=ToolRunRequest(question="q0", index_dir="/tmp/.mana/index")),
+            BatchToolRequest(request_index=1, request=ToolRunRequest(question="q1", index_dir="/tmp/.mana/index")),
         ],
     )
 
@@ -183,7 +183,7 @@ def test_redis_executor_maps_timeout_failures_to_job_timeout(monkeypatch) -> Non
     results = executor.run_batch(
         run_id="run-timeout",
         requests=[
-            BatchToolRequest(request_index=0, request=ToolRunRequest(question="q0", index_dir="/tmp/.mana_index"))
+            BatchToolRequest(request_index=0, request=ToolRunRequest(question="q0", index_dir="/tmp/.mana/index"))
         ],
     )
     assert len(results) == 1

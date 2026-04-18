@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, List, Dict
+from pathlib import Path
 
 
 @dataclass(slots=True)
@@ -240,6 +241,7 @@ class DependencyEdge:
 
 @dataclass(slots=True)
 class DependencyGraphReport:
+    files: List[Path]  
     project_root: str
     package_managers: list[str]
     frameworks: list[str]

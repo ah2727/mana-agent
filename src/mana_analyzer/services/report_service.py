@@ -15,8 +15,8 @@ from mana_analyzer.models import (
     FlowAnalysis,
 )
 from mana_analyzer.services.analyze_service import AnalyzeService
-from mana_analyzer.services.dependency_service import DependencyService
-from mana_analyzer.services.describe_service import DescribeService
+from mana_analyzer.dependencies.dependency_service import DependencyService
+from mana_analyzer.describe.describe_service import DescribeService
 from mana_analyzer.services.llm_analyze_service import LlmAnalyzeService
 from mana_analyzer.services.structure_service import StructureService
 from mana_analyzer.services.vulnerability_service import VulnerabilityService
@@ -65,6 +65,14 @@ def _find_project_root(start: Path) -> Path:
 
     return cur
 
+def _safe_to_dict(obj: Any) -> dict[str, Any]:
+    """Convert object to dict, handling cases where it's already a dict."""
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, 'to_dict'):
+        return obj.to_dict()
+    return {}
+    
 
 @dataclass(frozen=True)
 class _DepsBundle:
@@ -120,6 +128,7 @@ class ReportService:
         self.describe_service = describe_service
         self.structure_service = structure_service
         self.vulnerability_service = vulnerability_service
+        
 
     # ---------------------------
     # Public API
@@ -169,12 +178,8 @@ class ReportService:
         warnings.extend(findings_bundle.warnings)
 
         # Describe summary (architecture + file summaries)
-        describe_report = self._build_describe(
-            project_root,
-            summary_max_files=summary_max_files,
-            with_llm=with_llm,
-            model_override=model_override,
-        )
+        describe_report = self._build_describe(project_root)
+
 
         # Structure payload
         structure_bundle = self._build_structure(project_root, enabled=effective_full_structure)
@@ -223,7 +228,7 @@ class ReportService:
             tool_version=_safe_version_string(),
             online=online,
             llm_enabled=with_llm,
-            output_format="both",
+            output_format="all",
             limitations=[
                 "Direct dependencies only (no transitive lockfile scan in v1).",
                 "Static analysis is Python-only in v1.",
@@ -233,10 +238,10 @@ class ReportService:
 
         # Build the project_summary dict
         project_summary: dict[str, Any] = {
-            "describe": describe_report.to_dict(),
-            "structure": structure_bundle.structure_report.to_dict() if structure_bundle.structure_report else None,
-            "file_structure": deep_bundle.file_structure_payload.to_dict() if deep_bundle.file_structure_payload else None,
-            "flow_analysis": deep_bundle.flow_payload.to_dict() if deep_bundle.flow_payload else None,
+            "describe": _safe_to_dict(describe_report),
+            "structure": _safe_to_dict(structure_bundle.structure_report) if structure_bundle.structure_report else None,
+            "file_structure": _safe_to_dict(deep_bundle.file_structure_payload) if deep_bundle.file_structure_payload else None,
+            "flow_analysis": _safe_to_dict(deep_bundle.flow_payload) if deep_bundle.flow_payload else None,
         }
 
         return ProjectAuditReport(
@@ -332,30 +337,13 @@ class ReportService:
             warnings=warnings,
         )
 
-    def _build_describe(
-        self,
-        project_root: Path,
-        *,
-        summary_max_files: int,
-        with_llm: bool,
-        model_override: str | None,
-    ):
-        # If DescribeService supports model override, pass it; otherwise keep compatibility.
-        try:
-            return self.describe_service.describe(
-                str(project_root),
-                max_files=summary_max_files,
-                include_functions=False,
-                use_llm=with_llm,
-                model_override=model_override,
-            )
-        except TypeError:
-            return self.describe_service.describe(
-                str(project_root),
-                max_files=summary_max_files,
-                include_functions=False,
-                use_llm=with_llm,
-            )
+    def _build_describe(self, project_root: Path) -> Any:
+        """
+        Call DescribeService.describe with just the project path.
+        The DescribeService instance was already configured
+        (via build_describe_service) with its file_agent and llm_chain.
+        """
+        return self.describe_service.describe(project_root)
 
     def _build_structure(self, project_root: Path, *, enabled: bool) -> _StructureBundle:
         warnings: list[str] = []
@@ -368,6 +356,7 @@ class ReportService:
         except Exception as exc:
             warnings.append(f"StructureService failed ({type(exc).__name__}): {exc}")
             return _StructureBundle(structure_report=None, warnings=warnings)
+        
 
     def _build_security(
         self,
@@ -406,13 +395,12 @@ class ReportService:
         if report_profile != "deep":
             return _DeepBundle(file_structure_payload=None, flow_payload=None, warnings=warnings)
 
-        # ✅ LLM is mandatory
+        # ✅ LLM is mandatory for deep profile
         if not with_llm:
             raise ValueError("LLM-only mode: with_llm must be True for deep profile.")
 
-        llm_chain = getattr(self.describe_service, "llm_chain", None)
-        if llm_chain is None or not hasattr(llm_chain, "synthesize_deep_flow_analysis"):
-            raise RuntimeError("LLM-only mode: describe_service.llm_chain.synthesize_deep_flow_analysis is required.")
+        # Delegate to DescribeService; it will raise if synthesize_deep_flow_analysis is missing
+        synthesize = self.describe_service.synthesize_deep_flow_analysis
 
         # ----- file structure payload (still best-effort; not LLM)
         file_structure_payload: FileStructureSummary | None = None
@@ -437,8 +425,13 @@ class ReportService:
                 exclusions=getattr(structure_report, "discovery_stats", {}) or {},
             )
 
-        # ----- LLM flow synthesis (NO fallback)
-        sampled = (describe_report.to_dict().get("descriptions") or [])[:8]
+        # ----- LLM flow synthesis (no fallback)
+        # sample up to 8 file summaries from describe_report
+        if isinstance(describe_report, dict):
+            describe_dict = describe_report
+        else:
+            describe_dict = describe_report.to_dict()
+        sampled = describe_dict.get("files", [])[:8]
 
         structure_summary = {
             "total_files": (file_structure_payload.total_files if file_structure_payload else 0),
@@ -453,15 +446,15 @@ class ReportService:
         }
 
         # If LLM errors, we fail hard (as requested)
-        content = llm_chain.synthesize_deep_flow_analysis(
-            dependency_report=deps_graph,
-            structure_summary=structure_summary,
-            findings_summary=findings_summary,
-            security_summary=security_report.to_dict(),
-            sampled_file_summaries=sampled,
-            line_target=detail_line_target,
-            security_lens=security_lens,
-        )
+        content = synthesize(
+             dependency_report=deps_graph,
+             structure_summary=structure_summary,
+             findings_summary=findings_summary,
+             security_summary=security_report.to_dict(),
+             sampled_file_summaries=sampled,
+             line_target=detail_line_target,
+             security_lens=security_lens,
+         )
 
         if not str(content).strip():
             raise RuntimeError("LLM-only mode: synthesize_deep_flow_analysis returned empty content.")

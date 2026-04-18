@@ -111,7 +111,7 @@ def test_ask_service_dir_mode_groups_sources() -> None:
         search_service=FakeSearchService(),
     )
     response = service.ask_dir_mode(
-        index_dirs=[Path("/tmp/proj-a/.mana_index"), Path("/tmp/proj-b/.mana_index")],
+        index_dirs=[Path("/tmp/proj-a/.mana/index"), Path("/tmp/proj-b/.mana/index")],
         question="How does add work?",
         k=4,
         root_dir="/tmp",
@@ -128,7 +128,7 @@ def test_ask_service_tools_dir_mode_sets_grouped_sources() -> None:
         search_service=FakeSearchService(),
     )
     response = service.ask_with_tools_dir_mode(
-        index_dirs=[Path("/tmp/proj-a/.mana_index"), Path("/tmp/proj-b/.mana_index")],
+        index_dirs=[Path("/tmp/proj-a/.mana/index"), Path("/tmp/proj-b/.mana/index")],
         question="How does add work?",
         k=4,
     )

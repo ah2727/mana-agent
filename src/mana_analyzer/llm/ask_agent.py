@@ -23,6 +23,7 @@ from mana_analyzer.llm.prompts import ASK_AGENT_SYSTEM_PROMPT
 from mana_analyzer.analysis.chunker import CodeChunker
 from mana_analyzer.services.structure_service import StructureService
 from mana_analyzer.llm.run_logger import LlmRunLogger
+from mana_analyzer.config.settings import default_index_dir
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
 
@@ -91,9 +92,9 @@ class AskAgent:
         self.search_service = search_service
         self.project_root = Path(project_root).resolve()
         self.coding_memory_service = coding_memory_service
-        self._resolved_index = self.project_root / ".mana_index"
+        self._resolved_index = default_index_dir(self.project_root)
         self._resolved_indexes = [self._resolved_index]
-        self.run_logger = LlmRunLogger()
+        self.run_logger = LlmRunLogger(log_file=str(Path))
 
         # ✅ NEW: allow external code to register extra tools (e.g. write_file/apply_patch)
         self.tools: list[BaseTool] = []
@@ -486,7 +487,7 @@ class AskAgent:
         safe_read_line_window = max(200, min(int(read_line_window or 400), 2000))
         resolved_indexes = list(getattr(self, "_resolved_indexes", []) or [])
         if not resolved_indexes:
-            fallback_index = Path(getattr(self, "_resolved_index", self.project_root / ".mana_index")).resolve()
+            fallback_index = Path(getattr(self, "_resolved_index", default_index_dir(self.project_root))).resolve()
             resolved_indexes = [fallback_index]
             self._resolved_indexes = resolved_indexes
 

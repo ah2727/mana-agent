@@ -1,7 +1,7 @@
 """Persist and summarize coding-agent flow memory.
 
 This service stores per-project coding-flow state in
-``.mana_index/chat_memory.sqlite3`` and exposes helpers used by the coding agent
+``.mana/index/chat_memory.sqlite3`` and exposes helpers used by the coding agent
 to:
 
 - create/resume/reset active flows
@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from mana_analyzer.config.settings import default_index_dir
 
 _PLAN_TRIGGER_REQUEST_RE = re.compile(
     r"(?i)\b(?:implement|execute|run|apply|trigger)\s+(?:the\s+|last\s+|that\s+|current\s+)?plan\b"
@@ -59,11 +61,11 @@ class CodingMemoryService:
         max_turns: int = 5,
         max_tasks: int = 20,
     ) -> None:
-        """Initialize persistence under ``project_root/.mana_index``."""
+        """Initialize persistence under ``project_root/.mana/index``."""
         self.project_root = Path(project_root).resolve()
         self.max_turns = max(1, int(max_turns))
         self.max_tasks = max(1, int(max_tasks))
-        self.db_path = self.project_root / ".mana_index" / "chat_memory.sqlite3"
+        self.db_path = default_index_dir(self.project_root) / "chat_memory.sqlite3"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 

@@ -64,6 +64,13 @@ src/
 tests/                # Pytest suite + fixtures
 ```
 
+## Project Structure Analysis
+
+A detailed generated analysis is available in:
+
+- `docs/project_structure_analysis.md`
+- `docs/project_structure_analysis.json`
+
 ---
 
 ## Installation
@@ -140,6 +147,8 @@ mana-analyzer chat --agent-tools --coding-agent
 | `flow` | Inspect coding memory |
 
 All commands support `--help`, `--json`, and `--verbose` flags.
+Text mode uses a unified Rich UI output layer; `--json` remains strict machine-readable JSON.
+`--verbose` streams debug logs to console (`stderr`) and writes them to `.mana_logs/...`.
 
 ---
 

@@ -174,7 +174,7 @@ def _build_agent_with_ask(tmp_path: Path, monkeypatch, ask_agent, *, full_auto_m
 def test_coding_agent_builds_structured_checklist_before_tools(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
     assert isinstance(result.get("plan"), dict)
     assert result["plan"]["objective"] == "Implement request"
     assert result["checklist"]["total"] >= 1
@@ -190,7 +190,7 @@ def test_coding_agent_blocks_answer_until_required_file_reads_met(tmp_path: Path
         "warnings": [],
     }
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
     assert result["progress"]["phase"] == "blocked"
     assert "Need at least 2 unique read_file inspections" in result["progress"]["why"]
 
@@ -198,7 +198,7 @@ def test_coding_agent_blocks_answer_until_required_file_reads_met(tmp_path: Path
 def test_coding_agent_prevents_duplicate_semantic_search_loops(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
     fake = agent.ask_agent
     assert isinstance(fake, _FakeAskAgent)
     assert fake.calls
@@ -229,7 +229,7 @@ def test_coding_agent_enforces_search_budget_and_transitions_phase(tmp_path: Pat
         "warnings": [],
     }
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
     fake = agent.ask_agent
     assert isinstance(fake, _FakeAskAgent)
     policy = fake.calls[0]["tool_policy"]
@@ -322,7 +322,7 @@ def test_coding_agent_progress_budgets_include_dynamic_read_metadata(tmp_path: P
         },
     )
 
-    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
     budgets = result["progress"]["budgets"]
     assert budgets["read_budget"] == 5
     assert budgets["read_budget_cap"] == 6
@@ -373,7 +373,7 @@ def test_coding_agent_progress_budgets_use_cache_aware_read_metrics(tmp_path: Pa
         "warnings": [],
     }
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    result = agent.generate("update README.md", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("update README.md", index_dir=tmp_path / ".mana/index", k=4)
     budgets = result["progress"]["budgets"]
     assert budgets["read_used"] == 1
     assert budgets["read_cache_hits"] == 1
@@ -387,19 +387,19 @@ def test_coding_agent_repo_only_default_disables_internet_without_explicit_user_
 ) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    agent.generate("Implement parser fix", index_dir=tmp_path / ".mana_index", k=4)
+    agent.generate("Implement parser fix", index_dir=tmp_path / ".mana/index", k=4)
     fake = agent.ask_agent
     assert isinstance(fake, _FakeAskAgent)
     assert fake.calls[0]["tool_policy"]["block_internet"] is True
-    agent.generate("Need latest internet docs for this API", index_dir=tmp_path / ".mana_index", k=4)
+    agent.generate("Need latest internet docs for this API", index_dir=tmp_path / ".mana/index", k=4)
     assert fake.calls[1]["tool_policy"]["block_internet"] is False
 
 
 def test_flow_checklist_persists_and_resumes_across_turns(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    first = agent.generate("Implement A", index_dir=tmp_path / ".mana_index", k=4)
-    second = agent.generate("Continue A", index_dir=tmp_path / ".mana_index", k=4, flow_id=first["flow_id"])
+    first = agent.generate("Implement A", index_dir=tmp_path / ".mana/index", k=4)
+    second = agent.generate("Continue A", index_dir=tmp_path / ".mana/index", k=4, flow_id=first["flow_id"])
     assert isinstance(first.get("flow_id"), str)
     assert second["flow_id"] == first["flow_id"]
     summary = agent.flow_summary(first["flow_id"])
@@ -410,7 +410,7 @@ def test_flow_checklist_persists_and_resumes_across_turns(tmp_path: Path, monkey
 def test_coding_agent_propagates_flow_id_to_ask_agent_run(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    result = agent.generate("Implement A", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("Implement A", index_dir=tmp_path / ".mana/index", k=4)
     fake = agent.ask_agent
     assert isinstance(fake, _FakeAskAgent)
     assert fake.calls
@@ -422,7 +422,7 @@ def test_dir_mode_coding_agent_flow_context_included(tmp_path: Path, monkeypatch
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     first = agent.generate_dir_mode(
         "Implement dir-mode flow",
-        index_dirs=[tmp_path / "proj/.mana_index"],
+        index_dirs=[tmp_path / "proj/.mana/index"],
         k=4,
     )
     assert isinstance(first.get("plan"), dict)
@@ -433,13 +433,13 @@ def test_dir_mode_rewrites_ambiguous_followup_with_flow_context(tmp_path: Path, 
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     first = agent.generate_dir_mode(
         "Refactor parser and update prompts",
-        index_dirs=[tmp_path / "proj/.mana_index"],
+        index_dirs=[tmp_path / "proj/.mana/index"],
         k=4,
     )
     flow_id = str(first.get("flow_id") or "")
     second = agent.generate_dir_mode(
         "yes.",
-        index_dirs=[tmp_path / "proj/.mana_index"],
+        index_dirs=[tmp_path / "proj/.mana/index"],
         k=4,
         flow_id=flow_id,
     )
@@ -460,13 +460,13 @@ def test_plan_trigger_followup_rewrites_to_execute_checklist(tmp_path: Path, mon
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     first = agent.generate(
         "Update docs and type hints in TODO.md",
-        index_dir=tmp_path / ".mana_index",
+        index_dir=tmp_path / ".mana/index",
         k=4,
     )
     flow_id = str(first.get("flow_id") or "")
     second = agent.generate(
         "implement plan.",
-        index_dir=tmp_path / ".mana_index",
+        index_dir=tmp_path / ".mana/index",
         k=4,
         flow_id=flow_id,
     )
@@ -486,7 +486,7 @@ def test_plan_trigger_followup_not_classified_as_conflict(tmp_path: Path, monkey
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     first = agent.generate(
         "Refactor coding agent flow prompts and docs",
-        index_dir=tmp_path / ".mana_index",
+        index_dir=tmp_path / ".mana/index",
         k=4,
     )
     flow_id = str(first.get("flow_id") or "")
@@ -505,7 +505,7 @@ def test_coding_agent_handles_tools_only_worker_violation(tmp_path: Path, monkey
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     agent.tool_worker_client = _FailingWorker()
-    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
     assert "tools-only worker policy" in str(result.get("answer", "")).lower()
     warnings = result.get("warnings") or []
     assert any("tools_only_violation" in str(item) for item in warnings)
@@ -544,7 +544,7 @@ def test_coding_agent_retries_tools_only_violation_once_with_override(tmp_path: 
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     worker = _RetryWorker()
     agent.tool_worker_client = worker
-    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
     assert worker.calls == 2
     assert worker.requests[1].tools_only_strict_override is False
     assert result.get("render_mode") == "answer_only"
@@ -569,7 +569,7 @@ def test_coding_agent_force_fallback_retry_uses_retry_request_text(tmp_path: Pat
     agent = _build_agent_with_ask(tmp_path, monkeypatch, ask_agent)
     monkeypatch.setattr(agent, "_git_status_paths", lambda: set())  # type: ignore[method-assign]
 
-    result = agent.generate("update README section", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("update README section", index_dir=tmp_path / ".mana/index", k=4)
     _ = result
     assert len(ask_agent.calls) >= 2
     assert any(
@@ -605,7 +605,7 @@ def test_coding_agent_noop_patch_then_write_change_avoids_blocked(tmp_path: Path
     states = iter([set(), set(), {"README.md"}])
     monkeypatch.setattr(agent, "_git_status_paths", lambda: next(states, {"README.md"}))  # type: ignore[method-assign]
 
-    result = agent.generate("update README section", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("update README section", index_dir=tmp_path / ".mana/index", k=4)
     assert result["progress"]["phase"] != "blocked"
     assert result["changed_files"] == ["README.md"]
 
@@ -635,7 +635,7 @@ def test_coding_agent_true_blocker_after_bounded_noop_retries(tmp_path: Path, mo
     agent = _build_agent_with_ask(tmp_path, monkeypatch, ask_agent)
     monkeypatch.setattr(agent, "_git_status_paths", lambda: set())  # type: ignore[method-assign]
 
-    result = agent.generate("update README section", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("update README section", index_dir=tmp_path / ".mana/index", k=4)
     assert result["progress"]["phase"] == "blocked"
     assert "mutation_exhausted_true_blocker" in str(result["progress"]["why"])
     warnings = result.get("warnings") or []
@@ -665,7 +665,7 @@ def test_coding_agent_conversational_noop_retries_before_terminal(tmp_path: Path
     states = iter([set(), set(), {"README.md"}])
     monkeypatch.setattr(agent, "_git_status_paths", lambda: next(states, {"README.md"}))  # type: ignore[method-assign]
 
-    result = agent.generate("please update readme.md", index_dir=tmp_path / ".mana_index", k=4)
+    result = agent.generate("please update readme.md", index_dir=tmp_path / ".mana/index", k=4)
     assert len(ask_agent.calls) >= 2
     assert result["changed_files"] == ["README.md"]
     warnings = result.get("warnings") or []
@@ -721,7 +721,7 @@ def test_generate_auto_execute_delegates_to_tools_manager_orchestrator(tmp_path:
     agent.set_tools_manager_orchestrator(orchestrator)
     result = agent.generate_auto_execute(
         "Implement planner",
-        index_dir=tmp_path / ".mana_index",
+        index_dir=tmp_path / ".mana/index",
         k=4,
         pass_cap=3,
     )
@@ -757,7 +757,7 @@ def test_generate_auto_execute_propagates_flow_id_to_tools_manager(tmp_path: Pat
     agent.set_tools_manager_orchestrator(orchestrator)
     result = agent.generate_auto_execute(
         "Implement planner",
-        index_dir=tmp_path / ".mana_index",
+        index_dir=tmp_path / ".mana/index",
         k=4,
         pass_cap=3,
         flow_id="flow-xyz",
@@ -791,7 +791,7 @@ def test_generate_auto_execute_returns_optional_dedup_retry_telemetry(tmp_path: 
             )
 
     agent.set_tools_manager_orchestrator(_Orchestrator())
-    result = agent.generate_auto_execute("Implement planner", index_dir=tmp_path / ".mana_index", k=4, pass_cap=3)
+    result = agent.generate_auto_execute("Implement planner", index_dir=tmp_path / ".mana/index", k=4, pass_cap=3)
     assert result["duplicate_request_skips"] == 2
     assert result["duplicate_semantic_search_skips"] == 3
     assert result["request_retry_attempts"] == 1
@@ -819,10 +819,10 @@ def test_generate_auto_execute_preserves_flow_id_continuity(tmp_path: Path, monk
             )
 
     agent.set_tools_manager_orchestrator(_Orchestrator())
-    first = agent.generate_auto_execute("Implement A", index_dir=tmp_path / ".mana_index", k=4)
+    first = agent.generate_auto_execute("Implement A", index_dir=tmp_path / ".mana/index", k=4)
     second = agent.generate_auto_execute(
         "Continue A",
-        index_dir=tmp_path / ".mana_index",
+        index_dir=tmp_path / ".mana/index",
         k=4,
         flow_id=first["flow_id"],
     )

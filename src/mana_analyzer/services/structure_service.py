@@ -361,23 +361,45 @@ class StructureService:
             )
         lines.append("")
         lines.append("## APIs and Exports")
-        for export in report.exports:
-            lines.append(f"- `{export.source_module}` `{export.symbol}` via `{export.mechanism}`")
+        export_modules = {item.source_module for item in report.exports}
+        lines.append(
+            f"- Summary: detected {len(report.exports)} exports across {len(export_modules)} module(s)."
+        )
+        if report.exports:
+            for export in report.exports:
+                lines.append(f"- `{export.source_module}` `{export.symbol}` via `{export.mechanism}`")
+        else:
+            lines.append("- No exports detected in the scanned source files.")
         lines.append("")
         lines.append("## Data Structures")
-        for class_desc in report.data_structures:
-            lines.append(
-                f"- `{class_desc.name}` fields={len(class_desc.fields)} methods={len(class_desc.methods)} "
-                f"decorators={','.join(class_desc.decorators) or 'none'}"
-            )
+        total_fields = sum(len(item.fields) for item in report.data_structures)
+        total_methods = sum(len(item.methods) for item in report.data_structures)
+        lines.append(
+            f"- Summary: detected {len(report.data_structures)} data structure(s), {total_fields} field(s), and {total_methods} method(s)."
+        )
+        if report.data_structures:
+            for class_desc in report.data_structures:
+                lines.append(
+                    f"- `{class_desc.name}` fields={len(class_desc.fields)} methods={len(class_desc.methods)} "
+                    f"decorators={','.join(class_desc.decorators) or 'none'}"
+                )
+        else:
+            lines.append("- No data structures were inferred by the parsers.")
         lines.append("")
         lines.append("## Command Surface")
-        for command in report.commands:
-            lines.append(f"- `{command}`")
+        lines.append(f"- Summary: detected {len(report.commands)} command entrypoint(s).")
+        if report.commands:
+            for command in report.commands:
+                lines.append(f"- `{command}`")
+        else:
+            lines.append("- No CLI-style command declarations detected.")
         lines.append("")
         lines.append("## LLM and Tooling")
-        for capability in report.llm_capabilities:
-            lines.append(f"- `{capability}`")
+        if report.llm_capabilities:
+            for capability in report.llm_capabilities:
+                lines.append(f"- `{capability}`")
+        else:
+            lines.append("- none")
         return "\n".join(lines)
 
     def render_file_tree_markdown(self, files: list[str]) -> str:

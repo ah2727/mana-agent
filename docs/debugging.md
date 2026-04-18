@@ -11,7 +11,7 @@ python --version
 which mana-analyzer
 ```
 
-2. Run a narrow command with verbose logging:
+2. Run a narrow command with verbose logging (live logs on `stderr`, full logs saved under `.mana_logs/...`):
 
 ```bash
 mana-analyzer --verbose ask "what changed in flow memory?"

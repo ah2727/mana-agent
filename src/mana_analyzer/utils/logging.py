@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import sys
+
+from mana_analyzer.config.settings import default_logs_dir
 
 
 def setup_logging(verbose: bool = False, log_dir: str | Path | None = None) -> Path:
@@ -10,7 +13,7 @@ def setup_logging(verbose: bool = False, log_dir: str | Path | None = None) -> P
     project_root = Path.cwd().resolve()
     project_name = project_root.name or "project"
     date_tag = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    root = Path(log_dir).resolve() if log_dir else (project_root / ".mana_logs")
+    root = Path(log_dir).resolve() if log_dir else default_logs_dir(project_root)
     root.mkdir(parents=True, exist_ok=True)
     log_file = root / f"{date_tag}-{project_name}.log"
 
@@ -23,5 +26,10 @@ def setup_logging(verbose: bool = False, log_dir: str | Path | None = None) -> P
     root_logger.setLevel(level)
     root_logger.handlers.clear()
     root_logger.addHandler(file_handler)
+    if verbose:
+        stream_handler = logging.StreamHandler(stream=sys.stderr)
+        stream_handler.setLevel(level)
+        stream_handler.setFormatter(formatter)
+        root_logger.addHandler(stream_handler)
     root_logger.propagate = False
     return log_file

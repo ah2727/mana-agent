@@ -6,6 +6,9 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+MANA_ROOT_DIRNAME = ".mana"
+
+
 class Settings(BaseSettings):
     openai_api_key: str = Field(alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
@@ -30,4 +33,20 @@ class Settings(BaseSettings):
 
 
 def default_index_dir(target_path: str | Path) -> Path:
-    return Path(target_path).resolve() / ".mana_index"
+    return mana_root_dir(target_path) / "index"
+
+
+def mana_root_dir(target_path: str | Path) -> Path:
+    return Path(target_path).resolve() / MANA_ROOT_DIRNAME
+
+
+def default_logs_dir(target_path: str | Path) -> Path:
+    return mana_root_dir(target_path) / "logs"
+
+
+def default_llm_logs_dir(target_path: str | Path) -> Path:
+    return mana_root_dir(target_path) / "llm_logs"
+
+
+def default_diagrams_dir(target_path: str | Path) -> Path:
+    return mana_root_dir(target_path) / "diagrams"
