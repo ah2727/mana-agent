@@ -12,7 +12,7 @@ These instructions apply to the whole repository.
 
 ## Change Log Rule
 
-Update `change.log` with every repository change. Each entry should include:
+Update `CHANGELOG.md` with every repository change. Each entry should include:
 
 - The date of the change.
 - A short summary of what changed.
