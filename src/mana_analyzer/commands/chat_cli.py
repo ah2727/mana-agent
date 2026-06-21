@@ -48,6 +48,28 @@ def _generate_planning_question_llm(
     return content
 
 
+def _should_use_coding_agent_turn(
+    *,
+    coding_agent_available: bool,
+    agent_tools: bool,
+    edit_request: bool,
+    plan_trigger_request: bool,
+    force_plan_only_response: bool,
+    has_pending_prechecklist: bool,
+    coding_agent_is_custom: bool,
+) -> bool:
+    """Route turns consistently with the chat banner when CodingAgent is active."""
+    _ = (
+        edit_request,
+        plan_trigger_request,
+        force_plan_only_response,
+        has_pending_prechecklist,
+    )
+    if not coding_agent_available:
+        return False
+    return bool(agent_tools or coding_agent_is_custom)
+
+
 def _build_planning_instruction(
     planning_request: str,
     planning_answers: list[str],
@@ -1754,15 +1776,14 @@ def chat(
                 )
                 continue
 
-            use_coding_agent_turn = bool(
-                coding_agent_instance is not None
-                and (
-                    edit_request
-                    or plan_trigger_request
-                    or force_plan_only_response
-                    or pending_prechecklist is not None
-                    or coding_agent_is_custom
-                )
+            use_coding_agent_turn = _should_use_coding_agent_turn(
+                coding_agent_available=coding_agent_instance is not None,
+                agent_tools=bool(agent_tools),
+                edit_request=edit_request,
+                plan_trigger_request=plan_trigger_request,
+                force_plan_only_response=force_plan_only_response,
+                has_pending_prechecklist=pending_prechecklist is not None,
+                coding_agent_is_custom=coding_agent_is_custom,
             )
 
             if not use_coding_agent_turn:

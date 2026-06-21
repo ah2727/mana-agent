@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from mana_analyzer.analysis.models import SearchHit
@@ -7,6 +8,7 @@ from mana_analyzer.services.ask_service import (
     SEMANTIC_INDEX_MISSING_WARNING,
     AskService,
 )
+from mana_analyzer.vector_store.faiss_store import FaissStore
 
 
 class _EmptyStore:
@@ -62,6 +64,8 @@ def test_ask_does_not_emit_dead_end_message(tmp_path: Path) -> None:
     response = service.ask(index_dir=tmp_path, question="nonexistent_symbol_xyz", k=3)
     # Even with no matches, we must not return the old dead-end message.
     assert "could not find relevant indexed code context" not in response.answer.lower()
+    assert "Semantic index is missing" not in response.answer
+    assert "No direct project matches" in response.answer
     assert SEMANTIC_INDEX_MISSING_WARNING in response.warnings
 
 
@@ -104,6 +108,55 @@ def test_ask_command_inventory_fallback_lists_cli_commands(tmp_path: Path) -> No
     assert "`demo-cli` console script" in response.answer
     assert "`demo-cli run`" in response.answer
     assert response.sources
+
+
+def test_ask_command_inventory_fallback_handles_exist_analyzor_wording(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "demo"',
+                "",
+                "[project.scripts]",
+                'demo-cli = "demo.commands:app"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    package = tmp_path / "demo"
+    package.mkdir()
+    (package / "commands.py").write_text(
+        "\n".join(
+            [
+                "import typer",
+                "",
+                "app = typer.Typer()",
+                "",
+                "@app.command()",
+                "def run():",
+                "    pass",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = AskService(store=_EmptyStore(), qna_chain=_FakeQnA(), project_root=tmp_path)
+
+    response = service.ask(index_dir=tmp_path / ".mana" / "index", question="command exist in this analyzor", k=3)
+
+    assert response.warnings == []
+    assert "Semantic index is missing" not in response.answer
+    assert "`demo-cli` console script" in response.answer
+    assert "`demo-cli run`" in response.answer
+
+
+def test_ask_missing_faiss_index_uses_quiet_fallback(tmp_path: Path, caplog) -> None:
+    service = AskService(store=FaissStore(embeddings=object()), qna_chain=_FakeQnA(), project_root=tmp_path)
+
+    with caplog.at_level(logging.WARNING):
+        response = service.ask(index_dir=tmp_path / ".mana" / "index", question="nonexistent_symbol_xyz", k=3)
+
+    assert SEMANTIC_INDEX_MISSING_WARNING in response.warnings
+    assert "Cannot search: FAISS index not found" not in caplog.text
 
 
 def test_ask_normal_faiss_path_still_works(tmp_path: Path) -> None:

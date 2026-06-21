@@ -78,7 +78,22 @@ class AskService:
             return False
         words = set(normalized.split())
         has_command_term = bool(words & {"command", "commands", "cli", "entrypoint", "entrypoints"})
-        has_inventory_term = bool(words & {"all", "list", "available", "show", "what", "which", "project"})
+        has_inventory_term = bool(
+            words
+            & {
+                "all",
+                "analyzer",
+                "analyzor",
+                "available",
+                "exist",
+                "exists",
+                "list",
+                "project",
+                "show",
+                "what",
+                "which",
+            }
+        )
         return has_command_term and has_inventory_term
 
     @staticmethod
@@ -171,8 +186,8 @@ class AskService:
         if not result.matches:
             return AskResponse(
                 answer=(
-                    f"{SEMANTIC_INDEX_HINT}\n\n"
-                    f"No direct matches for that query under {search_root}."
+                    f"No direct project matches for that query under {search_root}.\n\n"
+                    "Tip: run `mana-analyzer index` to enable semantic search for broader code questions."
                 ),
                 sources=[],
                 warnings=warnings,
@@ -232,11 +247,16 @@ class AskService:
             except Exception:
                 logger.exception("command inventory answer failed; trying semantic search")
 
-        try:
-            sources = self.store.search(resolved_index, query=question, k=k)
-        except Exception:
-            logger.warning("Semantic search failed for %s; falling back to project search", resolved_index)
+        sources: list[SearchHit]
+        if isinstance(self.store, FaissStore) and not (resolved_index / "faiss").exists():
+            logger.info("Semantic index missing at %s; using direct project search fallback", resolved_index)
             sources = []
+        else:
+            try:
+                sources = self.store.search(resolved_index, query=question, k=k)
+            except Exception:
+                logger.warning("Semantic search failed for %s; falling back to project search", resolved_index)
+                sources = []
 
         if not sources:
             logger.info("No indexed context; using direct project search fallback")

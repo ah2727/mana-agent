@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_analyzer.commands import cli
+from mana_analyzer.commands.chat_cli import _should_use_coding_agent_turn
 from mana_analyzer.commands.ui_helpers import (
     LiveToolActivity,
     _looks_like_edit_request,
@@ -48,6 +49,27 @@ def test_chat_intent_helpers_detect_plan_and_edit_requests() -> None:
     assert _looks_like_edit_request("fix src/mana_analyzer/commands/chat_cli.py")
     assert _looks_like_edit_request("build the missing auth module")
     assert _looks_like_edit_request("implement this")
+
+
+def test_coding_agent_mode_routes_general_analysis_turns_to_coding_agent() -> None:
+    assert _should_use_coding_agent_turn(
+        coding_agent_available=True,
+        agent_tools=True,
+        edit_request=False,
+        plan_trigger_request=False,
+        force_plan_only_response=False,
+        has_pending_prechecklist=False,
+        coding_agent_is_custom=False,
+    )
+    assert not _should_use_coding_agent_turn(
+        coding_agent_available=False,
+        agent_tools=True,
+        edit_request=True,
+        plan_trigger_request=False,
+        force_plan_only_response=False,
+        has_pending_prechecklist=False,
+        coding_agent_is_custom=False,
+    )
 
 
 def test_render_turn_summary_and_transparency_sections() -> None:

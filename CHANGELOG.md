@@ -4,6 +4,10 @@ All notable repository changes should be recorded here.
 
 ## 2026-06-18
 
+- Routed active coding-agent chat sessions through CodingAgent for general analysis/tool-inventory turns, matching the startup banner instead of falling back to classic missing-index search.
+- Verification: `.venv/bin/python -m pytest tests/test_cli_ux_helpers.py tests/test_cli_smoke.py::test_chat_ping_returns_pong_without_faiss_index tests/test_cli_smoke.py::test_chat_root_dir_changes_default_index_dir_in_classic_mode tests/test_cli_smoke.py::test_chat_coding_agent_uses_worker_lifecycle_once -q` passed; `.venv/bin/python -m py_compile src/mana_analyzer/commands/chat_cli.py tests/test_cli_ux_helpers.py` passed.
+- Made missing-index chat fallback quieter and broadened command-inventory detection so wording like `command exist in this analyzor` lists CLI commands instead of returning a semantic-index/no-match fallback.
+- Verification: `.venv/bin/python -m pytest tests/test_ask_service_fallback.py tests/test_ask_service.py -q` passed; `.venv/bin/python -m py_compile src/mana_analyzer/services/ask_service.py tests/test_ask_service_fallback.py` passed.
 - Collapsed duplicate outer `tool_worker` rows in the live tool-activity panel by tracking per-call event ids and de-duplicating repeated worker operations while preserving inner tool rows.
 - Verification: `.venv/bin/python -m pytest tests/test_cli_ux_helpers.py tests/test_tool_worker_process.py -q` passed; `.venv/bin/python -m py_compile src/mana_analyzer/commands/ui_helpers.py src/mana_analyzer/commands/chat_cli.py src/mana_analyzer/llm/coding_agent.py src/mana_analyzer/llm/tool_worker_process.py` passed.
 - Fixed `apply_patch` tool input handling so nested patch wrappers, structured JSON patch lists, and the `input` alias are normalized before validation, avoiding Pydantic string-type failures.
