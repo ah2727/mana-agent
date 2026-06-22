@@ -123,6 +123,165 @@ def _index_has_search_data(index_dir: str | Path) -> bool:
     return (root / "faiss").exists() or (root / "chunks.jsonl").exists()
 
 
+@app.command("continue")
+def continue_command(
+    run_id: str = typer.Option(..., "--run-id", help="Run ID under .mana/runs to resume."),
+    root_dir: str | None = typer.Option(None, "--root-dir", help="Repository root that owns .mana/runs/<run_id>."),
+    pass_cap: int = typer.Option(4, "--pass-cap", help="Maximum passes for this continuation window."),
+    auto_continue: bool = typer.Option(
+        True,
+        "--auto-continue/--no-auto-continue",
+        help="Automatically start the next continuation pass while checkpointed work remains.",
+    ),
+    max_passes: int = typer.Option(
+        12,
+        "--max-passes",
+        help="Hard cap for total continuation passes across automatic resume cycles.",
+    ),
+    max_total_tool_calls: int = typer.Option(
+        80,
+        "--max-tool-calls",
+        "--max-total-tool-calls",
+        help="Hard cap for total tool calls across automatic resume cycles.",
+    ),
+    max_runtime_minutes: float = typer.Option(
+        0.0,
+        "--max-runtime-minutes",
+        help="Hard cap for total continuation runtime in minutes; 0 disables.",
+    ),
+    max_cost: float = typer.Option(
+        0.0,
+        "--max-cost",
+        help="Reserved hard cap for provider cost telemetry; 0 disables.",
+    ),
+    max_no_progress_passes: int = typer.Option(
+        2,
+        "--max-no-progress-passes",
+        help="Stop after this many continuation passes make no measurable progress.",
+    ),
+    timeout_seconds: int = typer.Option(30, "--timeout", help="Per-request tool timeout in seconds."),
+    k: int = typer.Option(8, "--k", help="Retrieval result count for tool requests."),
+    max_steps: int = typer.Option(6, "--max-steps", help="Maximum worker tool steps per request."),
+    max_resume_cycles: int = typer.Option(
+        0,
+        "--max-resume-cycles",
+        help="Safety cap for continuation cycles; 0 means keep going until completion or a non-resumable blocker.",
+    ),
+) -> None:
+    """Resume a persisted auto-execute run from .mana/runs/<run_id>."""
+    root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
+    store_dir = root / ".mana" / "runs" / str(run_id).strip()
+    state_path = store_dir / "state.json"
+    if not state_path.exists():
+        raise typer.BadParameter(f"Run state not found: {state_path}")
+
+    settings_cls = _public_symbol("Settings", Settings)
+    worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)
+    tools_manager_orchestrator_cls = _public_symbol("ToolsManagerOrchestrator", ToolsManagerOrchestrator)
+    settings = settings_cls()
+    index_dir = default_index_dir(root)
+    worker = worker_client_cls(
+        api_key=settings.openai_api_key,
+        model=settings.openai_chat_model,
+        base_url=os.getenv("OPENAI_BASE_URL") or None,
+        project_root=root,
+        repo_root=root,
+    )
+    orchestrator = tools_manager_orchestrator_cls(
+        api_key=settings.openai_api_key,
+        model=settings.openai_chat_model,
+        base_url=os.getenv("OPENAI_BASE_URL") or None,
+        worker_client=worker,
+        repo_root=root,
+        executor=LocalToolsExecutor(worker_client=worker),
+    )
+    try:
+        result = None
+        resume_cycles = 0
+        total_passes = 0
+        total_tool_calls = 0
+        no_progress_cycles = 0
+        started = datetime.now(timezone.utc)
+        while True:
+            result = orchestrator.resume_run(
+                run_id=run_id,
+                index_dir=index_dir,
+                index_dirs=None,
+                k=k,
+                max_steps=max_steps,
+                timeout_seconds=timeout_seconds,
+                tool_policy={},
+                pass_cap=pass_cap,
+                on_event=CodingAgent._log_worker_event,
+                max_no_progress_passes=max_no_progress_passes,
+            )
+            result_passes = int(getattr(result, "passes", 0) or 0)
+            result_tool_calls = int(getattr(result, "toolsmanager_requests_count", 0) or 0)
+            total_passes += result_passes
+            total_tool_calls += result_tool_calls
+            made_progress = any(
+                bool((row or {}).get("made_progress"))
+                for row in (getattr(result, "pass_logs", []) or [])
+                if isinstance(row, dict)
+            )
+            no_progress_cycles = 0 if made_progress else no_progress_cycles + 1
+            if result.run_status != "needs_resume" and result.terminal_reason != "pass_cap_reached":
+                break
+            if not auto_continue:
+                break
+            resume_cycles += 1
+            console.print(
+                f"[cyan]Continuation checkpoint:[/cyan] run_id={result.run_id} "
+                f"cycle={resume_cycles} next_action={result.next_action or 'continue'}"
+            )
+            if total_passes >= max(1, int(max_passes)):
+                console.print(
+                    f"[yellow]Continuation stopped:[/yellow] max passes reached "
+                    f"({total_passes}/{max_passes})."
+                )
+                break
+            if total_tool_calls >= max(1, int(max_total_tool_calls)):
+                console.print(
+                    f"[yellow]Continuation stopped:[/yellow] max total tool calls reached "
+                    f"({total_tool_calls}/{max_total_tool_calls})."
+                )
+                break
+            if max_runtime_minutes > 0:
+                elapsed_seconds = (datetime.now(timezone.utc) - started).total_seconds()
+                if elapsed_seconds >= float(max_runtime_minutes) * 60.0:
+                    console.print(
+                        f"[yellow]Continuation stopped:[/yellow] max runtime reached "
+                        f"({elapsed_seconds / 60.0:.2f}/{float(max_runtime_minutes):.2f} minutes)."
+                    )
+                    break
+            if max_cost > 0:
+                console.print(
+                    "[yellow]Continuation cost cap requested but provider cost telemetry is not available in this path; "
+                    "continuing with pass/tool/runtime caps.[/yellow]"
+                )
+                max_cost = 0.0
+            if no_progress_cycles >= max(1, int(max_no_progress_passes)):
+                console.print(
+                    f"[yellow]Continuation stopped:[/yellow] no progress for "
+                    f"{no_progress_cycles} cycle(s)."
+                )
+                break
+            if max_resume_cycles > 0 and resume_cycles >= max_resume_cycles:
+                break
+    finally:
+        try:
+            worker.stop()
+        except Exception:
+            pass
+
+    assert result is not None
+    console.print(str(result.answer or "").strip() or "Continuation finished without a direct answer.")
+    if result.run_status == "needs_resume":
+        console.print(
+            f"[yellow]Resume still pending:[/yellow] mana-analyzer continue --root-dir {root} --run-id {result.run_id}"
+        )
+
+
 # Loggers whose DEBUG/INFO chatter would flood the interactive chat console
 # (especially while a background index build is running). They stay fully
 # intact in the file log — only the console handler is quieted.

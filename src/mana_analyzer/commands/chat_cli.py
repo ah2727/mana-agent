@@ -929,6 +929,7 @@ def chat(
             user_question: str,
             *,
             render_progress: bool = True,
+            run_id: str | None = None,
         ) -> tuple[dict[str, Any], str]:
             if not agent_tools or not auto_execute_plan:
                 return {}, ""
@@ -1060,6 +1061,7 @@ def chat(
                     pass_cap=auto_execute_max_passes,
                     on_event=CodingAgent._log_worker_event,
                     flow_id=active_flow_id,
+                    run_id=run_id,
                 )
 
             result_obj, debug_tail = _run_with_live_buffer(
@@ -1195,18 +1197,24 @@ def chat(
             turn_passes_total = 0
             turn_checkpoints_emitted = 0
             effective_question = user_question
+            resume_run_id: str | None = None
             last_debug_tail = ""
 
             while True:
                 payload, debug_tail = _run_auto_execute_pipeline(
                     effective_question,
                     render_progress=(render_progress and resume_cycles == 0),
+                    run_id=resume_run_id,
                 )
                 last_debug_tail = debug_tail
+                payload_run_id = str(payload.get("run_id", "") or "").strip()
+                if payload_run_id:
+                    resume_run_id = payload_run_id
                 if run_full_auto:
                     turn_passes_total += _ingest_full_auto_pass_payload(payload)
                 terminal_reason = str(payload.get("terminal_reason", "") or "").strip().lower()
-                if run_full_auto and terminal_reason == "pass_cap_reached":
+                run_status = str(payload.get("run_status", "") or "").strip().lower()
+                if run_full_auto and (terminal_reason == "pass_cap_reached" or run_status == "needs_resume"):
                     resumed_from_pass_cap = True
                     resume_cycles += 1
                     turn_checkpoints_emitted += _emit_full_auto_pass_checkpoints(resume_cycles=resume_cycles)
@@ -1876,6 +1884,7 @@ def chat(
                 turn_full_auto_passes_total = 0
                 turn_full_auto_pass_checkpoints_emitted = 0
                 turn_resumed_from_pass_cap = False
+                turn_resume_run_id: str | None = None
 
                 try:
                     if dir_mode:
@@ -1895,6 +1904,7 @@ def chat(
                                     pass_cap=auto_execute_max_passes,
                                     callbacks=callbacks,
                                     flow_id=active_flow_id,
+                                    run_id=turn_resume_run_id,
                                     prechecklist_payload=(
                                         {
                                             "flow_id": active_flow_id,
@@ -1929,6 +1939,7 @@ def chat(
                                     pass_cap=auto_execute_max_passes,
                                     callbacks=callbacks,
                                     flow_id=active_flow_id,
+                                    run_id=turn_resume_run_id,
                                     prechecklist_payload=(
                                         {
                                             "flow_id": active_flow_id,
@@ -1984,7 +1995,11 @@ def chat(
                                 flow_from_cycle = (result or {}).get("flow_id")
                                 if isinstance(flow_from_cycle, str) and flow_from_cycle.strip():
                                     active_flow_id = flow_from_cycle.strip()
-                                if terminal_reason != "pass_cap_reached":
+                                run_from_cycle = (result or {}).get("run_id")
+                                if isinstance(run_from_cycle, str) and run_from_cycle.strip():
+                                    turn_resume_run_id = run_from_cycle.strip()
+                                run_status = str((result or {}).get("run_status", "") or "").strip().lower()
+                                if terminal_reason != "pass_cap_reached" and run_status != "needs_resume":
                                     break
                                 turn_resumed_from_pass_cap = True
                                 turn_full_auto_resume_cycles += 1

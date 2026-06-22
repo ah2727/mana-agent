@@ -52,6 +52,75 @@ def test_chat_help_hides_manual_plan_execute_flags() -> None:
     assert "--full-auto" in result.stdout
 
 
+def test_continue_help_accepts_root_dir_option(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["continue", "--root-dir", str(tmp_path), "--run-id", "abc123", "--help"])
+
+    assert result.exit_code == 0
+    assert "--root-dir" in result.stdout
+    assert "--max-runtime-minu" in result.stdout
+    assert "--max-cost" in result.stdout
+    assert "--max-tool-c" in result.stdout
+
+
+def test_analyze_help_accepts_auto_continue_limits() -> None:
+    result = runner.invoke(app, ["analyze", "--help"])
+
+    assert result.exit_code == 0
+    assert "--auto-continue" in result.stdout
+    assert "--max-runtime-minu" in result.stdout
+    assert "--max-cost" in result.stdout
+
+
+def test_continue_command_uses_root_dir_and_loops_until_complete(monkeypatch, tmp_path: Path) -> None:
+    run_dir = tmp_path / ".mana" / "runs" / "abc123"
+    run_dir.mkdir(parents=True)
+    (run_dir / "state.json").write_text('{"goal": "finish", "flow_id": "flow"}\n')
+
+    class _FakeWorkerClient:
+        roots: list[str] = []
+
+        def __init__(self, **kwargs: object) -> None:
+            _FakeWorkerClient.roots.append(str(kwargs.get("repo_root", "")))
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeResult:
+        def __init__(self, *, status: str, terminal_reason: str, answer: str) -> None:
+            self.run_status = status
+            self.terminal_reason = terminal_reason
+            self.answer = answer
+            self.run_id = "abc123"
+            self.next_action = "read_file app/models.py"
+
+    class _FakeOrchestrator:
+        roots: list[str] = []
+        calls = 0
+
+        def __init__(self, **kwargs: object) -> None:
+            _FakeOrchestrator.roots.append(str(kwargs.get("repo_root", "")))
+
+        def resume_run(self, **kwargs: object) -> _FakeResult:
+            assert kwargs["run_id"] == "abc123"
+            _FakeOrchestrator.calls += 1
+            if _FakeOrchestrator.calls == 1:
+                return _FakeResult(status="needs_resume", terminal_reason="pass_cap_reached", answer="checkpoint")
+            return _FakeResult(status="completed", terminal_reason="planner_finalize", answer="done")
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolsManagerOrchestrator", _FakeOrchestrator)
+
+    result = runner.invoke(app, ["continue", "--root-dir", str(tmp_path), "--run-id", "abc123"])
+
+    assert result.exit_code == 0
+    assert _FakeWorkerClient.roots == [str(tmp_path.resolve())]
+    assert _FakeOrchestrator.roots == [str(tmp_path.resolve())]
+    assert _FakeOrchestrator.calls == 2
+    assert "Continuation checkpoint" in result.stdout
+    assert "done" in result.stdout
+
+
 class FakeAnalyzeService:
     def __init__(self, findings: list[Finding]) -> None:
         self._findings = findings
@@ -3297,7 +3366,7 @@ def test_chat_balanced_mode_does_not_auto_resume_pass_cap(monkeypatch, tmp_path:
     assert "Full-auto Checkpoint" not in result.stdout
 
 
-def test_chat_full_auto_tools_manager_path_auto_resumes_pass_cap(monkeypatch, tmp_path: Path) -> None:
+def test_chat_full_auto_tools_manager_path_auto_resumes_docs_update_pass_cap(monkeypatch, tmp_path: Path) -> None:
     class _FakeWorkerClient:
         def __init__(self, **_kwargs: object) -> None:
             return None
@@ -3320,6 +3389,7 @@ def test_chat_full_auto_tools_manager_path_auto_resumes_pass_cap(monkeypatch, tm
 
     class _FakeOrchestrator:
         run_calls = 0
+        run_ids: list[object] = []
 
         def __init__(self, **_kwargs: object) -> None:
             return None
@@ -3327,9 +3397,9 @@ def test_chat_full_auto_tools_manager_path_auto_resumes_pass_cap(monkeypatch, tm
         def preview_plan(self, **_kwargs: object) -> dict:
             return {
                 "prechecklist": {
-                    "objective": "Implement plan",
+                    "objective": "Find all models and update docs/models.md",
                     "source": "planner",
-                    "steps": [{"id": "s1", "status": "in_progress", "title": "Inspect files"}],
+                    "steps": [{"id": "s1", "status": "in_progress", "title": "Find all models"}],
                 },
                 "prechecklist_source": "planner",
                 "prechecklist_warning": "",
@@ -3338,15 +3408,24 @@ def test_chat_full_auto_tools_manager_path_auto_resumes_pass_cap(monkeypatch, tm
 
         def run(self, **_kwargs: object):
             _FakeOrchestrator.run_calls += 1
+            _FakeOrchestrator.run_ids.append(_kwargs.get("run_id"))
             if _FakeOrchestrator.run_calls == 1:
                 return _FakeAutoResult(
                     {
-                        "answer": "working",
+                        "answer": (
+                            "Auto-execute ended without a direct answer from tool runs.\n"
+                            "terminal_reason=pass_cap_reached\n"
+                            "passes=2\n"
+                            "toolsmanager_requests=1"
+                        ),
                         "sources": [],
                         "trace": [],
                         "warnings": [],
                         "changed_files": [],
-                        "plan": {"objective": "Implement plan", "steps": [{"id": "s1", "title": "Inspect"}]},
+                        "plan": {
+                            "objective": "Find all models and update docs/models.md",
+                            "steps": [{"id": "s1", "title": "Find all models"}],
+                        },
                         "passes": 2,
                         "terminal_reason": "pass_cap_reached",
                         "toolsmanager_requests_count": 1,
@@ -3359,21 +3438,26 @@ def test_chat_full_auto_tools_manager_path_auto_resumes_pass_cap(monkeypatch, tm
                             {"pass_index": 2, "decision": "decide-two", "decision_reason": "pass two"},
                         ],
                         "checklist": {"done": 1, "pending": 1, "blocked": 0, "total": 2},
+                        "run_id": "persisted-run-1",
                     }
                 )
             return _FakeAutoResult(
                 {
-                    "answer": "auto execution complete",
+                    "answer": "docs/models.md updated",
                     "sources": [],
                     "trace": [],
                     "warnings": [],
-                    "changed_files": [],
-                    "plan": {"objective": "Implement plan", "steps": [{"id": "s1", "title": "Inspect"}]},
+                    "changed_files": ["docs/models.md"],
+                    "plan": {
+                        "objective": "Find all models and update docs/models.md",
+                        "steps": [{"id": "s1", "title": "Update docs/models.md"}],
+                    },
                     "passes": 1,
                     "terminal_reason": "manager_stop",
                     "toolsmanager_requests_count": 1,
                     "pass_logs": [],
                     "planner_decisions": [],
+                    "run_id": "persisted-run-1",
                 }
             )
 
@@ -3392,10 +3476,13 @@ def test_chat_full_auto_tools_manager_path_auto_resumes_pass_cap(monkeypatch, tm
             "--full-auto-status-every",
             "2",
         ],
-        input="implement plan.\nquit\n",
+        input="execute plan: find all models and update docs/models.md\nquit\n",
     )
     assert result.exit_code == 0
     assert _FakeOrchestrator.run_calls == 2
+    assert _FakeOrchestrator.run_ids == [None, "persisted-run-1"]
     assert result.stdout.count("Full-auto Checkpoint") == 1
-    assert "auto execution complete" in result.stdout
+    assert "docs/models.md updated" in result.stdout
+    assert "Auto-execute ended without a direct answer" not in result.stdout
+    assert "terminal_reason=pass_cap_reached" not in result.stdout
     assert "Status: executing (pass_cap_reached)." not in result.stdout

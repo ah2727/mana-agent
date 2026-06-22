@@ -592,6 +592,7 @@ class CodingAgent:
         pass_cap: int = 4,
         flow_context: str | None = None,
         flow_id: str | None = None,
+        run_id: str | None = None,
         callbacks: Sequence[Any] | None = None,
         prechecklist_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -673,6 +674,7 @@ class CodingAgent:
                 pass_cap=max(1, int(pass_cap)),
                 on_event=self._log_worker_event,
                 flow_id=active_flow_id,
+                run_id=run_id,
             )
         except ToolWorkerProcessError as exc:
             warnings.append(f"toolsmanager worker failure: {exc.code}: {exc}")
@@ -807,6 +809,10 @@ class CodingAgent:
             "planner_decisions": planner_decisions,
             "tool_execution_backend": orchestrated.execution_backend,
             "tool_execution_run_id": orchestrated.execution_run_id,
+            "run_id": orchestrated.run_id,
+            "run_status": orchestrated.run_status,
+            "resume_command": orchestrated.resume_command,
+            "next_action": orchestrated.next_action,
             "tool_execution_duration_ms": orchestrated.execution_duration_ms,
             "tool_execution_requests_ok": orchestrated.execution_requests_ok,
             "tool_execution_requests_failed": orchestrated.execution_requests_failed,
@@ -845,6 +851,16 @@ class CodingAgent:
     def _allows_web_search(self, request: str) -> bool:
         lowered = request.lower()
         return any(token in lowered for token in self._WEB_INTENT_TOKENS)
+
+    @staticmethod
+    def _looks_like_model_docs_request(*values: str) -> bool:
+        combined = " ".join(str(value or "") for value in values).lower()
+        if "docs/models.md" in combined:
+            return True
+        return bool(
+            "model" in combined
+            and any(token in combined for token in ("doc", "document", "documentation", "update"))
+        )
 
     @classmethod
     def _is_ambiguous_followup(cls, request: str) -> bool:
@@ -1289,6 +1305,32 @@ class CodingAgent:
         }
         if not self.full_auto_mode:
             return selected
+        if self._looks_like_model_docs_request(request, flow_context or ""):
+            relevant_files: set[str] = set()
+            try:
+                for path in self.repo_root.rglob("models.py"):
+                    rel = path.resolve().relative_to(self.repo_root).as_posix()
+                    parts = set(Path(rel).parts)
+                    if parts.intersection({".git", ".mana", ".venv", "venv", "node_modules", "__pycache__"}):
+                        continue
+                    relevant_files.add(rel)
+                if (self.repo_root / "docs" / "models.md").exists():
+                    relevant_files.add("docs/models.md")
+            except Exception:
+                relevant_files = set()
+            if relevant_files:
+                budget = max(user_cap, min(len(relevant_files), self._MAX_DYNAMIC_READ_BUDGET))
+                selected.update(
+                    {
+                        "read_budget": budget,
+                        "read_line_window": self._clamp_read_line_window(self._MAX_READ_LINE_WINDOW),
+                        "dynamic_read_budget_used": True,
+                        "dynamic_read_budget_fallback_used": False,
+                        "dynamic_read_budget_reason": "model_docs_inventory",
+                        "read_budget_cap": budget,
+                    }
+                )
+                return selected
         dynamic_cap = max(1, min(user_cap, self._MAX_DYNAMIC_READ_BUDGET))
         selected["read_budget"] = dynamic_cap
 
@@ -1392,7 +1434,7 @@ class CodingAgent:
             ],
             "search_budget": self.search_budget,
             "read_budget": int(dynamic_read_policy.get("read_budget", self.read_budget) or self.read_budget),
-            "read_budget_cap": int(self.read_budget),
+            "read_budget_cap": int(dynamic_read_policy.get("read_budget_cap", self.read_budget) or self.read_budget),
             "read_line_window": int(
                 dynamic_read_policy.get("read_line_window", self._DEFAULT_READ_LINE_WINDOW)
                 or self._DEFAULT_READ_LINE_WINDOW

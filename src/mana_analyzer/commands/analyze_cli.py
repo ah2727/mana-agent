@@ -259,6 +259,15 @@ def analyze(
     security_lens: str = typer.Option("defensive-red-team", "--security-lens"),
     output_format: str = typer.Option("all", "--output-format"),
     fail_on: str = typer.Option("none", "--fail-on"),
+    auto_continue: bool = typer.Option(
+        False,
+        "--auto-continue/--no-auto-continue",
+        help="Accepted for parity with coding-agent runs; unified analyze completes in one pipeline pass.",
+    ),
+    max_passes: int = typer.Option(12, "--max-passes", help="Safety cap for auto-continuation compatible runs."),
+    max_tool_calls: int = typer.Option(80, "--max-tool-calls", help="Safety cap for auto-continuation compatible runs."),
+    max_runtime_minutes: float = typer.Option(0.0, "--max-runtime-minutes", help="Safety cap for auto-continuation compatible runs; 0 disables."),
+    max_cost: float = typer.Option(0.0, "--max-cost", help="Reserved provider-cost cap; 0 disables."),
     as_json: bool = typer.Option(False, "--json"),
     with_llm: bool = typer.Option(True, "--with-llm/--no-llm", hidden=True),
     full_structure: bool = typer.Option(True, "--full-structure/--no-full-structure", hidden=True),
@@ -284,6 +293,12 @@ def analyze(
     resolved_k = k or settings.default_top_k
     sink = build_output_sink(command_name="analyze", json_mode=as_json, output_file=None, console=console)
     warnings: list[str] = []
+    if auto_continue:
+        warnings.append(
+            "analyze_auto_continue_accepted: unified analyze is a single-pass report pipeline; "
+            f"limits max_passes={max_passes}, max_tool_calls={max_tool_calls}, "
+            f"max_runtime_minutes={max_runtime_minutes}, max_cost={max_cost}"
+        )
 
     try:
         dependency_service = _public_attr("build_dependency_service", build_dependency_service)()

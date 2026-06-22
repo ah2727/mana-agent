@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from mana_analyzer.llm.tool_worker_process import ToolRunResponse
+from mana_analyzer.llm.goal_profiles import ModelDocsGoalProfile, active_goal_profile
 from mana_analyzer.llm.tools_manager import (
     AutoExecuteResult,
+    RunStateStore,
     ToolsManagerBatch,
     ToolsManagerOrchestrator,
+    ToolsManagerRequest,
     ToolsPlan,
     ToolsPlanStep,
 )
@@ -26,6 +30,19 @@ def _build_orchestrator(tmp_path: Path) -> ToolsManagerOrchestrator:
     orchestrator.worker_client = _NoopWorker()
     orchestrator.repo_root = tmp_path
     return orchestrator
+
+
+def test_tools_manager_constructor_uses_top_level_executor_types(tmp_path: Path) -> None:
+    orchestrator = ToolsManagerOrchestrator(
+        api_key="test",
+        model="fake",
+        worker_client=_NoopWorker(),
+        repo_root=tmp_path,
+    )
+
+    assert orchestrator.repo_root == tmp_path.resolve()
+    assert orchestrator.execution_config is not None
+    assert orchestrator.executor is not None
 
 
 def test_tools_manager_planner_schema_parses_strict_json(tmp_path: Path, monkeypatch) -> None:
@@ -112,6 +129,129 @@ def test_tools_manager_markdown_planner_output_uses_repaired_llm_intent(
     assert warnings == ["head_tools_planner parse failed; attempting repair"]
     assert plan.current_step_id == "s2"
     assert [step.tool_intent for step in plan.steps] == ["inspect", "edit", "verify"]
+
+
+def test_tools_manager_model_docs_fallback_uses_repository_local_evidence(tmp_path: Path) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    plan = ToolsPlan(
+        objective="Find all models and update docs/models.md",
+        steps=[
+            ToolsPlanStep(
+                id="s1",
+                title="Find all models",
+                tool_intent="inspect",
+                args_hint="enumerate model definitions",
+            ),
+            ToolsPlanStep(
+                id="s2",
+                title="Update docs/models.md",
+                tool_intent="edit",
+                args_hint="document model inventory",
+            ),
+        ],
+        current_step_id="s1",
+        decision="continue",
+    )
+
+    request = orchestrator._deterministic_fallback_request(
+        request="find all models and update docs/models.md",
+        flow_context=None,
+        plan=plan,
+        step=plan.steps[0],
+        pass_index=1,
+    )
+
+    assert request is not None
+    assert "docs/models.md" in request.question
+    assert "rg -n" in request.question
+    assert "AbstractUser" in request.question
+    assert "Do not ask the user to paste files" in request.question
+
+
+def test_run_state_model_docs_queue_prioritizes_relevant_files(tmp_path: Path) -> None:
+    (tmp_path / "back" / "billing").mkdir(parents=True)
+    (tmp_path / "back" / "billing" / "models.py").write_text("from django.db import models\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "models.md").write_text("# Models\n", encoding="utf-8")
+    (tmp_path / "Front").mkdir()
+    (tmp_path / "Front" / "package-lock.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "back" / "billing" / "migrations").mkdir()
+    (tmp_path / "back" / "billing" / "migrations" / "0001_initial.py").write_text(
+        "migrations.CreateModel(name='Invoice')\n",
+        encoding="utf-8",
+    )
+
+    store = RunStateStore(repo_root=tmp_path, run_id="queue-test")
+    store.ensure(goal="find all models and update docs/models.md")
+    store.seed_candidate_queue()
+
+    pending = store.read_json("todo.json", {})["pending_file_reads"]
+    assert pending[:3] == [
+        "back/billing/models.py",
+        "docs/models.md",
+        "back/billing/migrations/0001_initial.py",
+    ]
+    assert "Front/package-lock.json" not in pending
+
+
+def test_model_docs_goal_profile_matching() -> None:
+    assert active_goal_profile("find all models and update docs/models.md").id == "model_docs"  # type: ignore[union-attr]
+    assert active_goal_profile("update models documentation").id == "model_docs"  # type: ignore[union-attr]
+    assert active_goal_profile("summarize the auth middleware") is None
+
+
+def test_model_docs_goal_profile_candidate_priority_and_excludes(tmp_path: Path) -> None:
+    profile = ModelDocsGoalProfile()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "models.py").write_text("from django.db import models\n", encoding="utf-8")
+    (tmp_path / "app" / "foo_models.py").write_text("class Item(BaseModel):\n    pass\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "models.md").write_text("# Models\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "models.py").write_text("class Bad(BaseModel):\n    pass\n", encoding="utf-8")
+
+    assert profile.priority("app/models.py", tmp_path) == 1
+    assert profile.priority("app/foo_models.py", tmp_path) == 1
+    assert profile.is_relevant("docs/models.md", tmp_path)
+    assert not profile.is_relevant("node_modules/models.py", tmp_path)
+    assert not profile.is_relevant("package-lock.json", tmp_path)
+
+
+def test_run_state_profile_sorting_and_generic_goal_behavior(tmp_path: Path) -> None:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "models.py").write_text("from django.db import models\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "models.md").write_text("# Models\n", encoding="utf-8")
+    store = RunStateStore(repo_root=tmp_path, run_id="profile-sort")
+    store.ensure(goal="update docs/models.md")
+
+    assert store._sort_pending_reads(["README.md", "app/models.py", "docs/models.md"], goal="update docs/models.md") == [
+        "app/models.py",
+        "README.md",
+        "docs/models.md",
+    ]
+    assert store._sort_pending_reads(["README.md", "app/models.py"], goal="summarize files") == [
+        "README.md",
+        "app/models.py",
+    ]
+    assert not hasattr(store, "_is_model_docs_goal")
+
+
+def test_run_state_action_fingerprint_ignores_planner_prose(tmp_path: Path) -> None:
+    store = RunStateStore(repo_root=tmp_path, run_id="fp-test")
+    first = store.fingerprint(
+        gate="locate_candidates",
+        tool_name="repo_search",
+        args={"question": "Planner pass 1: repo_search query='class models.Model' glob='back/**/*.py'"},
+        filters={"k": 8},
+    )
+    second = store.fingerprint(
+        gate="read_candidates",
+        tool_name="repo_search",
+        args={"question": "Fallback request. repo_search query='class models.Model' glob='back/**/*.py'"},
+        filters={"k": 50},
+    )
+    assert first == second
 
 
 def test_tools_manager_planner_parser_accepts_wrapped_payload(tmp_path: Path) -> None:
@@ -1274,6 +1414,94 @@ def test_tools_manager_edit_retry_mode_suppresses_new_search_after_patch_noop(tm
     assert bool(result.pass_logs[1].get("edit_retry_mode_active", False)) is True
 
 
+def test_tools_manager_model_docs_blocks_mutation_until_inventory_read(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "back" / "accounts").mkdir(parents=True)
+    (tmp_path / "back" / "accounts" / "models.py").write_text(
+        "from django.db import models\nclass Customer(models.Model):\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "models.md").write_text("# Models\n", encoding="utf-8")
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+
+    edit_plan = ToolsPlan(
+        objective="Find all models and update docs/models.md",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Update docs/models.md",
+                "tool_intent": "edit",
+                "args_hint": "apply docs patch",
+                "success_signal": "docs updated",
+                "fallback": "",
+                "status": "in_progress",
+            }
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (edit_plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="premature edit",
+                requests=[{"question": "apply_patch docs/models.md", "tool_name": "apply_patch"}],
+                continue_after=True,
+                expected_progress="edit docs",
+            ),
+            [],
+        ),
+    )
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            assert requests[0].request.tool_name == "read_file"
+            assert requests[0].request.tool_args["path"] == "back/accounts/models.py"
+            return [
+                BatchExecutionResult(
+                    request_index=int(requests[0].request_index),
+                    ok=True,
+                    response={
+                        "answer": "class Customer(models.Model): pass",
+                        "sources": [{"file_path": "back/accounts/models.py"}],
+                        "mode": "agent-tools",
+                        "trace": [
+                            {
+                                "tool_name": "read_file",
+                                "status": "ok",
+                                "output_preview": '{"file_path":"back/accounts/models.py"}',
+                            }
+                        ],
+                        "warnings": [],
+                    },
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="find all models and update docs/models.md",
+        flow_context=None,
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+    assert any("mutation_blocked_until_model_docs_evidence_complete" in str(item) for item in result.warnings)
+    assert result.pass_logs[0]["new_files_read"] == 1
+    assert result.next_action == "read_file docs/models.md"
+
+
 def test_tools_manager_failed_request_retries_once_and_records_signature(tmp_path: Path, monkeypatch) -> None:
     orchestrator = _build_orchestrator(tmp_path)
     orchestrator.coding_memory_service = CodingMemoryService(project_root=tmp_path)
@@ -1521,9 +1749,691 @@ def test_tools_manager_pass_cap_unfinished_edit_does_not_surface_incidental_answ
     )
 
     assert result.terminal_reason == "pass_cap_reached"
-    assert "Auto-execute ended without a direct answer" in result.answer
+    assert "should continue" in result.answer
+    assert "Auto-execute ended without a direct answer" not in result.answer
     assert ".mana/analyze.json is not present" not in result.answer
+    assert any("pass_cap_reached_with_pending_work" in str(item) for item in result.warnings)
     assert any("edit_task_pass_cap_without_changed_files" in str(item) for item in result.warnings)
+
+
+def test_tools_manager_pass_cap_docs_update_emits_resumable_status_and_local_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+
+    plan = ToolsPlan(
+        objective="Find all models and update docs/models.md",
+        steps=[
+            ToolsPlanStep(id="s1", title="Find all models", tool_intent="inspect"),
+            ToolsPlanStep(id="s2", title="Update docs/models.md", tool_intent="edit"),
+            ToolsPlanStep(id="s3", title="Verify docs/models.md", tool_intent="verify"),
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="summarize",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="planner emitted no concrete request",
+                requests=[],
+                continue_after=True,
+                expected_progress="inspect models",
+            ),
+            [],
+        ),
+    )
+
+    seen_questions: list[str] = []
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            seen_questions.extend(str(item.request.question) for item in requests)
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response={
+                        "answer": "Collected repository evidence; docs update remains pending.",
+                        "sources": [],
+                        "mode": "agent-tools",
+                        "trace": [{"tool_name": "run_command", "status": "ok"}],
+                        "warnings": [],
+                    },
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="find all models and update docs/models.md",
+        flow_context=None,
+        flow_id="flow-docs-models",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+
+    assert result.terminal_reason == "pass_cap_reached"
+    assert "should continue" in result.answer
+    assert "Auto-execute ended without a direct answer" not in result.answer
+    assert seen_questions
+    assert "docs/models.md" in seen_questions[0]
+    assert "rg -n" in seen_questions[0]
+    assert "Do not ask the user to paste files" in seen_questions[0]
+    assert any("pass_cap_reached_with_pending_work" in str(item) for item in result.warnings)
+
+
+def test_tools_manager_pass_cap_writes_persistent_checkpoint(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+    plan = ToolsPlan(
+        objective="Inventory models",
+        steps=[ToolsPlanStep(id="s1", title="Locate candidates", tool_intent="search")],
+        current_step_id="s1",
+        decision="continue",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                requests=[ToolsManagerRequest(question="repo_search models.py", tool_name="repo_search")],
+            ),
+            [],
+        ),
+    )
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, requests, on_event)
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response=ToolRunResponse(
+                        answer="found app/models.py",
+                        trace=[{"tool_name": "repo_search", "path": "app/models.py"}],
+                    ).model_dump(),
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="find model files",
+        flow_context=None,
+        flow_id="flow",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+
+    run_dir = tmp_path / ".mana" / "runs" / result.run_id
+    assert result.run_status == "needs_resume"
+    assert f"mana-analyzer continue --root-dir {tmp_path}" in result.answer
+    assert f"--run-id {result.run_id}" in result.answer
+    assert result.resume_command == f"mana-analyzer continue --root-dir {tmp_path} --run-id {result.run_id}"
+    assert (run_dir / "state.json").exists()
+    assert (run_dir / "todo.json").exists()
+    assert (run_dir / "evidence.jsonl").exists()
+    assert (run_dir / "visited_files.json").exists()
+    assert (run_dir / "tool_calls.jsonl").exists()
+    assert (run_dir / "summary.md").exists()
+    assert (run_dir / "resume_prompt.md").exists()
+    checkpoint = json.loads((run_dir / "checkpoint.json").read_text())
+    assert checkpoint["run_id"] == result.run_id
+    assert checkpoint["root_dir"] == str(tmp_path.resolve())
+    assert checkpoint["current_phase"] in {
+        "DISCOVERY",
+        "READING",
+        "EXTRACTION",
+        "PATCHING",
+        "VERIFYING",
+        "FINAL",
+    }
+    assert checkpoint["original_user_task"] == "find model files"
+    assert checkpoint["candidate_files"] == ["app/models.py"]
+    assert checkpoint["pending_files"] == ["app/models.py"]
+    assert checkpoint["next_exact_action"] == "read_file app/models.py"
+    assert checkpoint["progress_counters"]["candidate_files"] == 1
+    assert "app/models.py" in (run_dir / "evidence.jsonl").read_text()
+    assert "repo_search" in (run_dir / "tool_calls.jsonl").read_text()
+
+
+def test_tools_manager_writes_public_work_ledger_and_trace_metadata(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+    plan = ToolsPlan(
+        objective="Inventory models",
+        steps=[ToolsPlanStep(id="s1", title="Locate candidates", tool_intent="search")],
+        current_step_id="s1",
+        decision="continue",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                requests=[ToolsManagerRequest(question="repo_search models.py", tool_name="repo_search")],
+            ),
+            [],
+        ),
+    )
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, requests, on_event)
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response=ToolRunResponse(
+                        answer="found app/models.py",
+                        trace=[{"tool_name": "repo_search", "path": "app/models.py"}],
+                    ).model_dump(),
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="find model files",
+        flow_context=None,
+        flow_id="flow-ledger",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+
+    run_dir = tmp_path / ".mana" / "runs" / result.run_id
+    ledger = json.loads((run_dir / "work_ledger.json").read_text())
+    assert ledger["run_id"] == result.run_id
+    assert ledger["objective"] == "find model files"
+    assert ledger["current_phase"] in {"DISCOVERY", "READING", "EXTRACTION", "PATCHING", "VERIFYING", "FINAL"}
+    assert ledger["candidate_files"] == ["app/models.py"]
+    assert ledger["next_action"] == "read_file app/models.py"
+    assert ledger["tool_call_history"][0]["normalized_key"]
+    assert ledger["tool_call_history"][0]["purpose"] == "locate_candidates"
+    assert ledger["tool_call_history"][0]["phase"] == "DISCOVERY"
+    assert result.trace
+    assert result.trace[0]["normalized_key"]
+    assert result.trace[0]["purpose"] == "locate_candidates"
+    assert result.trace[0]["ledger_checkpoint_path"].endswith("work_ledger.json")
+
+
+def test_tools_manager_pending_read_queue_forces_read_before_search(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+    store = RunStateStore(repo_root=tmp_path, run_id="queued")
+    store.ensure(goal="read queued models", flow_id="flow")
+    store.write_json("todo.json", {"pending_file_reads": ["app/models.py"], "pending_edits": [], "verification_status": "pending"})
+    plan = ToolsPlan(
+        objective="Read candidates",
+        steps=[ToolsPlanStep(id="s1", title="Read candidates", tool_intent="search")],
+        current_step_id="s1",
+        decision="continue",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                requests=[ToolsManagerRequest(question="repo_search models.py", tool_name="repo_search")],
+            ),
+            [],
+        ),
+    )
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            req = requests[0].request
+            seen.append((req.tool_name, dict(req.tool_args)))
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response=ToolRunResponse(
+                        answer="read app/models.py",
+                        trace=[{"tool_name": "read_file", "path": "app/models.py"}],
+                    ).model_dump(),
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="continue reading candidates",
+        flow_context=None,
+        flow_id="flow",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+        run_id="queued",
+    )
+
+    assert seen == [("read_file", {"path": "app/models.py"})]
+    assert "pending_read_queue_forced_progress" in result.warnings
+    assert RunStateStore(repo_root=tmp_path, run_id="queued").read_json("todo.json")["pending_file_reads"] == []
+
+
+def test_tools_manager_resume_uses_existing_run_and_skips_completed_search(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+    store = RunStateStore(repo_root=tmp_path, run_id="resume1")
+    store.ensure(goal="resume search", flow_id="flow")
+    fp = store.fingerprint(
+        gate="locate_candidates",
+        tool_name="repo_search",
+        args={"question": "repo_search models.py", "tool_args": {}, "policy": {}, "timeout_seconds": 30, "index_dir": str((tmp_path / ".mana/index").resolve()), "index_dirs": []},
+        filters={"k": 8, "max_steps": 6},
+    )
+    store.record_tool_call(
+        gate="locate_candidates",
+        tool_name="repo_search",
+        normalized_args={"question": "repo_search models.py"},
+        fingerprint=fp,
+        status="ok",
+        result_summary="cached search",
+    )
+    plan = ToolsPlan(
+        objective="resume search",
+        steps=[ToolsPlanStep(id="s1", title="Locate candidates", tool_intent="search")],
+        current_step_id="s1",
+        decision="continue",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                requests=[ToolsManagerRequest(question="repo_search models.py", tool_name="repo_search")],
+            ),
+            [],
+        ),
+    )
+
+    class _Executor:
+        def run_batch(self, **_kwargs):  # noqa: ANN001
+            raise AssertionError("cached search should not execute")
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.resume_run(
+        run_id="resume1",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+
+    assert "duplicate_tool_call_skipped" in " ".join(result.warnings)
+    assert result.run_id == "resume1"
+
+
+def test_tools_manager_resume_starts_from_exact_pending_read(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+    store = RunStateStore(repo_root=tmp_path, run_id="exact-read")
+    store.ensure(goal="resume exact read", flow_id="flow")
+    store.write_json(
+        "todo.json",
+        {
+            "pending_file_reads": ["back/billing/admin.py", "back/billing/models.py"],
+            "pending_edits": [],
+            "verification_status": "pending",
+        },
+    )
+    store.update_state(status="needs_resume", next_action="read_file back/billing/admin.py")
+    store.write_checkpoint(
+        status="needs_resume",
+        completed_gates=["locate_candidates"],
+        pending_gates=["read_candidates"],
+        files_changed=[],
+        verification_status="pending",
+    )
+    plan = ToolsPlan(
+        objective="resume exact read",
+        steps=[ToolsPlanStep(id="s1", title="Locate candidates", tool_intent="search")],
+        current_step_id="s1",
+        decision="continue",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                requests=[ToolsManagerRequest(question="repo_search billing", tool_name="repo_search")],
+            ),
+            [],
+        ),
+    )
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            req = requests[0].request
+            seen.append((req.tool_name, dict(req.tool_args)))
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response=ToolRunResponse(
+                        answer="read admin",
+                        trace=[{"tool_name": "read_file", "path": "back/billing/admin.py"}],
+                    ).model_dump(),
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.resume_run(
+        run_id="exact-read",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+
+    assert seen == [("read_file", {"path": "back/billing/admin.py"})]
+    assert result.next_action == "read_file back/billing/models.py"
+    checkpoint = RunStateStore(repo_root=tmp_path, run_id="exact-read").read_json("checkpoint.json")
+    assert checkpoint["read_files"] == ["back/billing/admin.py"]
+    assert checkpoint["pending_files"] == ["back/billing/models.py"]
+
+
+def test_tools_manager_resume_without_decision_provider_uses_deterministic_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(ToolsManagerOrchestrator, "_git_status_paths", lambda _self: set())
+    orchestrator = ToolsManagerOrchestrator(
+        api_key="test",
+        model="fake",
+        worker_client=_NoopWorker(),
+        repo_root=tmp_path,
+    )
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+    store = RunStateStore(repo_root=tmp_path, run_id="resume-no-provider")
+    store.ensure(goal="resume without planner", flow_id="flow")
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, requests, on_event)
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response=ToolRunResponse(
+                        answer="deterministic fallback ran",
+                        trace=[{"tool_name": "read_file", "path": "app/models.py"}],
+                    ).model_dump(),
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.resume_run(
+        run_id="resume-no-provider",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+
+    assert result.run_id == "resume-no-provider"
+    assert any("planner unavailable" in warning for warning in result.warnings)
+    assert any("toolsmanager unavailable" in warning for warning in result.warnings)
+
+
+def test_run_state_store_loop_detector_next_action_prefers_pending_read(tmp_path: Path) -> None:
+    store = RunStateStore(repo_root=tmp_path, run_id="loop")
+    store.ensure(goal="loop", flow_id="")
+    store.write_json("todo.json", {"pending_file_reads": ["a/models.py"], "pending_edits": [], "verification_status": "pending"})
+
+    assert store.next_action() == "read_file a/models.py"
+
+
+def test_run_state_read_file_action_key_includes_nested_tool_args_path(tmp_path: Path) -> None:
+    key = RunStateStore.normalized_action_key(
+        tool_name="read_file",
+        args={
+            "question": "Read pending candidate file before mutation: docs/coding-flows.md",
+            "tool_args": {"path": "docs/coding-flows.md"},
+        },
+    )
+
+    assert key == "read_file:docs/coding-flows.md"
+
+
+def test_run_state_store_sanitizes_dependency_pending_reads(tmp_path: Path) -> None:
+    store = RunStateStore(repo_root=tmp_path, run_id="deps")
+    store.ensure(goal="loop", flow_id="")
+    dependency_path = tmp_path / "back" / "venv" / "lib" / "python3.14" / "site-packages" / "django" / "forms" / "models.py"
+    app_path = tmp_path / "back" / "billing" / "models.py"
+    store.write_json(
+        "todo.json",
+        {
+            "pending_file_reads": [str(dependency_path), str(app_path), "back/.venv/lib/python/site-packages/x/models.py"],
+            "pending_edits": [],
+            "verification_status": "pending",
+        },
+    )
+
+    assert store.next_action() == "read_file back/billing/models.py"
+    assert store.read_json("todo.json")["pending_file_reads"] == ["back/billing/models.py"]
+
+
+def test_run_state_model_docs_queue_prioritizes_model_schema_files(tmp_path: Path) -> None:
+    (tmp_path / "src" / "mana_analyzer").mkdir(parents=True)
+    (tmp_path / "src" / "mana_analyzer" / "models.py").write_text("class User(BaseModel):\n    pass\n")
+    (tmp_path / "src" / "mana_analyzer" / "schema_models.py").write_text("class Item(TypedDict):\n    pass\n")
+    (tmp_path / "src" / "mana_analyzer" / "__init__.py").write_text("")
+    (tmp_path / "src" / "mana_analyzer" / "commands").mkdir()
+    (tmp_path / "src" / "mana_analyzer" / "commands" / "chat_cli.py").write_text("class Cli:\n    pass\n")
+    (tmp_path / "src" / "mana_analyzer" / "tools").mkdir()
+    (tmp_path / "src" / "mana_analyzer" / "tools" / "apply_patch.py").write_text("class Patch:\n    pass\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_models.py").write_text("from mana_analyzer.models import User\n")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "models.md").write_text("# Models\n")
+    (tmp_path / "README.md").write_text("# Readme\n")
+
+    store = RunStateStore(repo_root=tmp_path, run_id="rank")
+    store.ensure(goal="create docs/models.md for all models", flow_id="")
+    store.seed_candidate_queue()
+
+    pending = store.read_json("todo.json")["pending_file_reads"]
+    assert pending[:2] == ["src/mana_analyzer/models.py", "src/mana_analyzer/schema_models.py"]
+    assert "src/mana_analyzer/commands/chat_cli.py" not in pending
+    assert "src/mana_analyzer/tools/apply_patch.py" not in pending
+    assert "src/mana_analyzer/__init__.py" not in pending
+    assert pending[-1] == "docs/models.md"
+
+
+def test_run_state_model_docs_goal_accepts_create_in_docs_wording(tmp_path: Path) -> None:
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "src" / "pkg" / "models.py").write_text("class User(BaseModel):\n    pass\n")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "coding-flows.md").write_text("# Flows\n")
+    (tmp_path / "docs" / "project_structure_analysis.json").write_text("{}\n")
+    (tmp_path / "docs" / "models.md").write_text("# Models\n")
+
+    store = RunStateStore(repo_root=tmp_path, run_id="natural-model-docs")
+    store.ensure(
+        goal="create in docs a models.md and add a document for all models exist in this project.",
+        flow_id="",
+    )
+    store.seed_candidate_queue()
+
+    assert store.read_json("todo.json")["pending_file_reads"] == [
+        "src/pkg/models.py",
+        "docs/models.md",
+    ]
+
+
+def test_tools_manager_repairs_forced_read_policy_and_rejects_noop_success(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+    store = RunStateStore(repo_root=tmp_path, run_id="noop-read")
+    store.ensure(goal="read queued models", flow_id="flow")
+    store.write_json(
+        "todo.json",
+        {
+            "pending_file_reads": ["app/models.py"],
+            "pending_edits": [],
+            "verification_status": "pending",
+        },
+    )
+    plan = ToolsPlan(
+        objective="Read candidates",
+        steps=[ToolsPlanStep(id="s1", title="Read candidates", tool_intent="search")],
+        current_step_id="s1",
+        decision="continue",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                requests=[ToolsManagerRequest(question="repo_search models.py", tool_name="repo_search")],
+            ),
+            [],
+        ),
+    )
+    seen_policies: list[dict[str, object]] = []
+    seen_retry_attempts: list[int] = []
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, on_event)
+            req = requests[0].request
+            seen_policies.append(dict(req.tool_policy or {}))
+            seen_retry_attempts.append(int(req.retry_attempt or 0))
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response=ToolRunResponse(
+                        answer="No file read",
+                        trace=[{"tool_name": "read_file", "status": "ok"}],
+                    ).model_dump(),
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="continue reading candidates",
+        flow_context=None,
+        flow_id="flow",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={"allowed_tools": ["repo_search"]},
+        pass_cap=1,
+        run_id="noop-read",
+        max_no_progress_passes=1,
+    )
+
+    assert "read_file" in seen_policies[0]["allowed_tools"]
+    assert seen_retry_attempts == [0, 1]
+    assert result.run_status == "failed_no_progress"
+    assert result.changed_files == []
+    assert result.next_action != "read_file app/models.py"
+    ledger = RunStateStore(repo_root=tmp_path, run_id="noop-read").read_json("work_ledger.json")
+    assert ledger["last_successful_action"]["tool_name"] == ""
+    assert "app/models.py" not in ledger["pending_work"]["pending_file_reads"]
+    tool_history = ledger["tool_call_history"]
+    assert all(row["status"] != "ok" for row in tool_history)
+
+
+def test_tools_manager_final_report_contains_partial_progress(tmp_path: Path, monkeypatch) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+    plan = ToolsPlan(
+        objective="Partial progress",
+        steps=[ToolsPlanStep(id="s1", title="Locate candidates", tool_intent="search")],
+        current_step_id="s1",
+        decision="continue",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (plan, [], "planner"))
+    monkeypatch.setattr(orchestrator, "_build_batch", lambda **_kwargs: (ToolsManagerBatch(planner_step_id="s1", requests=[]), []))
+
+    result = orchestrator.run(
+        request="partial",
+        flow_context=None,
+        flow_id="flow",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+
+    summary = (tmp_path / ".mana" / "runs" / result.run_id / "summary.md").read_text()
+    assert "completed_gates" in summary
+    assert "pending_gates" in summary
+    assert "next_action" in summary
 
 
 def _edit_plan() -> ToolsPlan:

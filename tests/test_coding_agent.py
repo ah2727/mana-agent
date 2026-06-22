@@ -260,6 +260,24 @@ def test_coding_agent_full_auto_dynamic_read_policy_clamps_to_caps(tmp_path: Pat
     assert policy["dynamic_read_budget_fallback_used"] is False
 
 
+def test_coding_agent_model_docs_read_budget_counts_model_files_and_docs(tmp_path: Path, monkeypatch) -> None:
+    for idx in range(9):
+        path = tmp_path / "back" / f"app{idx}" / "models.py"
+        path.parent.mkdir(parents=True)
+        path.write_text("from django.db import models\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "models.md").write_text("# Models\n", encoding="utf-8")
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload, full_auto_mode=True)
+
+    policy = agent._tool_policy_for_request("find all models and update docs/models.md")
+
+    assert policy["read_budget"] == 10
+    assert policy["read_budget_cap"] == 10
+    assert policy["dynamic_read_budget_used"] is True
+    assert policy["dynamic_read_budget_reason"] == "model_docs_inventory"
+
+
 def test_coding_agent_non_full_auto_keeps_static_read_budget_without_dynamic_invoke(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload, full_auto_mode=False)

@@ -587,6 +587,7 @@ class ToolRunRequest(BaseModel):
     tools_only_strict_override: bool | None = None
     tool_name: str = ""
     tool_args: dict[str, Any] = Field(default_factory=dict)
+    retry_attempt: int = 0
 
 
 class ToolRunResponse(BaseModel):
@@ -1485,7 +1486,8 @@ class _ToolWorkerServer:
 
             tool_name = str(req.tool_name or "").strip()
             if tool_name:
-                if not self._turn_tool_state.claim(tool_name):
+                retry_attempt = max(0, int(req.retry_attempt or 0))
+                if retry_attempt == 0 and not self._turn_tool_state.claim(tool_name):
                     logger.warning(
                         "Blocking duplicate tool execution within turn: tool=%s turn=%s",
                         tool_name,
@@ -1513,7 +1515,15 @@ class _ToolWorkerServer:
                         )
                     )
                     return
-                logger.info("Registered tool execution for turn: tool=%s turn=%s", tool_name, env.request_id)
+                if retry_attempt > 0:
+                    logger.info(
+                        "Allowing retry tool execution for turn: tool=%s turn=%s retry_attempt=%s",
+                        tool_name,
+                        env.request_id,
+                        retry_attempt,
+                    )
+                else:
+                    logger.info("Registered tool execution for turn: tool=%s turn=%s", tool_name, env.request_id)
             
             tool_event_cb = _WorkerToolEventCallback(request_id=env.request_id, emit_reply=self._emit)
             response = _run_tool_request(
