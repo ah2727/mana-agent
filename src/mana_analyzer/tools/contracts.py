@@ -100,7 +100,7 @@ def coding_tool_contracts() -> list[ToolContract]:
             safety_rules=[
                 "Reject unread existing target files when read tracking is supplied.",
                 "Reject traversal, absolute paths, paths outside root, binary files, and file deletes.",
-                "Store patch preview and result under .mana_logs/ before returning.",
+                "Store patch preview and result under .mana/logs/ before returning.",
             ],
             examples=[{"input": {"patch": "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"}}],
         ),

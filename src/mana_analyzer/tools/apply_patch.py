@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional, Sequence
 
+from ..config.settings import default_logs_dir
 from .write_file import safe_write_file
 
 DEFAULT_ALLOWED_PREFIXES: Optional[tuple[str, ...]] = None
@@ -672,7 +673,7 @@ def _write_patch_history(
     check_only: bool,
 ) -> None:
     try:
-        logs_dir = repo_root / ".mana_logs"
+        logs_dir = default_logs_dir(repo_root)
         logs_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         payload = {

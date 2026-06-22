@@ -32,6 +32,16 @@ logger = logging.getLogger(__name__)
 
 _PATH_RE = re.compile(r"[\w./-]*?[\w-]+\.(?:py|md|txt|toml|yaml|yml|json|cfg|ini)\b")
 _LOCAL_IMPORT_RE = re.compile(r"^\s*(?:from|import)\s+([\w.]+)", re.MULTILINE)
+_KEYWORD_RE = re.compile(r"[a-z0-9_]+")
+# Filler words that carry no targeting signal; dropped before scoring candidates
+# so reads are ranked by the request's real subject (e.g. "mana_logs"), not "make".
+_REQUEST_STOPWORDS = frozenset(
+    {
+        "all", "the", "now", "need", "make", "and", "for", "with", "under",
+        "that", "this", "from", "into", "new", "create", "add", "update",
+        "change", "fix", "separately", "seperately", "please", "want",
+    }
+)
 
 
 def _extract_paths(response: ToolRunResponse, *, repo_root: Path) -> set[str]:
@@ -202,7 +212,7 @@ class CodingAgentSniffer:
         repo_root: Path,
         request: str = "",
         emit_edit: bool | None = None,
-        max_reads: int = 40,
+        max_reads: int = 8,
         max_follow_per_read: int = 4,
         relevant: Callable[[str], bool] | None = None,
     ) -> None:
@@ -271,13 +281,41 @@ class CodingAgentSniffer:
         )
         return [edit, verify]
 
+    def _request_keywords(self) -> set[str]:
+        """Targeting tokens from the request, with filler words removed."""
+        tokens = {tok for tok in _KEYWORD_RE.findall(self._request.lower()) if len(tok) >= 3}
+        return tokens - _REQUEST_STOPWORDS
+
+    def _candidate_score(self, path: str, keywords: set[str]) -> int:
+        low = path.lower()
+        return sum(1 for kw in keywords if kw in low)
+
+    def _rank_candidates(self, paths: list[str]) -> list[str]:
+        """Relevant candidates ordered by request-keyword overlap (desc).
+
+        Falls back to deterministic alphabetical order when the request carries
+        no usable keywords or no path matches, so the (now bounded) read fan-out
+        still spends its budget on the files most likely to matter rather than
+        an arbitrary slice of every search hit.
+        """
+        relevant = list(dict.fromkeys(p for p in paths if self._relevant(p)))
+        keywords = self._request_keywords()
+        # Drop keywords that match every candidate (e.g. the repo name): they add
+        # only noise to the score and let an arbitrary file float to the top.
+        if relevant:
+            keywords = {
+                kw for kw in keywords
+                if not all(kw in path.lower() for path in relevant)
+            }
+        if not keywords:
+            return sorted(relevant)
+        return sorted(relevant, key=lambda p: (-self._candidate_score(p, keywords), p))
+
     def _reads_from_discovery(self, paths: list[str], *, parent: WorkItem) -> list[WorkItem]:
         out: list[WorkItem] = []
-        for path in paths:
+        for path in self._rank_candidates(paths):
             if self._reads_emitted >= self._max_reads:
                 break
-            if not self._relevant(path):
-                continue
             out.append(
                 WorkItem(
                     kind="read",
