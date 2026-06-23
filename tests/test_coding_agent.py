@@ -105,6 +105,7 @@ class _SequenceAskAgent(_FakeAskAgent):
 def _fixed_checklist() -> FlowChecklist:
     return FlowChecklist(
         objective="Implement request",
+        requires_edit=True,
         constraints=["scope src/ tests/ only"],
         acceptance=["tests pass"],
         steps=[
@@ -136,6 +137,31 @@ def test_checklist_requires_edit_recognizes_mutation_tools() -> None:
     assert CodingAgent._checklist_requires_edit(readonly_plan) is False
     # No checklist (planner unavailable): err toward acting.
     assert CodingAgent._checklist_requires_edit(None) is True
+
+
+def test_checklist_requires_edit_uses_structured_planner_flag_without_tool_list() -> None:
+    edit_plan = FlowChecklist(
+        objective="add docs",
+        requires_edit=True,
+        steps=[
+            FlowStep(id="s1", title="Inspect docs", reason="r"),
+            FlowStep(id="s2", title="Write analyze.md", reason="add project description"),
+        ],
+    )
+
+    assert CodingAgent._checklist_requires_edit(edit_plan) is True
+
+
+def test_checklist_requires_edit_does_not_infer_from_step_text() -> None:
+    readonly_plan = FlowChecklist(
+        objective="explain update flow",
+        requires_edit=False,
+        steps=[
+            FlowStep(id="s1", title="Explain write path", reason="describe update behavior"),
+        ],
+    )
+
+    assert CodingAgent._checklist_requires_edit(readonly_plan) is False
 
 
 def _build_agent(

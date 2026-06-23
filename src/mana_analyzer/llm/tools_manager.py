@@ -1774,6 +1774,7 @@ class QueueManager:
         run_id: str | None = None,
         max_no_progress_passes: int = 2,
         requires_edit: bool | None = None,
+        target_files: Sequence[str] = (),
     ) -> AutoExecuteResult:
         from mana_analyzer.llm.agent_work_queue import (
             AgentWorkQueue,
@@ -1837,6 +1838,7 @@ class QueueManager:
             repo_root=self.repo_root,
             request=request,
             emit_edit=requires_edit,
+            target_files=[str(item).strip() for item in target_files if str(item).strip()],
             relevant=_relevant,
         )
         runner = WorkQueueRunner(

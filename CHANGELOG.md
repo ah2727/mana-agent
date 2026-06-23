@@ -2,6 +2,11 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-06-23
+
+- Fixed chat auto-execute orchestration so edit intent and target files come from structured planner output (`requires_edit`, `target_files`) instead of keyword heuristics, with planner-provided targets passed into work-queue edit jobs.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_coding_agent.py::test_checklist_requires_edit_recognizes_mutation_tools tests/test_coding_agent.py::test_checklist_requires_edit_uses_structured_planner_flag_without_tool_list tests/test_coding_agent.py::test_checklist_requires_edit_does_not_infer_from_step_text tests/test_agent_work_queue.py::test_queue_manager_runs_edit_and_verify_for_mutating_request tests/test_agent_work_queue.py::test_sniffer_uses_planner_target_file_for_edit_job -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_analyzer/llm/coding_agent.py src/mana_analyzer/llm/coding_agent_models.py src/mana_analyzer/llm/agent_work_queue_adapters.py src/mana_analyzer/llm/tools_manager.py src/mana_analyzer/llm/prompts.py tests/test_coding_agent.py tests/test_agent_work_queue.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_coding_agent.py -q` passed.
+
 ## 2026-06-22
 
 - Added a persistent tools-manager todo ledger with worker/agent confirmation, mutation-proof validation, tools-only violation retry handling, checkbox board reporting, and stricter model-docs candidate sanitation so discovery stops after real pending files are exhausted and edit steps cannot complete without target file changes.

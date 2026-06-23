@@ -233,12 +233,33 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
         request="add a docs folder and describe the project",
         index_dir=str(tmp_path),
         requires_edit=True,
+        target_files=["docs/overview.md"],
     )
 
     joined = "\n".join(worker.questions)
     assert "Apply concrete changes" in joined  # the edit job ran
+    assert "Target file: docs/overview.md" in joined
     assert "Verify the changes" in joined       # the verify job ran (after edit)
     assert result.execution_backend == "work_queue"
+
+
+def test_sniffer_uses_planner_target_file_for_edit_job(tmp_path: Path):
+    (tmp_path / "docs").mkdir()
+    sniffer = CodingAgentSniffer(
+        repo_root=tmp_path,
+        request="in docs add analyze and describe about this project.",
+        emit_edit=True,
+        target_files=["docs/analyze.md"],
+    )
+    board = TaskBoard(queue=AgentWorkQueue())
+    search = WorkItem(kind="discover", tool_name="repo_search", tool_args={"query": "docs"})
+
+    new_items = sniffer.on_result(search, WorkResult(ok=True, files_discovered=[]), board=board)
+    edit = next(item for item in new_items if item.kind == "edit")
+
+    assert edit.tool_name == "write_file"
+    assert edit.tool_args == {"path": "docs/analyze.md"}
+    assert "Target file: docs/analyze.md" in edit.question
 
 
 def test_sniffer_skips_edit_for_non_mutating_request(tmp_path: Path):

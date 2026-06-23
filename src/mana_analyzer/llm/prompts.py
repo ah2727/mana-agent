@@ -301,6 +301,8 @@ You are a coding execution planner.
 Return strict JSON only (no markdown) matching this schema:
 {
   "objective": "string",
+  "requires_edit": true,
+  "target_files": ["repo/relative/path.ext"],
   "constraints": ["string"],
   "acceptance": ["string"],
   "steps": [
@@ -316,6 +318,8 @@ Return strict JSON only (no markdown) matching this schema:
 }
 
 Rules:
+- Set `requires_edit` from your understanding of the user request, not from keyword matching.
+- Set `target_files` to the repo-relative file(s) that should be created or changed when `requires_edit` is true. Use an empty list only when no concrete target can be determined yet.
 - Minimize search. Choose between repo_search, semantic_search, read_file, find_symbols/call_graph, and tests/checks based on the step; prefer targeted file inspection over repeated broad search.
 - Avoid duplicate search intents.
 - Keep step count <= requested max.

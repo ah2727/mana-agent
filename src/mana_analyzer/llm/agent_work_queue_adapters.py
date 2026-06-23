@@ -212,6 +212,7 @@ class CodingAgentSniffer:
         repo_root: Path,
         request: str = "",
         emit_edit: bool | None = None,
+        target_files: list[str] | None = None,
         max_reads: int = 8,
         max_follow_per_read: int = 4,
         relevant: Callable[[str], bool] | None = None,
@@ -223,6 +224,7 @@ class CodingAgentSniffer:
         # in the request. The caller passes that decision down as ``emit_edit``;
         # when it is unknown (no planner signal) we do not force a mutation.
         self._emit_edit = bool(emit_edit)
+        self._target_files = [str(item).strip().replace("\\", "/").lstrip("./") for item in (target_files or []) if str(item).strip()]
         self._max_reads = int(max_reads)
         self._max_follow_per_read = int(max_follow_per_read)
         self._relevant = relevant or (lambda _path: True)
@@ -254,13 +256,22 @@ class CodingAgentSniffer:
         if self._finalization_emitted or not self._emit_edit or not self._request:
             return []
         self._finalization_emitted = True
+        target_file = self._target_files[0] if self._target_files else ""
+        tool_args = {"path": target_file} if target_file else {}
+        target_instruction = (
+            f" Target file: {target_file}. Create it if it does not exist."
+            if target_file
+            else ""
+        )
         edit = WorkItem(
             kind="edit",
             tool_name="write_file",
+            tool_args=tool_args,
             question=(
                 "Using the file evidence already gathered in this run, carry out "
                 f"the user's request: {self._request}. Apply concrete changes with "
                 "create_file/write_file/apply_patch and report the changed files."
+                f"{target_instruction}"
             ),
             gate="apply_edit",
             priority=80,

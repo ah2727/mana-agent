@@ -155,6 +155,8 @@ class CodingAgent:
             )
         return FlowChecklist(
             objective=resolved_objective,
+            requires_edit=False,
+            target_files=[],
             constraints=[],
             acceptance=["Requested change is applied"],
             steps=flow_steps,
@@ -334,6 +336,8 @@ class CodingAgent:
         )
         return FlowChecklist(
             objective=objective,
+            requires_edit=True,
+            target_files=explicit_files,
             acceptance=["Requested change is applied", "No obvious regressions in touched files"],
             steps=[
                 FlowStep(
@@ -576,6 +580,7 @@ class CodingAgent:
             repo_root=self.repo_root,
             request=request,
             emit_edit=self._checklist_requires_edit(planned_checklist),
+            target_files=(planned_checklist.target_files if planned_checklist is not None else []),
             max_reads=int(max_reads),
             relevant=_relevant,
         )
@@ -607,6 +612,8 @@ class CodingAgent:
             )
         return {
             "objective": str(checklist.objective or "").strip(),
+            "requires_edit": bool(checklist.requires_edit),
+            "target_files": [str(item).strip() for item in checklist.target_files if str(item).strip()],
             "steps": steps,
             "source": str(source or ""),
         }
@@ -645,10 +652,17 @@ class CodingAgent:
             return {
                 "flow_id": active_flow_id,
                 "flow_context": effective_flow_context,
-                "prechecklist": {"objective": "", "steps": [], "source": "deterministic_fallback"},
+                "prechecklist": {
+                    "objective": "",
+                    "requires_edit": True,
+                    "target_files": [],
+                    "steps": [],
+                    "source": "deterministic_fallback",
+                },
                 "prechecklist_source": "deterministic_fallback",
                 "prechecklist_warning": "Planner failed to produce a preview checklist.",
                 "requires_edit": True,
+                "target_files": [],
                 "warnings": warnings,
             }
 
@@ -680,6 +694,7 @@ class CodingAgent:
             "prechecklist_source": source,
             "prechecklist_warning": prechecklist_warning,
             "requires_edit": self._checklist_requires_edit(checklist),
+            "target_files": [str(item).strip() for item in checklist.target_files if str(item).strip()],
             "warnings": warnings,
         }
 
@@ -763,6 +778,11 @@ class CodingAgent:
                 warnings.append(f"coding memory setup failed: {exc}")
 
         requires_edit = bool(preview_payload.get("requires_edit", True))
+        target_files = [
+            str(item).strip()
+            for item in (preview_payload.get("target_files") if isinstance(preview_payload.get("target_files"), list) else [])
+            if str(item).strip()
+        ]
         tool_policy = self._tool_policy_for_request(request, flow_context=effective_flow_context)
         try:
             _ = callbacks
@@ -777,6 +797,7 @@ class CodingAgent:
                 tool_policy=tool_policy,
                 pass_cap=max(1, int(pass_cap)),
                 requires_edit=requires_edit,
+                target_files=target_files,
                 on_event=self._log_worker_event,
                 flow_id=active_flow_id,
                 run_id=run_id,
@@ -1158,12 +1179,14 @@ class CodingAgent:
     def _checklist_requires_edit(cls, checklist: "FlowChecklist | None") -> bool:
         """Recognize edit intent from the planner's checklist, not request text.
 
-        The planner LLM decides whether the request needs changes by listing the
-        tools each step needs; if any step plans a mutation tool, this run should
-        finalize with an edit + verify. When no checklist is available we err
-        toward acting rather than silently refusing to edit.
+        The planner LLM decides whether the request needs changes with the
+        structured ``requires_edit`` field. Older planner payloads are still
+        accepted when they explicitly list mutation tools. When no checklist is
+        available we err toward acting rather than silently refusing to edit.
         """
         if checklist is None:
+            return True
+        if bool(checklist.requires_edit):
             return True
         for step in checklist.steps:
             tools = {str(tool).strip().lower() for tool in (step.requires_tools or [])}

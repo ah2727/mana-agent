@@ -1,4 +1,4 @@
-# mana-analyzer
+# mana-analyzer (v0.0.5)
 
 LLM-powered repository analysis and coding-agent automation for local codebases.
 

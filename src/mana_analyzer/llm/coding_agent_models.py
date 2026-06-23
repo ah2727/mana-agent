@@ -21,6 +21,8 @@ class FlowChecklist(BaseModel):
     """Structured plan capturing objective, constraints, acceptance criteria, and steps."""
 
     objective: str
+    requires_edit: bool = False
+    target_files: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     acceptance: list[str] = Field(default_factory=list)
     steps: list[FlowStep] = Field(default_factory=list)
