@@ -57,6 +57,41 @@ def test_mutation_create_file_fallback_creates_docs_analyze(tmp_path: Path) -> N
     assert result.planner_decisions[0]["mutation_tool_successful"] is True
 
 
+def test_analysis_artifact_fallback_attaches_to_readme(tmp_path: Path) -> None:
+    (tmp_path / "src" / "mana_agent" / "commands").mkdir(parents=True)
+    (tmp_path / "src" / "mana_agent" / "commands" / "cli.py").write_text("def app():\n    pass\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_cli.py").write_text("def test_cli():\n    assert True\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# Mana Agent\n\nCLI assistant.\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project.scripts]\n"
+        'mana-agent = "mana_agent.commands.cli:app"\n',
+        encoding="utf-8",
+    )
+    worker = _NoopWorker()
+
+    result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
+        request="analyze full project and create a analyze.md from whole project with diagram and attach to readme.md",
+        index_dir=str(tmp_path / ".mana" / "index"),
+        requires_edit=True,
+        target_files=[],
+        pass_cap=1,
+        max_steps=1,
+    )
+
+    analysis = tmp_path / "analyze.md"
+    assert analysis.exists()
+    content = analysis.read_text(encoding="utf-8")
+    assert "```mermaid" in content
+    assert "`src/mana_agent/`" in content
+    assert "`mana-agent` -> `mana_agent.commands.cli:app`" in content
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "- [Project analysis](analyze.md)" in readme
+    assert result.run_status == "completed"
+    assert result.changed_files == ["README.md", "analyze.md"]
+    assert result.planner_decisions[0]["deterministic_fallback_changed_files"] is True
+
+
 def test_mutation_fallback_allowlist_blocks_discovery_tools() -> None:
     for tool in ("repo_search", "read_file", "ls", "list_files"):
         assert _mutation_fallback_tool_allowed(tool, target_exists=False, prior_target_evidence=True) is False

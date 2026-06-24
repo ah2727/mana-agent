@@ -1793,6 +1793,9 @@ _MUTATION_FALLBACK_BLOCKED_TOOLS = frozenset(
         "list_tools",
     }
 )
+_CREATE_ARTIFACT_INTENT_RE = re.compile(r"\b(create|write|generate|add(?:\s+file)?)\b", re.IGNORECASE)
+_DETERMINISTIC_ARTIFACT_SUFFIXES = (".md", ".txt", ".json", ".toml", ".yaml", ".yml", ".ini", ".cfg")
+_README_ATTACH_RE = re.compile(r"\b(?:attach|add|link|include|update)\b.*\breadme(?:\.md)?\b", re.IGNORECASE)
 
 
 def _mutation_required_from_policy(tool_policy: dict[str, Any] | None, requires_edit: bool | None) -> bool:
@@ -1846,6 +1849,10 @@ def _resolve_mutation_target_path(task: str, repo_root: Path, target_files: Sequ
         if rel:
             candidates.append(rel)
     if candidates:
+        if _README_ATTACH_RE.search(text):
+            for candidate in candidates:
+                if Path(candidate).name.lower() != "readme.md":
+                    return candidate
         return candidates[-1]
     return ""
 
@@ -1859,6 +1866,15 @@ def _mutation_fallback_tool_allowed(tool_name: str, *, target_exists: bool, prio
     if tool in _MUTATION_FALLBACK_BLOCKED_TOOLS:
         return False
     return False
+
+
+def _can_run_deterministic_artifact_fallback(request: str, repo_root: Path, target_path: str) -> bool:
+    if not target_path.endswith(_DETERMINISTIC_ARTIFACT_SUFFIXES):
+        return False
+    target = repo_root / target_path
+    if not target.exists():
+        return True
+    return bool(_CREATE_ARTIFACT_INTENT_RE.search(str(request or "")))
 
 
 def _fallback_trace_text(trace: Sequence[dict[str, Any]], *, limit: int = 4000) -> str:
@@ -1905,26 +1921,81 @@ def _readme_summary(repo_root: Path) -> str:
     return "\n".join(f"- {line}" for line in useful)
 
 
+def _project_entry_points(repo_root: Path) -> list[str]:
+    pyproject = repo_root / "pyproject.toml"
+    if not pyproject.is_file():
+        return []
+    try:
+        lines = pyproject.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    entries: list[str] = []
+    in_scripts = False
+    for raw_line in lines:
+        line = raw_line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_scripts = line == "[project.scripts]"
+            continue
+        if not in_scripts or not line or line.startswith("#") or "=" not in line:
+            continue
+        name, target = line.split("=", 1)
+        name = name.strip().strip('"\'')
+        target = target.strip().strip('"\'')
+        if name and target:
+            entries.append(f"- `{name}` -> `{target}`")
+    return entries
+
+
+def _top_level_modules(files: Sequence[str]) -> list[str]:
+    modules: list[str] = []
+    for path in files:
+        parts = path.split("/")
+        if len(parts) >= 3 and parts[0] == "src":
+            module = "/".join(parts[:2])
+            if module not in modules:
+                modules.append(module)
+    return modules
+
+
 def _build_minimal_artifact_from_evidence(task: str, repo_root: Path, trace: Sequence[dict[str, Any]]) -> str:
     files = _repo_files_snapshot(repo_root)
     dirs = sorted({path.split("/", 1)[0] for path in files if "/" in path})
+    modules = _top_level_modules(files)
+    entry_points = _project_entry_points(repo_root)
     evidence_text = _fallback_trace_text(trace)
     evidence_note = "Discovery/read tool output was available and used as supporting context." if evidence_text else (
         "Only repository-local fallback evidence was available."
     )
     structure_lines = "\n".join(f"- `{path}`" for path in files[:40]) or "- No repository files were listed."
     directory_lines = "\n".join(f"- `{name}/`" for name in dirs[:20]) or "- No top-level directories were listed."
+    module_lines = "\n".join(f"- `{name}/`" for name in modules[:20]) or "- No `src/` modules were listed."
+    entry_lines = "\n".join(entry_points[:20]) or "- No `[project.scripts]` entry points were found."
+    diagram_nodes = ["repo[Repository]"]
+    if (repo_root / "README.md").exists():
+        diagram_nodes.append("repo --> readme[README.md]")
+    for name in dirs[:8]:
+        node = re.sub(r"[^A-Za-z0-9_]", "_", name).strip("_") or "dir"
+        diagram_nodes.append(f"repo --> {node}[{name}/]")
+    diagram = "\n".join(diagram_nodes)
     return (
         "# Project Analysis\n\n"
         "## Overview\n"
         f"This document was generated for the request: `{task}`.\n\n"
         f"{_readme_summary(repo_root)}\n\n"
+        "## Diagram\n"
+        "```mermaid\n"
+        "flowchart TD\n"
+        f"{diagram}\n"
+        "```\n\n"
         "## Structure\n"
         f"{directory_lines}\n\n"
+        "Primary source modules:\n"
+        f"{module_lines}\n\n"
         "Important files observed:\n"
         f"{structure_lines}\n\n"
         "## CLI / Commands\n"
-        "Review `pyproject.toml`, `README.md`, and files under `src/` for command entry points and runtime behavior.\n\n"
+        f"{entry_lines}\n\n"
         "## Notes\n"
         f"- {evidence_note}\n"
         "- Areas needing deeper review: runtime configuration, test coverage, and command behavior.\n"
@@ -1956,12 +2027,37 @@ def _run_deterministic_create_file_fallback(
         tool = "create_file"
         result = safe_create_file(repo_root=repo_root, path=target_path, content=content, allowed_prefixes=None)
     ok = bool(result.get("ok"))
+    changed = [target_path] if ok else []
+    if ok and target_path != "README.md" and _README_ATTACH_RE.search(str(request or "")):
+        readme_link = f"- [Project analysis]({target_path})"
+        readme = repo_root / "README.md"
+        if readme.exists():
+            existing = readme.read_text(encoding="utf-8", errors="replace")
+            if readme_link not in existing:
+                separator = "\n" if existing.endswith("\n") else "\n\n"
+                readme_result = safe_write_file(
+                    repo_root=repo_root,
+                    path="README.md",
+                    content=f"{existing}{separator}## Analysis\n\n{readme_link}\n",
+                    allowed_prefixes=None,
+                )
+                if bool(readme_result.get("ok")):
+                    changed.append("README.md")
+        else:
+            readme_result = safe_create_file(
+                repo_root=repo_root,
+                path="README.md",
+                content=f"# Project\n\n## Analysis\n\n{readme_link}\n",
+                allowed_prefixes=None,
+            )
+            if bool(readme_result.get("ok")):
+                changed.append("README.md")
     row = {
         "tool_name": tool,
         "status": "ok" if ok else "error",
         "path": target_path,
-        "changed_files": [target_path] if ok else [],
-        "files_changed": [target_path] if ok else [],
+        "changed_files": sorted(dict.fromkeys(changed)),
+        "files_changed": sorted(dict.fromkeys(changed)),
         "result": result,
         "created_by": "deterministic_mutation_fallback",
     }
@@ -2402,7 +2498,8 @@ class QueueManager:
             and not mutation_state.get("mutation_succeeded")
             and not mutation_state.get("no_op_reason")
             and resolved_target_path
-            and resolved_target_path.endswith((".md", ".txt", ".json", ".toml", ".yaml", ".yml", ".ini", ".cfg", ".py"))
+            and _can_run_deterministic_artifact_fallback(request, self.repo_root, resolved_target_path)
+            and (bool(_CREATE_ARTIFACT_INTENT_RE.search(str(request or ""))) or bool(_fallback_trace_text(trace)))
         ):
             deterministic_fallback_ran = True
             fallback_row = _run_deterministic_create_file_fallback(
@@ -2426,7 +2523,7 @@ class QueueManager:
                 **resolved_tool_policy,
                 "mutation_required": True,
                 "mutation_strict": True,
-                "allowed_tools": ["apply_patch", "write_file", "create_file"],
+                "allowed_tools": ["apply_patch", "write_file", "create_file", "git_diff", "git_status"],
                 "verify_requires_mutation": True,
             }
             forced_execute = make_worker_executor(

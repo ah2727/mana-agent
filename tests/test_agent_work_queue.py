@@ -294,7 +294,7 @@ def test_queue_manager_blocks_edit_when_no_mutation_tool_attempted(tmp_path: Pat
     assert result.run_status == "blocked"
     assert result.terminal_reason == "mutation_required_but_no_mutation_tool_attempted"
     assert "forced_mutation_retry_no_mutation_tool_attempted" in result.warnings
-    assert worker.policies[-1]["allowed_tools"] == ["apply_patch", "write_file", "create_file"]
+    assert worker.policies[-1]["allowed_tools"] == ["apply_patch", "write_file", "create_file", "git_diff", "git_status"]
 
 
 def test_queue_manager_blocks_edit_when_mutation_has_no_changed_files(tmp_path: Path):
