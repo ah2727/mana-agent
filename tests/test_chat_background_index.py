@@ -24,7 +24,7 @@ class _FakeIndexService:
 
 def _patch_builder(monkeypatch, service: _FakeIndexService) -> None:
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_index_service",
+        "mana_agent.commands.cli.build_index_service",
         lambda _s: service,
         raising=False,
     )

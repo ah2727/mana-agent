@@ -1822,6 +1822,213 @@ def _latest_useful_answer(answers: Sequence[str]) -> str:
     return ""
 
 
+_VERIFICATION_TOOLS = {"verify", "verify_project", "run_command", "n"}
+
+# Phrases a worker may emit that directly contradict an authoritative execution
+# state showing an edit landed. When the trace proves a mutation happened, an
+# intermediate worker answer containing any of these is obsolete and must never
+# be surfaced as the final answer.
+_CONTRADICTION_PATTERNS = (
+    "no edit tool",
+    "edit tool was",
+    "edit tool is",
+    "edit tools were",
+    "no edit tools",
+    "could not edit",
+    "couldn't edit",
+    "unable to edit",
+    "cannot edit",
+    "no changes were made",
+    "no changes made",
+    "no file change",
+    "no files changed",
+    "no files were changed",
+    "did not make any changes",
+    "didn't make any changes",
+    "no mutation",
+    "nothing was changed",
+    "nothing changed",
+)
+
+
+def _answer_contradicts_state(answer: str, *, mutated: bool) -> bool:
+    """True if ``answer`` claims no edit/change while the trace proves otherwise."""
+    if not mutated:
+        return False
+    low = str(answer or "").lower()
+    return any(pattern in low for pattern in _CONTRADICTION_PATTERNS)
+
+
+def _extract_verification_checks(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Best-effort: pull a list of structured verify checks out of a trace row.
+
+    ``verify_project`` returns ``{"ok", "checks": [...], "summary": {...}}``. That
+    payload may live on the row directly or be JSON-serialized into a string field
+    (``output_preview``/``result``/``answer``). We look in both places.
+    """
+    checks = row.get("checks")
+    if isinstance(checks, list):
+        return [item for item in checks if isinstance(item, dict)]
+    for key in ("output_preview", "result", "answer", "output"):
+        raw = row.get(key)
+        if not isinstance(raw, str) or '"checks"' not in raw:
+            continue
+        data: Any = None
+        try:
+            data = json.loads(raw)
+        except Exception:
+            match = re.search(r"\{.*\}", raw, re.S)
+            if match:
+                try:
+                    data = json.loads(match.group(0))
+                except Exception:
+                    data = None
+        if isinstance(data, dict) and isinstance(data.get("checks"), list):
+            return [item for item in data["checks"] if isinstance(item, dict)]
+    return []
+
+
+def _verification_summary_from_trace(trace: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Authoritative verify state derived from the trace (not worker prose)."""
+    ran = False
+    failed = False
+    passed_any = False
+    failing: list[dict[str, str]] = []
+    for row in trace:
+        if not isinstance(row, dict):
+            continue
+        tool = _trace_tool_name(row)
+        if tool not in _VERIFICATION_TOOLS:
+            continue
+        ran = True
+        status = _trace_status(row)
+        if status == "verify_project_blocked_until_mutation":
+            # The verify never actually ran; do not treat it as executed.
+            ran = ran and bool(passed_any or failing)
+            continue
+        checks = _extract_verification_checks(row)
+        if checks:
+            for chk in checks:
+                cstatus = str(chk.get("status", "")).strip().lower()
+                if cstatus == "failed":
+                    failed = True
+                    detail = (
+                        chk.get("reason")
+                        or chk.get("stderr")
+                        or chk.get("error")
+                        or chk.get("stdout")
+                        or ""
+                    )
+                    failing.append(
+                        {"name": str(chk.get("name") or "check"), "detail": str(detail).strip()}
+                    )
+                elif cstatus == "passed":
+                    passed_any = True
+            continue
+        if status in {"error", "failed", "timeout"}:
+            failed = True
+            failing.append(
+                {
+                    "name": tool,
+                    "detail": str(row.get("error") or row.get("output_preview") or status).strip(),
+                }
+            )
+        elif status in {"ok", "success", "passed"}:
+            passed_any = True
+    return {
+        "ran": ran,
+        "failed": failed,
+        "passed": bool(ran and passed_any and not failed),
+        "failing": failing,
+    }
+
+
+def _failed_tool_calls_from_trace(trace: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
+    """Hard tool failures in the trace (for surfacing in the final answer)."""
+    failures: list[dict[str, str]] = []
+    for row in trace:
+        if not isinstance(row, dict):
+            continue
+        status = _trace_status(row)
+        if status not in {"error", "failed", "timeout"}:
+            continue
+        failures.append(
+            {
+                "tool": _trace_tool_name(row) or "tool",
+                "detail": str(row.get("error") or row.get("output_preview") or status).strip(),
+            }
+        )
+    return failures
+
+
+def _compose_final_answer(
+    *,
+    mutation_required: bool,
+    mutation_state: dict[str, Any],
+    changed_files: Sequence[str],
+    verification: dict[str, Any],
+    run_status: str,
+    terminal_reason: str,
+    worker_answer: str,
+    fallback: str,
+) -> str:
+    """Rebuild the final answer from authoritative execution state.
+
+    The last natural-language worker answer is *never* the source of truth: it is
+    only appended when it does not contradict what the trace proves happened.
+    """
+    changed = [str(path).strip() for path in (changed_files or []) if str(path).strip()]
+    mutated = bool(mutation_state.get("mutation_succeeded")) or bool(changed)
+    no_op_reason = str(mutation_state.get("no_op_reason") or "").strip()
+    worker_answer = str(worker_answer or "").strip()
+
+    if run_status == "blocked":
+        reason = str(terminal_reason or "").strip() or "blocked"
+        lines = ["The edit could not be completed."]
+        if reason == "mutation_required_but_no_mutation_tool_attempted":
+            lines.append(
+                "No edit tool (apply_patch/write_file/create_file) was executed, so no changes were made."
+            )
+        elif reason == "mutation_required_but_no_changed_files":
+            lines.append(
+                "An edit tool ran but produced no file changes. Retry with a corrected edit payload."
+            )
+        else:
+            lines.append(f"Reason: {reason}")
+        return "\n".join(lines)
+
+    if mutated:
+        lines: list[str] = []
+        if changed:
+            lines.append(f"Applied changes to {len(changed)} file(s):")
+            lines.extend(f"- {path}" for path in changed)
+        else:
+            lines.append("Applied changes.")
+        if verification.get("ran"):
+            if verification.get("failed"):
+                lines.append("")
+                lines.append("Verification: FAILED")
+                for item in verification.get("failing", []):
+                    name = str(item.get("name") or "check")
+                    detail = str(item.get("detail") or "").strip()
+                    lines.append(f"- {name}: {detail}" if detail else f"- {name}")
+            else:
+                lines.append("")
+                lines.append("Verification: passed")
+        else:
+            lines.append("")
+            lines.append("Verification: not run")
+        if worker_answer and not _answer_contradicts_state(worker_answer, mutated=True):
+            lines.append("")
+            lines.append(worker_answer)
+        return "\n".join(lines).strip()
+
+    if mutation_required and no_op_reason:
+        return f"No file changes were required. Reason: {no_op_reason}"
+
+    # Non-mutating request (read/search/Q&A): the worker answer is authoritative.
+    return worker_answer or fallback
+
 
 class QueueManager:
     """Live Agent Work Queue manager (replaces the legacy planner pass-loop).
@@ -2055,9 +2262,26 @@ class QueueManager:
                 run_status = "blocked"
                 terminal_reason = "mutation_required_but_no_changed_files"
         changed_files = list(mutation_state.get("changed_files") or changed_files)
-        final_answer = _latest_useful_answer(answers) or board.render()
-        if run_status == "blocked":
-            final_answer = terminal_reason
+        # Final answer is rebuilt from authoritative execution state (trace,
+        # changed_files, mutation_state, verification), never from the last
+        # natural-language worker answer, so an intermediate "I could not edit"
+        # cannot contradict a trace that proves a mutation landed.
+        verification = _verification_summary_from_trace(trace)
+        failed_calls = _failed_tool_calls_from_trace(trace)
+        for failure in failed_calls:
+            warning = f"tool_call_failed:{failure['tool']}"
+            if warning not in warnings:
+                warnings.append(warning)
+        final_answer = _compose_final_answer(
+            mutation_required=mutation_required,
+            mutation_state=mutation_state,
+            changed_files=changed_files,
+            verification=verification,
+            run_status=run_status,
+            terminal_reason=terminal_reason,
+            worker_answer=_latest_useful_answer(answers),
+            fallback=board.render(),
+        )
         store = RunStateStore(repo_root=self.repo_root, run_id=run_id)
         return AutoExecuteResult(
             answer=final_answer,
@@ -2085,6 +2309,10 @@ class QueueManager:
                     "forced_mutation_retry_ran": forced_retry_ran,
                     "forced_retry_mutation_attempted": forced_retry_mutation_attempted,
                     "forced_retry_changed_files": forced_retry_changed_files,
+                    "verification_ran": bool(verification.get("ran")),
+                    "verification_passed": bool(verification.get("passed")),
+                    "verification_failed": bool(verification.get("failed")),
+                    "verification_failing_checks": list(verification.get("failing", [])),
                 }
             ],
             run_id=store.run_id,

@@ -8,6 +8,7 @@ import pytest
 from mana_agent.llm.ask_agent import AskAgent
 from mana_agent.llm.coding_agent_models import CodingAgentStateMachine
 from mana_agent.tools.contracts import coding_tool_contracts
+from mana_agent.config.settings import default_logs_dir
 from mana_agent.tools.apply_patch import safe_apply_patch
 from mana_agent.tools.repository import _run_check, call_graph
 
@@ -99,7 +100,7 @@ def test_successful_patch_flow_records_history(tmp_path: Path) -> None:
 
     assert result["ok"] is True
     assert target.read_text(encoding="utf-8") == "new\n"
-    history = list((tmp_path / ".mana_logs").glob("apply_patch_*.json"))
+    history = list(default_logs_dir(tmp_path).glob("apply_patch_*.json"))
     assert history
 
 

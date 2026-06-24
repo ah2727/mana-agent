@@ -110,7 +110,7 @@ def test_ask_command_inventory_fallback_lists_cli_commands(tmp_path: Path) -> No
     assert response.sources
 
 
-def test_ask_command_inventory_fallback_handles_exist_analyzor_wording(tmp_path: Path) -> None:
+def test_ask_command_inventory_fallback_handles_exist_agent_wording(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         "\n".join(
             [
@@ -141,7 +141,7 @@ def test_ask_command_inventory_fallback_handles_exist_analyzor_wording(tmp_path:
     )
     service = AskService(store=_EmptyStore(), qna_chain=_FakeQnA(), project_root=tmp_path)
 
-    response = service.ask(index_dir=tmp_path / ".mana" / "index", question="command exist in this analyzor", k=3)
+    response = service.ask(index_dir=tmp_path / ".mana" / "index", question="command exist in this agent", k=3)
 
     assert response.warnings == []
     assert "Semantic index is missing" not in response.answer

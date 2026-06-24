@@ -81,9 +81,9 @@ class AskService:
         has_inventory_term = bool(
             words
             & {
+                "agent",
                 "all",
                 "analyzer",
-                "analyzor",
                 "available",
                 "exist",
                 "exists",

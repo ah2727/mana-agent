@@ -107,9 +107,9 @@ def test_continue_command_uses_root_dir_and_loops_until_complete(monkeypatch, tm
                 return _FakeResult(status="needs_resume", terminal_reason="pass_cap_reached", answer="checkpoint")
             return _FakeResult(status="completed", terminal_reason="planner_finalize", answer="done")
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.QueueManager", _FakeOrchestrator)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.QueueManager", _FakeOrchestrator)
 
     result = runner.invoke(app, ["continue", "--root-dir", str(tmp_path), "--run-id", "abc123"])
 
@@ -212,7 +212,40 @@ def test_pyproject_exposes_mana_agent_primary_script() -> None:
     pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
 
     assert 'name = "mana-agent"' in pyproject
-    assert 'mana-agent = "mana_analyzer.commands.cli:app"' in pyproject
+    assert 'mana-agent = "mana_agent.commands.cli:app"' in pyproject
+
+
+def test_root_help_exposes_commands_and_no_legacy_branding() -> None:
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    for command in ("chat", "analyze", "ask"):
+        assert command in result.output
+    assert "mana-agent" in result.output
+    assert "mana-analyzer" not in result.output
+    assert "analyzor" not in result.output
+
+
+def test_chat_help_works() -> None:
+    result = runner.invoke(app, ["chat", "--help"])
+    assert result.exit_code == 0
+    assert "chat [OPTIONS]" in result.output
+
+
+def test_analyze_help_works() -> None:
+    result = runner.invoke(app, ["analyze", "--help"])
+    assert result.exit_code == 0
+    assert "analyze [OPTIONS]" in result.output
+
+
+def test_no_source_file_contains_analyzor() -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    offenders = [
+        str(path.relative_to(repo_root))
+        for path in (repo_root / "src").rglob("*.py")
+        if "analyzor" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == [], f"'analyzor' still present in: {offenders}"
 
 
 def test_root_command_defaults_to_chat(monkeypatch) -> None:
@@ -221,7 +254,7 @@ def test_root_command_defaults_to_chat(monkeypatch) -> None:
     def _fake_chat(**_kwargs: object) -> None:
         calls.append("chat")
 
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.chat", _fake_chat)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.chat", _fake_chat)
 
     result = runner.invoke(app, [])
 
@@ -280,7 +313,7 @@ class FakeDependencyReport:
         }
 
     def to_dot(self) -> str:
-        return 'digraph mana_analyzer { "a" -> "b"; }'
+        return 'digraph mana_agent { "a" -> "b"; }'
 
     def to_graphml(self) -> str:
         return "<graphml></graphml>"
@@ -342,25 +375,25 @@ def test_cli_commands(monkeypatch, tmp_path: Path) -> None:
         describe_build_calls.append(use_llm)
         return FakeDescribeService()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_index_service", lambda _s: FakeIndexService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_search_service", lambda _s: FakeSearchService())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_index_service", lambda _s: FakeIndexService())
+    monkeypatch.setattr("mana_agent.commands.cli.build_search_service", lambda _s: FakeSearchService())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_analyze_service",
+        "mana_agent.commands.cli.build_analyze_service",
         lambda: FakeAnalyzeService([Finding("missing-docstring", "warning", "msg", "/tmp/a.py", 1, 0)]),
     )
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_llm_analyze_service",
+        "mana_agent.commands.cli.build_llm_analyze_service",
         lambda _s, model_override=None: FakeLlmAnalyzeService(
             [Finding("llm-bug-risk", "error", "llm msg", "/tmp/a.py", 2, 0)]
         ),
     )
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.StructureService", FakeStructureService)
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_dependency_service", lambda: FakeDependencyService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_describe_service", fake_build_describe_service)
-    monkeypatch.setattr("mana_analyzer.commands.cli.discover_subprojects", lambda root: [])
-    monkeypatch.setattr("mana_analyzer.commands.cli.discover_index_dirs", lambda root: [Path(root) / ".mana/index"])
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.StructureService", FakeStructureService)
+    monkeypatch.setattr("mana_agent.commands.cli.build_dependency_service", lambda: FakeDependencyService())
+    monkeypatch.setattr("mana_agent.commands.cli.build_describe_service", fake_build_describe_service)
+    monkeypatch.setattr("mana_agent.commands.cli.discover_subprojects", lambda root: [])
+    monkeypatch.setattr("mana_agent.commands.cli.discover_index_dirs", lambda root: [Path(root) / ".mana/index"])
 
     idx = tmp_path / "idx"
 
@@ -435,9 +468,9 @@ def test_cli_commands(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_analyze_fail_on_warning(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_analyze_service",
+        "mana_agent.commands.cli.build_analyze_service",
         lambda: FakeAnalyzeService([Finding("missing-docstring", "warning", "msg", "/tmp/a.py", 1, 0)]),
     )
 
@@ -453,8 +486,8 @@ def test_ask_root_dir_applies_project_root_in_classic_mode(monkeypatch, tmp_path
         captured["project_root"] = project_root
         return FakeAskService()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", _build_ask_service)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", _build_ask_service)
 
     result = runner.invoke(
         app,
@@ -481,8 +514,8 @@ def test_ask_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tmp
             hit = SearchHit(0.9, "/tmp/good.py", 1, 3, "add", "snippet")
             return AskResponse(answer="Tool answer. /tmp/good.py:1-3", sources=[hit])
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
 
     result = runner.invoke(
         app,
@@ -493,13 +526,13 @@ def test_ask_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tmp
 
 
 def test_analyze_fail_on_merged_findings(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_analyze_service",
+        "mana_agent.commands.cli.build_analyze_service",
         lambda: FakeAnalyzeService([]),
     )
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_llm_analyze_service",
+        "mana_agent.commands.cli.build_llm_analyze_service",
         lambda _s, model_override=None: FakeLlmAnalyzeService(
             [Finding("llm-generic", "warning", "llm warning", "/tmp/a.py", 1, 0)]
         ),
@@ -510,13 +543,13 @@ def test_analyze_fail_on_merged_findings(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_analyze_full_structure_writes_markdown_artifact(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_analyze_service",
+        "mana_agent.commands.cli.build_analyze_service",
         lambda: FakeAnalyzeService([Finding("missing-docstring", "warning", "msg", "/tmp/a.py", 1, 0)]),
     )
-    monkeypatch.setattr("mana_analyzer.commands.cli.StructureService", FakeStructureService)
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_describe_service", lambda *_args, **_kwargs: FakeDescribeService())
+    monkeypatch.setattr("mana_agent.commands.cli.StructureService", FakeStructureService)
+    monkeypatch.setattr("mana_agent.commands.cli.build_describe_service", lambda *_args, **_kwargs: FakeDescribeService())
 
     result = runner.invoke(app, ["analyze", str(tmp_path), "--output-format", "all"])
     assert result.exit_code == 0
@@ -550,15 +583,15 @@ def test_ask_dir_mode_no_auto_index_missing(monkeypatch, tmp_path: Path) -> None
             assert index_dirs == []
             return AskResponse(answer=f"No usable indexes found under {root_dir}", sources=[], warnings=[])
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _AskServiceNoIndexes())
-    monkeypatch.setattr("mana_analyzer.commands.cli.discover_index_dirs", lambda root: [])
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _AskServiceNoIndexes())
+    monkeypatch.setattr("mana_agent.commands.cli.discover_index_dirs", lambda root: [])
 
     class _Sub:
         def __init__(self, root_path: Path) -> None:
             self.root_path = root_path
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.discover_subprojects", lambda root: [_Sub(Path(root) / "pkg-a")])
+    monkeypatch.setattr("mana_agent.commands.cli.discover_subprojects", lambda root: [_Sub(Path(root) / "pkg-a")])
 
     result = runner.invoke(
         app,
@@ -580,11 +613,11 @@ def test_build_ask_service_registers_search_internet_tool_without_duplicates(mon
             # Simulate pre-existing registration.
             self.tools = [_Tool("search_internet")]
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.AskAgent", _FakeAskAgent)
-    monkeypatch.setattr("mana_analyzer.commands.cli.QnAChain", lambda **_: object())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_store", lambda _s: object())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_search_service", lambda _s: object())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_search_internet_tool", lambda: _Tool("search_internet"))
+    monkeypatch.setattr("mana_agent.commands.cli.AskAgent", _FakeAskAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.QnAChain", lambda **_: object())
+    monkeypatch.setattr("mana_agent.commands.cli.build_store", lambda _s: object())
+    monkeypatch.setattr("mana_agent.commands.cli.build_search_service", lambda _s: object())
+    monkeypatch.setattr("mana_agent.commands.cli.build_search_internet_tool", lambda: _Tool("search_internet"))
 
     svc = cli.build_ask_service(DummySettings(), model_override=None, project_root=tmp_path)
     assert svc.ask_agent is not None
@@ -606,8 +639,8 @@ def test_chat_blocks_edit_requests_without_coding_agent(monkeypatch, tmp_path: P
         ) -> AskResponse:
             raise AssertionError("ask_with_tools should not be called for blocked edit requests")
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _NoCallAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _NoCallAskService())
 
     result = runner.invoke(
         app,
@@ -625,8 +658,8 @@ def test_chat_transparency_sections_always_render_in_normal_mode(monkeypatch, tm
         def __init__(self) -> None:
             self.ask_agent = object()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
 
     result = runner.invoke(
         app,
@@ -664,10 +697,10 @@ def test_chat_root_dir_applies_to_worker_and_coding_agent_in_classic_mode(monkey
         def get_active_flow_id(self) -> str | None:
             return None
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -713,10 +746,10 @@ def test_chat_ping_returns_pong_without_faiss_index(monkeypatch, tmp_path: Path)
         def generate(self, *_a: object, **_k: object) -> dict:
             raise AssertionError("ping must not invoke the coding agent")
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     # No .mana/index directory exists under tmp_path -> no FAISS index.
     result = runner.invoke(
@@ -776,10 +809,10 @@ def test_chat_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tm
                 "static_analysis": {"finding_count": 0, "findings": []},
             }
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -819,8 +852,8 @@ def test_chat_transparency_uses_trace_steps_in_agent_tools_mode(monkeypatch, tmp
                 warnings=[],
             )
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _TracingAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _TracingAskService())
 
     result = runner.invoke(
         app,
@@ -848,9 +881,9 @@ def test_chat_writes_llm_run_log_rows(monkeypatch, tmp_path: Path) -> None:
         def log(self, payload: dict) -> None:
             rows.append(payload)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.LlmRunLogger", _FakeRunLogger)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
+    monkeypatch.setattr("mana_agent.commands.cli.LlmRunLogger", _FakeRunLogger)
 
     result = runner.invoke(
         app,
@@ -886,7 +919,7 @@ def test_flow_show_checkpoint_and_reset_commands(monkeypatch, tmp_path: Path) ->
                 "objective": "Implement parser retry flow",
                 "constraints": ["Only touch src/ and tests/"],
                 "open_tasks": ["add regression test"],
-                "last_changed_files": ["src/mana_analyzer/services/ask_service.py"],
+                "last_changed_files": ["src/mana_agent/services/ask_service.py"],
             }
 
         def checkpoint_flow(self, flow_id: str | None = None) -> str | None:
@@ -914,9 +947,9 @@ def test_flow_show_checkpoint_and_reset_commands(monkeypatch, tmp_path: Path) ->
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return {"answer": "ok", "changed_files": [], "warnings": [], "diff": "", "flow_id": self.active}
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -968,10 +1001,10 @@ def test_chat_coding_agent_uses_worker_lifecycle_once(monkeypatch, tmp_path: Pat
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return {"answer": "ok", "changed_files": [], "warnings": [], "diff": "", "flow_id": self.active}
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1026,9 +1059,9 @@ def test_chat_plan_trigger_is_quiet_and_skips_conflict_prompt(monkeypatch, tmp_p
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate(*_args, **_kwargs)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1100,9 +1133,9 @@ def test_chat_plan_trigger_with_preview_keeps_progress_quiet(monkeypatch, tmp_pa
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate_auto_execute()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1170,9 +1203,9 @@ def test_chat_plan_trigger_preview_fallback_hides_warning_panel_in_quiet_mode(mo
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate_auto_execute()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1241,10 +1274,10 @@ def test_chat_plan_trigger_auto_execute_without_coding_agent_hides_progress(monk
         def run(self, **_kwargs: object):
             return _FakeAutoResult()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.QueueManager", _FakeOrchestrator)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.QueueManager", _FakeOrchestrator)
 
     result = runner.invoke(
         app,
@@ -1318,12 +1351,12 @@ def test_chat_redis_backend_falls_back_to_local_executor_when_unavailable(monkey
         def run(self, **_kwargs: object):
             return _FakeAutoResult()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.QueueManager", _FakeOrchestrator)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.QueueManager", _FakeOrchestrator)
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.RedisRQToolsExecutor",
+        "mana_agent.commands.cli.RedisRQToolsExecutor",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("redis unavailable")),
     )
 
@@ -1401,12 +1434,12 @@ def test_chat_planning_mode_auto_executes_after_clarifications(monkeypatch, tmp_
             _FakeOrchestrator.calls.append(str(kwargs.get("request", "")))
             return _FakeAutoResult()
 
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _AskService())
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.QueueManager", _FakeOrchestrator)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _AskService())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.QueueManager", _FakeOrchestrator)
     monkeypatch.setattr(
-        "mana_analyzer.commands.chat_cli._generate_planning_question_llm",
+        "mana_agent.commands.chat_cli._generate_planning_question_llm",
         lambda **kwargs: f"Clarification question {int(kwargs['asked_count']) + 1}?",
     )
 
@@ -1479,10 +1512,10 @@ def test_chat_planning_mode_no_auto_execute_keeps_plan_only_behavior(monkeypatch
         def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:  # pragma: no cover
             raise AssertionError("default planning requests should not auto-execute")
 
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _AskService())
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _AskService())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1550,9 +1583,9 @@ def test_flow_checklist_cli_view_renders_codex_sections(monkeypatch, tmp_path: P
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1603,9 +1636,9 @@ def test_chat_coding_agent_answer_only_on_tools_only_fallback(monkeypatch, tmp_p
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1662,9 +1695,9 @@ def test_chat_coding_agent_answer_only_when_no_repo_edits(monkeypatch, tmp_path:
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1727,9 +1760,9 @@ def test_large_json_answer_is_rendered_as_sections_not_raw_blob(monkeypatch, tmp
         def reset_flow(self, flow_id: str | None = None) -> str | None:
             return flow_id
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1778,9 +1811,9 @@ def test_chat_coding_agent_unlimited_mode_bypasses_default_step_cap(monkeypatch,
         def generate_dir_mode(self, *_args: object, **kwargs: object) -> dict:
             return self.generate(*_args, **kwargs)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1829,9 +1862,9 @@ def test_chat_summary_uses_actions_taken_total_when_trace_is_truncated(monkeypat
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate(*_args, **_kwargs)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -1883,8 +1916,8 @@ def test_chat_renders_dynamic_plan_and_diagram_blocks_in_normal_path(monkeypatch
                 warnings=[],
             )
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _DynamicAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _DynamicAskService())
 
     result = runner.invoke(
         app,
@@ -1919,8 +1952,8 @@ def test_chat_inferrs_mermaid_diagram_block_and_renders_before_summary(monkeypat
             answer = "```mermaid\ngraph TD\nA-->B\n```"
             return AskResponseWithTrace(answer=answer, sources=[], mode="agent-tools", trace=[], warnings=[])
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _MermaidAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _MermaidAskService())
 
     result = runner.invoke(
         app,
@@ -1983,9 +2016,9 @@ def test_chat_diagram_artifact_render_invokes_mermaid_renderer(monkeypatch, tmp_
         )
         return (tmp_path / "flow.svg", None)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _DiagramAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli._render_mermaid_artifact", _fake_render_mermaid_artifact)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _DiagramAskService())
+    monkeypatch.setattr("mana_agent.commands.cli._render_mermaid_artifact", _fake_render_mermaid_artifact)
 
     result = runner.invoke(
         app,
@@ -2042,9 +2075,9 @@ def test_chat_no_diagram_render_images_skips_mermaid_artifact(monkeypatch, tmp_p
         calls.append({})
         return (tmp_path / "flow.svg", None)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _DiagramAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli._render_mermaid_artifact", _fake_render_mermaid_artifact)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _DiagramAskService())
+    monkeypatch.setattr("mana_agent.commands.cli._render_mermaid_artifact", _fake_render_mermaid_artifact)
 
     result = runner.invoke(
         app,
@@ -2101,9 +2134,9 @@ def test_chat_coding_path_prefers_dynamic_plan_over_static_plan_section(monkeypa
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate(*_args, **_kwargs)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -2149,9 +2182,9 @@ def test_chat_coding_path_inferrs_mermaid_diagram_block_and_renders_before_summa
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate(*_args, **_kwargs)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -2187,8 +2220,8 @@ def test_chat_ignores_malformed_ui_blocks_and_falls_back_to_answer(monkeypatch, 
             }
             return AskResponseWithTrace(answer=json.dumps(payload), sources=[], mode="agent-tools", trace=[], warnings=[])
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _MalformedAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _MalformedAskService())
 
     result = runner.invoke(
         app,
@@ -2248,12 +2281,12 @@ def test_chat_handles_effective_ui_blocks_failure_without_crash(monkeypatch, tmp
                 "static_analysis": {"finding_count": 0, "findings": []},
             }
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli._effective_ui_blocks",
+        "mana_agent.commands.cli._effective_ui_blocks",
         lambda _answer, _payload: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
@@ -2323,9 +2356,9 @@ def test_chat_selection_flow_accepts_numeric_choice_and_synthesizes_follow_up(mo
         def generate_dir_mode(self, *args: object, **kwargs: object) -> dict:
             return self.generate(*args, **kwargs)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -2395,9 +2428,9 @@ def test_chat_selection_flow_reprompts_on_invalid_choice(monkeypatch, tmp_path: 
         def generate_dir_mode(self, *args: object, **kwargs: object) -> dict:
             return self.generate(*args, **kwargs)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -2456,8 +2489,8 @@ def test_chat_selection_flow_works_in_normal_agent_tools_path(monkeypatch, tmp_p
                 warnings=[],
             )
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _SelectionAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _SelectionAskService())
 
     result = runner.invoke(
         app,
@@ -2594,10 +2627,10 @@ def test_chat_coding_read_budget_cli_value_is_passed_to_coding_agent_cap(monkeyp
                 "planner_decisions": [],
             }
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -2645,10 +2678,10 @@ def test_chat_balanced_profile_keeps_coding_agent_non_full_auto_mode(monkeypatch
         def get_active_flow_id(self) -> str | None:
             return self.active
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -2725,10 +2758,10 @@ def test_chat_balanced_profile_auto_executes_clear_edit_requests(monkeypatch, tm
         def generate(self, *_args: object, **_kwargs: object) -> dict:  # pragma: no cover - should not be used
             raise AssertionError("balanced edit requests should route to generate_auto_execute")
 
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -2800,10 +2833,10 @@ def test_chat_full_auto_profile_forces_auto_execute_for_edit_requests(monkeypatc
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:  # pragma: no cover - should not be used
             raise AssertionError("full-auto should route edit requests to generate_auto_execute")
 
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -2877,10 +2910,10 @@ def test_chat_full_auto_conflict_is_auto_continued(monkeypatch, tmp_path: Path) 
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate_auto_execute()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -2936,9 +2969,9 @@ def test_chat_conflict_followup_edit_request_starts_new_flow(monkeypatch, tmp_pa
         def generate_dir_mode(self, *args: object, **kwargs: object) -> dict:
             return self.generate(*args, **kwargs)
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     request = "add .mana to .gitignore"
     result = runner.invoke(
@@ -3069,10 +3102,10 @@ def test_chat_full_auto_pass_cap_auto_resumes_until_completion(monkeypatch, tmp_
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate_auto_execute()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -3183,10 +3216,10 @@ def test_chat_full_auto_checkpoint_window_is_non_overlapping(monkeypatch, tmp_pa
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate_auto_execute()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -3281,10 +3314,10 @@ def test_chat_full_auto_checkpoint_can_be_disabled(monkeypatch, tmp_path: Path) 
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate_auto_execute()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -3364,10 +3397,10 @@ def test_chat_no_auto_continue_does_not_resume_pass_cap(monkeypatch, tmp_path: P
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate_auto_execute()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -3468,10 +3501,10 @@ def test_chat_balanced_mode_auto_continues_pass_cap_by_default(monkeypatch, tmp_
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:
             return self.generate_auto_execute()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
@@ -3589,10 +3622,10 @@ def test_chat_full_auto_tools_manager_path_auto_resumes_docs_update_pass_cap(mon
                 }
             )
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.QueueManager", _FakeOrchestrator)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.QueueManager", _FakeOrchestrator)
 
     result = runner.invoke(
         app,

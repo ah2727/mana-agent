@@ -1,3 +1,4 @@
+import types
 from pathlib import Path
 
 import pytest
@@ -92,13 +93,13 @@ def test_chat_planning_mode_asks_questions_and_resets(monkeypatch, tmp_path: Pat
     calls: list[str] = []
     RecordingCodingAgent.calls = []
 
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.chat_cli.build_ask_service",
+        "mana_agent.commands.chat_cli.build_ask_service",
         lambda _s, model_override=None: RecordingAskService(calls),
     )
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", RecordingCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.CodingAgent", RecordingCodingAgent)
 
     user_input = "\n".join(
         [
@@ -131,20 +132,23 @@ def test_chat_planning_mode_asks_questions_and_resets(monkeypatch, tmp_path: Pat
 
 
 def test_main_warns_for_python_314(monkeypatch) -> None:
-    monkeypatch.setattr("mana_analyzer.commands.cli.setup_logging", lambda **_: Path("/tmp/mana.log"))
+    monkeypatch.setattr("mana_agent.commands.cli.setup_logging", lambda **_: Path("/tmp/mana.log"))
     monkeypatch.setattr(cli.sys, "version_info", (3, 14, 0), raising=False)
 
+    # main() is the Typer root callback; a subcommand is "invoked" so it does not
+    # dispatch to chat. Only the Python 3.14 compatibility warning should fire.
+    ctx = types.SimpleNamespace(invoked_subcommand="chat")
     with pytest.warns(UserWarning, match="Python 3.14"):
-        cli.main(verbose=False, debug_llm=False, log_dir=None, output_dir=None)
+        cli.main(ctx, verbose=False, debug_llm=False, log_dir=None, output_dir=None)
 
 
 def test_chat_planning_mode_uses_llm_generated_questions(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     generated_args: list[dict] = []
 
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.chat_cli.build_ask_service",
+        "mana_agent.commands.chat_cli.build_ask_service",
         lambda _s, model_override=None: RecordingAskService(calls),
     )
 
@@ -167,9 +171,9 @@ def test_chat_planning_mode_uses_llm_generated_questions(monkeypatch, tmp_path: 
         )
         return f"LLM question {asked_count + 1}?"
 
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli._generate_planning_question_llm", _fake_llm_question)
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", RecordingCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.chat_cli._generate_planning_question_llm", _fake_llm_question)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.CodingAgent", RecordingCodingAgent)
 
     user_input = "\n".join(
         [
@@ -198,17 +202,17 @@ def test_chat_planning_mode_uses_llm_generated_questions(monkeypatch, tmp_path: 
 def test_chat_planning_mode_falls_back_to_static_on_llm_question_failure(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
 
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.chat_cli.build_ask_service",
+        "mana_agent.commands.chat_cli.build_ask_service",
         lambda _s, model_override=None: RecordingAskService(calls),
     )
     monkeypatch.setattr(
-        "mana_analyzer.commands.chat_cli._generate_planning_question_llm",
+        "mana_agent.commands.chat_cli._generate_planning_question_llm",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("llm question failed")),
     )
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", RecordingCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.CodingAgent", RecordingCodingAgent)
 
     user_input = "\n".join(
         [

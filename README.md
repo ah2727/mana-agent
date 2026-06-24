@@ -196,7 +196,7 @@ execution, verification, git status/diff, and tool-contract inspection.
 ## Project Layout
 
 ```text
-src/mana_analyzer/
+src/mana_agent/
   analysis/       Static analysis and chunking
   commands/       Typer CLI commands and output rendering
   config/         Settings and environment handling
@@ -227,7 +227,7 @@ Run local quality checks:
 ```bash
 ruff check src tests
 mypy src tests
-python -c "import mana_analyzer; print('ok')"
+python -c "import mana_agent; print('ok')"
 mana-agent --help
 mana-agent analyze --help
 mana-agent ask --help

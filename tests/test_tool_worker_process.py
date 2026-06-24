@@ -20,7 +20,7 @@ def test_tool_worker_import_does_not_configure_root_logging() -> None:
     env["PYTHONPATH"] = str(src_root)
     code = (
         "import json, logging; "
-        "import mana_analyzer.llm.tool_worker_process; "
+        "import mana_agent.llm.tool_worker_process; "
         "root = logging.getLogger(); "
         "print(json.dumps({'level': root.level, 'handlers': len(root.handlers)}))"
     )

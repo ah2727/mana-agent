@@ -346,7 +346,11 @@ def test_queue_manager_uses_latest_useful_answer_only_for_edit_success(tmp_path:
     )
 
     assert result.run_status == "completed"
-    assert result.answer == "final mutation answer"
+    # The final answer is rebuilt from authoritative state: it reports the changed
+    # file, keeps the consistent worker answer, and drops the stale intermediate.
+    assert result.changed_files == ["docs/overview.md"]
+    assert "docs/overview.md" in result.answer
+    assert "final mutation answer" in result.answer
     assert "intermediate search answer" not in result.answer
 
 
@@ -393,3 +397,182 @@ def test_eventbus_broadcasts_transitions():
     assert "job_submitted" in seen
     assert "job_running" in seen
     assert "job_done" in seen
+
+
+# --------------------------------------------------------------------------- #
+# Final-answer aggregation from authoritative execution state
+# --------------------------------------------------------------------------- #
+def test_apply_patch_run_never_claims_no_edit_tool(tmp_path: Path):
+    """A worker that wrongly says 'no edit tool was available' must not win when
+    the trace proves apply_patch executed and changed a file."""
+    from mana_agent.llm.tools_manager import QueueManager
+
+    class _FakeWorker:
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            if (request.tool_name or "") == "repo_search":
+                return ToolRunResponse(
+                    answer="searching",
+                    mode="agent-tools",
+                    trace=[{"tool_name": "repo_search", "status": "ok"}],
+                )
+            # The worker prose is stale/wrong; the trace is authoritative.
+            return ToolRunResponse(
+                answer="Sorry, no edit tool was available so no changes were made.",
+                mode="agent-tools",
+                trace=[
+                    {
+                        "tool_name": "apply_patch",
+                        "status": "ok",
+                        "changed_files": ["src/app.py"],
+                    }
+                ],
+            )
+
+    result = QueueManager(worker_client=_FakeWorker(), repo_root=tmp_path).run(
+        request="edit src/app.py",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        target_files=["src/app.py"],
+    )
+
+    assert result.changed_files == ["src/app.py"]
+    assert "no edit tool" not in result.answer.lower()
+    assert "no changes were made" not in result.answer.lower()
+    assert "src/app.py" in result.answer
+
+
+def test_non_empty_changed_files_never_claims_no_changes(tmp_path: Path):
+    from mana_agent.llm.tools_manager import QueueManager
+
+    class _FakeWorker:
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            if (request.tool_name or "") == "repo_search":
+                return ToolRunResponse(answer="ok", mode="agent-tools",
+                                       trace=[{"tool_name": "repo_search", "status": "ok"}])
+            return ToolRunResponse(
+                answer="I did not make any changes.",
+                mode="agent-tools",
+                trace=[{"tool_name": "write_file", "status": "ok", "changed_files": ["docs/x.md"]}],
+            )
+
+    result = QueueManager(worker_client=_FakeWorker(), repo_root=tmp_path).run(
+        request="update docs/x.md",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        target_files=["docs/x.md"],
+    )
+
+    assert result.changed_files == ["docs/x.md"]
+    assert "no change" not in result.answer.lower()
+    assert "did not make any changes" not in result.answer.lower()
+
+
+def test_failed_verify_project_is_surfaced_in_final_answer(tmp_path: Path):
+    from mana_agent.llm.tools_manager import QueueManager
+
+    class _FakeWorker:
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            name = request.tool_name or ""
+            if name == "repo_search":
+                return ToolRunResponse(answer="ok", mode="agent-tools",
+                                       trace=[{"tool_name": "repo_search", "status": "ok"}])
+            if "Verify" in (request.question or "") or name in {"verify", "verify_project"}:
+                return ToolRunResponse(
+                    answer="verification done",
+                    mode="agent-tools",
+                    trace=[
+                        {
+                            "tool_name": "verify_project",
+                            "status": "failed",
+                            "checks": [
+                                {"name": "pytest", "status": "failed",
+                                 "reason": "tests/test_app.py::test_x assertion error"},
+                                {"name": "ruff", "status": "passed"},
+                            ],
+                        }
+                    ],
+                )
+            return ToolRunResponse(
+                answer="edited",
+                mode="agent-tools",
+                trace=[{"tool_name": "apply_patch", "status": "ok", "changed_files": ["src/app.py"]}],
+            )
+
+    result = QueueManager(worker_client=_FakeWorker(), repo_root=tmp_path).run(
+        request="edit src/app.py",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        target_files=["src/app.py"],
+    )
+
+    assert "Verification: FAILED" in result.answer
+    assert "pytest" in result.answer
+    assert "tests/test_app.py::test_x" in result.answer
+    decisions = result.planner_decisions[0]
+    assert decisions["verification_failed"] is True
+
+
+def test_passed_verify_reports_changed_files_and_checks_passed(tmp_path: Path):
+    from mana_agent.llm.tools_manager import QueueManager
+
+    class _FakeWorker:
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            name = request.tool_name or ""
+            if name == "repo_search":
+                return ToolRunResponse(answer="ok", mode="agent-tools",
+                                       trace=[{"tool_name": "repo_search", "status": "ok"}])
+            if "Verify" in (request.question or "") or name in {"verify", "verify_project"}:
+                return ToolRunResponse(
+                    answer="verification done",
+                    mode="agent-tools",
+                    trace=[{"tool_name": "verify_project", "status": "ok",
+                            "checks": [{"name": "pytest", "status": "passed"}]}],
+                )
+            return ToolRunResponse(
+                answer="edited",
+                mode="agent-tools",
+                trace=[{"tool_name": "write_file", "status": "ok", "changed_files": ["src/app.py"]}],
+            )
+
+    result = QueueManager(worker_client=_FakeWorker(), repo_root=tmp_path).run(
+        request="edit src/app.py",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        target_files=["src/app.py"],
+    )
+
+    assert "src/app.py" in result.answer
+    assert "Verification: passed" in result.answer
+    assert result.planner_decisions[0]["verification_passed"] is True
+
+
+def test_edit_request_cannot_finalize_after_only_read_search(tmp_path: Path):
+    """An edit request where the worker only ever reads/searches must end blocked,
+    and the final answer must not claim success."""
+    from mana_agent.llm.tools_manager import QueueManager
+
+    class _FakeWorker:
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            # Never runs a mutation tool; only returns prose + read/search traces.
+            return ToolRunResponse(
+                answer="Here is what the file looks like.",
+                mode="agent-tools",
+                trace=[{"tool_name": request.tool_name or "read_file", "status": "ok"}],
+            )
+
+    result = QueueManager(worker_client=_FakeWorker(), repo_root=tmp_path).run(
+        request="edit src/app.py to add a function",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        target_files=["src/app.py"],
+    )
+
+    assert result.run_status == "blocked"
+    assert result.terminal_reason in {
+        "mutation_required_but_no_mutation_tool_attempted",
+        "mutation_required_but_no_changed_files",
+    }
+    assert result.changed_files == []
+    assert "could not be completed" in result.answer.lower()
+    # Must not claim a successful edit when nothing actually changed.
+    assert "applied changes" not in result.answer.lower()

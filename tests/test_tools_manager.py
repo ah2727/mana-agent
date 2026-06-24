@@ -457,16 +457,16 @@ def test_run_state_store_sanitizes_dependency_pending_reads(tmp_path: Path) -> N
 
 
 def test_run_state_model_docs_queue_prioritizes_model_schema_files(tmp_path: Path) -> None:
-    (tmp_path / "src" / "mana_analyzer").mkdir(parents=True)
-    (tmp_path / "src" / "mana_analyzer" / "models.py").write_text("class User(BaseModel):\n    pass\n")
-    (tmp_path / "src" / "mana_analyzer" / "schema_models.py").write_text("class Item(TypedDict):\n    pass\n")
-    (tmp_path / "src" / "mana_analyzer" / "__init__.py").write_text("")
-    (tmp_path / "src" / "mana_analyzer" / "commands").mkdir()
-    (tmp_path / "src" / "mana_analyzer" / "commands" / "chat_cli.py").write_text("class Cli:\n    pass\n")
-    (tmp_path / "src" / "mana_analyzer" / "tools").mkdir()
-    (tmp_path / "src" / "mana_analyzer" / "tools" / "apply_patch.py").write_text("class Patch:\n    pass\n")
+    (tmp_path / "src" / "mana_agent").mkdir(parents=True)
+    (tmp_path / "src" / "mana_agent" / "models.py").write_text("class User(BaseModel):\n    pass\n")
+    (tmp_path / "src" / "mana_agent" / "schema_models.py").write_text("class Item(TypedDict):\n    pass\n")
+    (tmp_path / "src" / "mana_agent" / "__init__.py").write_text("")
+    (tmp_path / "src" / "mana_agent" / "commands").mkdir()
+    (tmp_path / "src" / "mana_agent" / "commands" / "chat_cli.py").write_text("class Cli:\n    pass\n")
+    (tmp_path / "src" / "mana_agent" / "tools").mkdir()
+    (tmp_path / "src" / "mana_agent" / "tools" / "apply_patch.py").write_text("class Patch:\n    pass\n")
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_models.py").write_text("from mana_analyzer.models import User\n")
+    (tmp_path / "tests" / "test_models.py").write_text("from mana_agent.models import User\n")
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "models.md").write_text("# Models\n")
     (tmp_path / "README.md").write_text("# Readme\n")
@@ -476,10 +476,10 @@ def test_run_state_model_docs_queue_prioritizes_model_schema_files(tmp_path: Pat
     store.seed_candidate_queue()
 
     pending = store.read_json("todo.json")["pending_file_reads"]
-    assert pending[:2] == ["src/mana_analyzer/models.py", "src/mana_analyzer/schema_models.py"]
-    assert "src/mana_analyzer/commands/chat_cli.py" not in pending
-    assert "src/mana_analyzer/tools/apply_patch.py" not in pending
-    assert "src/mana_analyzer/__init__.py" not in pending
+    assert pending[:2] == ["src/mana_agent/models.py", "src/mana_agent/schema_models.py"]
+    assert "src/mana_agent/commands/chat_cli.py" not in pending
+    assert "src/mana_agent/tools/apply_patch.py" not in pending
+    assert "src/mana_agent/__init__.py" not in pending
     assert pending[-1] == "docs/models.md"
 
 

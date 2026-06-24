@@ -69,9 +69,9 @@ def test_record_turn_and_build_flow_context_capture_expected_summary(memory_serv
             "- [x] Persist checklist snapshot\n"
             "- [ ] Add memory service regression tests\n"
         ),
-        changed_files=["src/mana_analyzer/services/coding_memory_service.py"],
+        changed_files=["src/mana_agent/services/coding_memory_service.py"],
         warnings=["write_file fallback used after patch mismatch"],
-        static_findings=[{"rule": "missing-docstring", "path": "src/mana_analyzer/services/index_service.py"}],
+        static_findings=[{"rule": "missing-docstring", "path": "src/mana_agent/services/index_service.py"}],
         checklist={
             "objective": "Flow persistence hardening",
             "steps": [
@@ -91,7 +91,7 @@ def test_record_turn_and_build_flow_context_capture_expected_summary(memory_serv
     assert "only edit src/" in summary.constraints
     assert "success means no lint regressions" in summary.acceptance
     assert summary.open_tasks == ["Add memory service regression tests"]
-    assert "src/mana_analyzer/services/coding_memory_service.py" in summary.last_changed_files
+    assert "src/mana_agent/services/coding_memory_service.py" in summary.last_changed_files
     assert any("missing-docstring" in item for item in summary.unresolved_static_findings)
     assert summary.last_blocked_reason == "awaiting test updates"
     assert isinstance(summary.checklist, dict)

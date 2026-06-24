@@ -87,7 +87,7 @@ def _install_fake_redis_stack(monkeypatch, jobs: list[_FakeJob]):
             return type("_RQModule", (), {"Queue": _QueueClass})
         raise RuntimeError(f"unexpected import: {name}")
 
-    monkeypatch.setattr("mana_analyzer.llm.tools_executor.importlib.import_module", _fake_import)
+    monkeypatch.setattr("mana_agent.llm.tools_executor.importlib.import_module", _fake_import)
     return fake_redis
 
 

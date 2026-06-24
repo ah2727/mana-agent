@@ -7,7 +7,7 @@
   so folks can quickly understand how flows/turns/tasks are persisted and why the current heuristics exist. Ruff
   already flags missing docstrings here.
 - Double-check the `from __future__ import annotations` line and any other unused imports in
-  `src/mana_analyzer/services/coding_memory_service.py` so lint warnings about unused names go away without
+  `src/mana_agent/services/coding_memory_service.py` so lint warnings about unused names go away without
   regressing typing support.
 
 ## Testing and behavior coverage
@@ -28,7 +28,7 @@
 
 ## Tooling polish
 
-- `missing-docstring` follow-up inventory in `src/mana_analyzer/services/`:
+- `missing-docstring` follow-up inventory in `src/mana_agent/services/`:
   - `analyze_service.py` (`module`, `AnalyzeService`)
   - `dependency_service.py` (`module`, `DependencyService`)
   - `describe_service.py` (`module`, `DescribeService`)

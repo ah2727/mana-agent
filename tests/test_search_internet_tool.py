@@ -9,7 +9,7 @@ from mana_agent.tools.search_internet import safe_search_internet
 def test_safe_search_internet_uses_duckduckgo_when_api_key_missing(monkeypatch) -> None:
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.setattr(
-        "mana_analyzer.tools.search_internet._duckduckgo_search",
+        "mana_agent.tools.search_internet._duckduckgo_search",
         lambda _q: [{"title": "DDG result", "url": "https://duckduckgo.com/x", "content": "x", "score": 0.0, "raw": {}}],
     )
     payload = safe_search_internet("latest release")
@@ -42,7 +42,7 @@ def test_safe_search_internet_success(monkeypatch) -> None:
             ).encode("utf-8")
 
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-    monkeypatch.setattr("mana_analyzer.tools.search_internet.request.urlopen", lambda *a, **k: _Response())
+    monkeypatch.setattr("mana_agent.tools.search_internet.request.urlopen", lambda *a, **k: _Response())
 
     payload = safe_search_internet("mana agent latest")
     assert payload["ok"] is True
@@ -58,9 +58,9 @@ def test_safe_search_internet_http_error(monkeypatch) -> None:
     def _raise_http_error(*_args, **_kwargs):
         raise HTTPError(url="https://api.tavily.com/search", code=500, msg="bad", hdrs=None, fp=None)
 
-    monkeypatch.setattr("mana_analyzer.tools.search_internet.request.urlopen", _raise_http_error)
+    monkeypatch.setattr("mana_agent.tools.search_internet.request.urlopen", _raise_http_error)
     monkeypatch.setattr(
-        "mana_analyzer.tools.search_internet._duckduckgo_search",
+        "mana_agent.tools.search_internet._duckduckgo_search",
         lambda _q: [{"title": "DDG fallback", "url": "https://duckduckgo.com/y", "content": "y", "score": 0.0, "raw": {}}],
     )
 

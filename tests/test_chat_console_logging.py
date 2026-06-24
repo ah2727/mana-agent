@@ -12,16 +12,16 @@ def test_quiet_filter_drops_noisy_debug_keeps_warnings() -> None:
         return logging.LogRecord(name, level, __file__, 1, "msg", None, None)
 
     # Noisy indexing/parsing loggers are dropped below WARNING.
-    assert f.filter(_rec("mana_analyzer.parsers.python_parser", logging.DEBUG)) is False
-    assert f.filter(_rec("mana_analyzer.analysis.chunker", logging.INFO)) is False
-    assert f.filter(_rec("mana_analyzer.services.index_service", logging.DEBUG)) is False
-    assert f.filter(_rec("mana_analyzer.vector_store.faiss_store", logging.INFO)) is False
+    assert f.filter(_rec("mana_agent.parsers.python_parser", logging.DEBUG)) is False
+    assert f.filter(_rec("mana_agent.analysis.chunker", logging.INFO)) is False
+    assert f.filter(_rec("mana_agent.services.index_service", logging.DEBUG)) is False
+    assert f.filter(_rec("mana_agent.vector_store.faiss_store", logging.INFO)) is False
 
     # Warnings/errors always pass, even from noisy loggers.
-    assert f.filter(_rec("mana_analyzer.services.index_service", logging.WARNING)) is True
+    assert f.filter(_rec("mana_agent.services.index_service", logging.WARNING)) is True
 
     # Unrelated loggers are untouched at any level.
-    assert f.filter(_rec("mana_analyzer.commands.cli_internal", logging.INFO)) is True
+    assert f.filter(_rec("mana_agent.commands.cli_internal", logging.INFO)) is True
 
 
 def test_install_quiet_console_targets_only_stream_handlers(tmp_path) -> None:

@@ -24,7 +24,7 @@ def test_apply_patch_tool_accepts_patch_alias(monkeypatch, tmp_path: Path) -> No
         captured["check_only"] = check_only
         return {"ok": True, "touched_files": ["sample.py"], "check_only": check_only}
 
-    monkeypatch.setattr("mana_analyzer.tools.apply_patch.safe_apply_patch", _fake_safe_apply_patch)
+    monkeypatch.setattr("mana_agent.tools.apply_patch.safe_apply_patch", _fake_safe_apply_patch)
 
     tool = build_apply_patch_tool(repo_root=tmp_path, allowed_prefixes=None)
     result = tool.invoke({"patch": "*** Begin Patch\n*** End Patch", "check_only": True})
@@ -52,7 +52,7 @@ def test_apply_patch_tool_accepts_nested_patch_payload(monkeypatch, tmp_path: Pa
         captured["patch"] = patch
         return {"ok": True, "touched_files": ["sample.py"], "check_only": check_only}
 
-    monkeypatch.setattr("mana_analyzer.tools.apply_patch.safe_apply_patch", _fake_safe_apply_patch)
+    monkeypatch.setattr("mana_agent.tools.apply_patch.safe_apply_patch", _fake_safe_apply_patch)
 
     tool = build_apply_patch_tool(repo_root=tmp_path, allowed_prefixes=None)
     result = tool.invoke({"patch": {"patch": patch_text}})
@@ -81,7 +81,7 @@ def test_apply_patch_tool_accepts_structured_patch_list(monkeypatch, tmp_path: P
         captured["patch"] = patch
         return {"ok": True, "touched_files": ["sample.py"], "check_only": check_only}
 
-    monkeypatch.setattr("mana_analyzer.tools.apply_patch.safe_apply_patch", _fake_safe_apply_patch)
+    monkeypatch.setattr("mana_agent.tools.apply_patch.safe_apply_patch", _fake_safe_apply_patch)
 
     tool = build_apply_patch_tool(repo_root=tmp_path, allowed_prefixes=None)
     result = tool.invoke({"patch": patch_payload})
@@ -108,7 +108,7 @@ def test_apply_patch_tool_accepts_input_alias(monkeypatch, tmp_path: Path) -> No
         captured["patch"] = patch
         return {"ok": True, "touched_files": ["sample.py"], "check_only": check_only}
 
-    monkeypatch.setattr("mana_analyzer.tools.apply_patch.safe_apply_patch", _fake_safe_apply_patch)
+    monkeypatch.setattr("mana_agent.tools.apply_patch.safe_apply_patch", _fake_safe_apply_patch)
 
     tool = build_apply_patch_tool(repo_root=tmp_path, allowed_prefixes=None)
     result = tool.invoke({"input": patch_text})
@@ -133,7 +133,7 @@ def test_write_file_tool_accepts_text_alias(monkeypatch, tmp_path: Path) -> None
         captured["allowed_prefixes"] = allowed_prefixes
         return {"ok": True, "path": path, "bytes_written": len(content.encode("utf-8")), "sha256": "", "error": ""}
 
-    monkeypatch.setattr("mana_analyzer.tools.write_file.safe_write_file", _fake_safe_write_file)
+    monkeypatch.setattr("mana_agent.tools.write_file.safe_write_file", _fake_safe_write_file)
 
     tool = build_write_file_tool(repo_root=tmp_path, allowed_prefixes=None)
     result = tool.invoke({"path": "src/new_file.py", "text": "print('ok')\n"})
@@ -159,7 +159,7 @@ def test_create_file_tool_accepts_text_alias(monkeypatch, tmp_path: Path) -> Non
         captured["allowed_prefixes"] = allowed_prefixes
         return {"ok": True, "path": path, "bytes_written": len(content.encode("utf-8")), "sha256": "", "error": ""}
 
-    monkeypatch.setattr("mana_analyzer.tools.write_file.safe_create_file", _fake_safe_create_file)
+    monkeypatch.setattr("mana_agent.tools.write_file.safe_create_file", _fake_safe_create_file)
 
     tool = build_create_file_tool(repo_root=tmp_path, allowed_prefixes=None)
     result = tool.invoke({"path": "src/new_file.py", "text": "print('ok')\n"})

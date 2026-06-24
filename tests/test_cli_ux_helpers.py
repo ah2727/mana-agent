@@ -46,7 +46,7 @@ def test_chat_intent_helpers_do_not_treat_plain_text_as_plan_or_edit() -> None:
 def test_chat_intent_helpers_detect_plan_and_edit_requests() -> None:
     assert _looks_like_plan_trigger_request("give me an implementation plan for auth")
     assert _looks_like_plan_trigger_request("execute the plan")
-    assert _looks_like_edit_request("fix src/mana_analyzer/commands/chat_cli.py")
+    assert _looks_like_edit_request("fix src/mana_agent/commands/chat_cli.py")
     assert _looks_like_edit_request("build the missing auth module")
     assert _looks_like_edit_request("implement this")
 
@@ -101,7 +101,7 @@ def test_render_turn_summary_and_transparency_sections() -> None:
             }
         ],
         decisions=[{"decision": "Use deterministic fallback checklist", "rationale": "Planner parse failed"}],
-        changed_files=["src/mana_analyzer/commands/cli.py"],
+        changed_files=["src/mana_agent/commands/cli.py"],
         has_diff=True,
     )
 
@@ -165,7 +165,7 @@ def test_tool_activity_can_use_live_without_fallback_duplicate(monkeypatch) -> N
             _ = exc_info
 
     monkeypatch.setenv("MANA_LIVE_TOOL_ACTIVITY", "1")
-    monkeypatch.setattr("mana_analyzer.commands.ui_helpers.Live", _FakeLive)
+    monkeypatch.setattr("mana_agent.commands.ui_helpers.Live", _FakeLive)
 
     console = Console(record=True)
 
@@ -338,7 +338,7 @@ def test_tool_activity_failed_tool_error_is_not_summarized() -> None:
 def test_render_turn_transparency_preserves_multiline_command_preview() -> None:
     answer = (
         "Command surface:\n"
-        "- `mana-agent` console script -> `mana_analyzer.commands.cli:app`\n\n"
+        "- `mana-agent` console script -> `mana_agent.commands.cli:app`\n\n"
         "Detected CLI subcommands:\n"
         "- `mana-agent analyze`\n"
         "- `mana-agent ask`\n"
@@ -374,7 +374,7 @@ def test_render_coding_sections_contains_expected_blocks() -> None:
             "progress": {"phase": "edit", "why": "working", "budgets": {"search_used": 1, "search_budget": 4, "read_used": 2, "read_budget": 6, "read_files_observed": 2, "required_read_files": 2}},
             "checklist": {"done": 1, "pending": 1, "blocked": 0, "total": 2},
             "actions_taken": [{"tool_name": "read_file", "status": "ok", "duration_ms": 1.2, "args_summary": "path=cli.py"}],
-            "changed_files": ["src/mana_analyzer/commands/cli.py"],
+            "changed_files": ["src/mana_agent/commands/cli.py"],
             "static_analysis": {"finding_count": 0},
             "next_step": "Run targeted tests.",
             "warnings": ["planner fallback: deterministic checklist"],
@@ -422,9 +422,9 @@ def test_ask_command_text_output_includes_mode_trace_warnings_and_sources(monkey
                 warnings=["planner fallback: deterministic checklist"],
             )
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli._build_ask_service_compat",
+        "mana_agent.commands.cli._build_ask_service_compat",
         lambda settings, model_override=None, project_root=None: _FakeAskService(),
     )
 

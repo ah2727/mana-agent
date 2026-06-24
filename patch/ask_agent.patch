@@ -1,6 +1,6 @@
-diff --git a/src/mana_analyzer/llm/ask_agent.py b/src/mana_analyzer/llm/ask_agent.py
---- a/src/mana_analyzer/llm/ask_agent.py
-+++ b/src/mana_analyzer/llm/ask_agent.py
+diff --git a/src/mana_agent/llm/ask_agent.py b/src/mana_agent/llm/ask_agent.py
+--- a/src/mana_agent/llm/ask_agent.py
++++ b/src/mana_agent/llm/ask_agent.py
 @@ -68,6 +68,18 @@ class AskAgent:
          self._resolved_index = self.project_root / ".mana_index"
          self._resolved_indexes = [self._resolved_index]

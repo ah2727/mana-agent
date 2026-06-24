@@ -172,9 +172,9 @@ def _build_agent(
     memory: bool = True,
     full_auto_mode: bool = False,
 ) -> CodingAgent:
-    monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_write_file_tool", lambda **_kwargs: _Tool("write_file"))
-    monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_create_file_tool", lambda **_kwargs: _Tool("create_file"))
-    monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_apply_patch_tool", lambda **_kwargs: _Tool("apply_patch"))
+    monkeypatch.setattr("mana_agent.llm.coding_agent.build_write_file_tool", lambda **_kwargs: _Tool("write_file"))
+    monkeypatch.setattr("mana_agent.llm.coding_agent.build_create_file_tool", lambda **_kwargs: _Tool("create_file"))
+    monkeypatch.setattr("mana_agent.llm.coding_agent.build_apply_patch_tool", lambda **_kwargs: _Tool("apply_patch"))
     ask_agent = _FakeAskAgent(payload)
     svc = CodingMemoryService(project_root=tmp_path, max_turns=5, max_tasks=20) if memory else None
     agent = CodingAgent(
@@ -198,9 +198,9 @@ def _build_agent(
 
 
 def _build_agent_with_ask(tmp_path: Path, monkeypatch, ask_agent, *, full_auto_mode: bool = False) -> CodingAgent:
-    monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_write_file_tool", lambda **_kwargs: _Tool("write_file"))
-    monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_create_file_tool", lambda **_kwargs: _Tool("create_file"))
-    monkeypatch.setattr("mana_analyzer.llm.coding_agent.build_apply_patch_tool", lambda **_kwargs: _Tool("apply_patch"))
+    monkeypatch.setattr("mana_agent.llm.coding_agent.build_write_file_tool", lambda **_kwargs: _Tool("write_file"))
+    monkeypatch.setattr("mana_agent.llm.coding_agent.build_create_file_tool", lambda **_kwargs: _Tool("create_file"))
+    monkeypatch.setattr("mana_agent.llm.coding_agent.build_apply_patch_tool", lambda **_kwargs: _Tool("apply_patch"))
     svc = CodingMemoryService(project_root=tmp_path, max_turns=5, max_tasks=20)
     agent = CodingAgent(
         api_key="test-key",

@@ -117,5 +117,5 @@ def test_dependency_export_formats(tmp_path: Path) -> None:
     dot = report.to_dot()
     graphml = report.to_graphml()
 
-    assert "digraph mana_analyzer" in dot
+    assert "digraph mana_agent" in dot
     assert "<graphml" in graphml

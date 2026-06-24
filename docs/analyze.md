@@ -2,7 +2,7 @@
 
 This project provides a unified **`analyze`** command that runs a full repository pass and produces consolidated reports (static findings, LLM findings, description, structure analysis, and dependency vulnerability scanning).
 
-> Primary implementation: `src/mana_analyzer/commands/analyze_cli.py`.
+> Primary implementation: `src/mana_agent/commands/analyze_cli.py`.
 
 ## What the command does (pipeline)
 
@@ -24,7 +24,7 @@ The `analyze` CLI (Typer) performs the following high-level steps:
    - **JSON** payload (optional)
    - plus dependency graph outputs (`.mana/analyze.dot` and `.mana/analyze.graphml`)
 
-See `src/mana_analyzer/commands/analyze_cli.py` for the exact ordering.
+See `src/mana_agent/commands/analyze_cli.py` for the exact ordering.
 
 ## CLI usage
 
@@ -77,11 +77,11 @@ The command merges two sources of findings:
 
 Merged results are de-duplicated by `(rule_id, severity, file_path, line, column, message)`.
 
-See `_merge_findings(...)` and the static analysis service in `src/mana_analyzer/services/analyze_service.py`.
+See `_merge_findings(...)` and the static analysis service in `src/mana_agent/services/analyze_service.py`.
 
 ## Static analysis implementation details
 
-Static analysis is implemented in `src/mana_analyzer/services/analyze_service.py`.
+Static analysis is implemented in `src/mana_agent/services/analyze_service.py`.
 
 Notable behavior:
 

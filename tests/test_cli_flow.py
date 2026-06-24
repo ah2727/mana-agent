@@ -74,7 +74,7 @@ class _FakeDependencyReport:
         }
 
     def to_dot(self) -> str:
-        return "digraph mana_analyzer {}"
+        return "digraph mana_agent {}"
 
     def to_graphml(self) -> str:
         return "<graphml></graphml>"
@@ -106,16 +106,16 @@ class _FakeStructureService:
 
 
 def _patch_analyze_dependencies(monkeypatch) -> None:
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_index_service", lambda _s: _FakeIndexService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_dependency_service", lambda: _FakeDependencyService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_analyze_service", lambda: type("_Analyze", (), {"analyze": lambda self, path: []})())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_index_service", lambda _s: _FakeIndexService())
+    monkeypatch.setattr("mana_agent.commands.cli.build_dependency_service", lambda: _FakeDependencyService())
+    monkeypatch.setattr("mana_agent.commands.cli.build_analyze_service", lambda: type("_Analyze", (), {"analyze": lambda self, path: []})())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_llm_analyze_service",
+        "mana_agent.commands.cli.build_llm_analyze_service",
         lambda _s, model_override=None: type("_LlmAnalyze", (), {"analyze": lambda self, path, static_findings, max_files=10: []})(),
     )
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_describe_service", lambda *_args, **_kwargs: _FakeDescribeService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.StructureService", _FakeStructureService)
+    monkeypatch.setattr("mana_agent.commands.cli.build_describe_service", lambda *_args, **_kwargs: _FakeDescribeService())
+    monkeypatch.setattr("mana_agent.commands.cli.StructureService", _FakeStructureService)
 
 
 def _seed_flow(project_root: Path) -> str:
@@ -130,9 +130,9 @@ def _seed_flow(project_root: Path) -> str:
             "- [x] Wire flow command\n"
             "- [ ] Write docs\n"
         ),
-        changed_files=["src/mana_analyzer/commands/cli.py", "README.md"],
+        changed_files=["src/mana_agent/commands/cli.py", "README.md"],
         warnings=["write_file fallback was used once"],
-        static_findings=["missing-docstring: src/mana_analyzer/services/index_service.py:27"],
+        static_findings=["missing-docstring: src/mana_agent/services/index_service.py:27"],
         checklist={
             "objective": "Implement flow visibility and docs",
             "steps": [
@@ -183,9 +183,9 @@ def test_analyze_flow_includes_blocked_transition_reason(monkeypatch, tmp_path: 
 
 
 def test_chat_startup_with_coding_memory_and_coding_agent_still_works(monkeypatch) -> None:
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_ask_service",
+        "mana_agent.commands.cli.build_ask_service",
         lambda _s, model_override=None: _AskServiceWithAgent(),
     )
     result = runner.invoke(
