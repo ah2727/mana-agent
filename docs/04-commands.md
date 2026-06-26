@@ -133,6 +133,55 @@ Notable options visible in the command definition include:
 
 The README also notes that chat can persist coding memory at `<project>/.mana/index/chat_memory.sqlite3`. [README.md:1-242](README.md:1-242)
 
+### In-chat slash command: `/analyze`
+
+Inside the chat REPL you can run `/analyze` to analyze the current project and write report artifacts under `.mana/`. It is read-only except for those artifacts and is handled before the message is sent to the LLM. [src/mana_agent/commands/chat_analyze_command.py:1-80](src/mana_agent/commands/chat_analyze_command.py:1-80) [src/mana_agent/commands/chat_cli.py:1418-1470](src/mana_agent/commands/chat_cli.py:1418-1470)
+
+Typing `/analyze` with no arguments opens a format menu:
+
+```text
+Select output format:
+
+1. JSON
+2. Markdown
+3. HTML
+4. DOT graph
+5. GraphML
+6. Mermaid diagram
+7. All formats
+
+Enter choice:
+```
+
+Enter a single number (`1`), several numbers (`1,2,3`), or `7` for all formats. You can also skip the menu with direct forms:
+
+```text
+/analyze all
+/analyze json
+/analyze markdown
+/analyze md
+/analyze html
+/analyze dot
+/analyze graphml
+/analyze mermaid
+/analyze json markdown html
+/analyze --format json,markdown,html
+```
+
+Format-to-artifact mapping (written under `.mana/`):
+
+| Token | Artifact |
+| --- | --- |
+| `json` | `.mana/analyze.json` |
+| `markdown` / `md` | `.mana/analyze.md` |
+| `html` | `.mana/analyze.html` |
+| `dot` | `.mana/analyze.dot` |
+| `graphml` | `.mana/analyze.graphml` |
+| `mermaid` | `.mana/diagram.mmd` |
+| `all` | every artifact above |
+
+Invalid tokens (e.g. `/analyze pdf`) print a clean error listing the supported formats and do not crash the session. The canonical format list lives in [src/mana_agent/commands/analyze_formats.py:1-80](src/mana_agent/commands/analyze_formats.py:1-80).
+
 ## `continue`
 
 `continue` resumes a persisted auto-execute run from `<root>/.mana/runs/<run_id>`. It requires `--run-id` and accepts caps for passes, tool calls, runtime, and cost, plus retrieval and step limits. [src/mana_agent/commands/cli_internal.py:1-220](src/mana_agent/commands/cli_internal.py:1-220)

@@ -32,6 +32,20 @@ When finishing a task, the agent should report:
 - any skipped checks,
 - remaining risks or unknowns.
 
+## In-chat Slash Commands
+
+Some chat inputs are intercepted before the model runs. These are deterministic,
+read-only operations that never invoke the LLM or coding agent:
+
+- `/flow` — inspect or reset the active coding flow.
+- `/analyze` — analyze the current project and write report artifacts under
+  `.mana/` (`json`, `markdown`/`md`, `html`, `dot`, `graphml`, `mermaid`, or
+  `all`). With no arguments it opens a numbered format menu. The only side effect
+  is writing the selected `.mana/` artifacts; source files are never modified.
+
+Anything that is not a recognized slash command is treated as a normal request
+and routed to the agent as usual.
+
 ## Related Docs
 
 - [Architecture](./08-architecture.md)

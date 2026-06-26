@@ -185,6 +185,40 @@ Coding memory is stored under the analyzed project at:
 <project>/.mana/index/chat_memory.sqlite3
 ```
 
+#### In-chat `/analyze`
+
+Inside the chat session, run `/analyze` to analyze the current project and
+generate report artifacts under `.mana/`. With no arguments it opens a format
+menu:
+
+```text
+/analyze
+
+Select output format:
+
+1. JSON
+2. Markdown
+3. HTML
+4. DOT graph
+5. GraphML
+6. Mermaid diagram
+7. All formats
+
+Enter choice:
+```
+
+Direct forms skip the menu:
+
+```text
+/analyze all
+/analyze json markdown html
+/analyze --format json,markdown,html
+```
+
+`md` is an alias of `markdown`, `mermaid` writes `.mana/diagram.mmd`, and `all`
+generates every format. `/analyze` is read-only apart from the `.mana/`
+artifacts and runs before normal chat messages reach the model.
+
 ---
 
 ## Generated Artifacts
@@ -197,6 +231,7 @@ By default, analysis artifacts are written under the analyzed project’s `.mana
 .mana/analyze.html
 .mana/analyze.dot
 .mana/analyze.graphml
+.mana/diagram.mmd
 ```
 
 These outputs are intended for automation, documentation, and inspection:
@@ -205,6 +240,7 @@ These outputs are intended for automation, documentation, and inspection:
 - **Markdown** for reviewable summaries.
 - **HTML** for navigable reports.
 - **DOT/GraphML** for graph visualization workflows.
+- **Mermaid** (`diagram.mmd`) for embeddable architecture diagrams.
 
 ---
 

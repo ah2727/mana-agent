@@ -25,6 +25,13 @@ patching, file writing, and verification steps.
 - Change tools: JSON patch application and atomic file writes.
 - Validation tools: project verification, command execution, and git status or
   diff review.
+- Reporting tools: the in-chat `/analyze` slash command runs the existing
+  analysis services (dependency graph, project structure, static checks) and
+  writes report artifacts under `.mana/` (`analyze.json`, `analyze.md`,
+  `analyze.html`, `analyze.dot`, `analyze.graphml`, `diagram.mmd`). It is
+  read-only apart from those artifacts and never calls the model. See
+  [src/mana_agent/commands/chat_analyze_command.py](../src/mana_agent/commands/chat_analyze_command.py)
+  and [src/mana_agent/commands/analyze_formats.py](../src/mana_agent/commands/analyze_formats.py).
 
 ## Tool Use Rules
 

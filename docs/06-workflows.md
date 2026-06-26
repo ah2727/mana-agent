@@ -45,6 +45,17 @@ Typical chat use cases include:
 
 The documentation notes that coding memory may be stored at `<project>/.mana/index/chat_memory.sqlite3`. [docs/04-commands.md:1-171](docs/04-commands.md:1-171)
 
+While inside a chat session you can generate analysis artifacts without leaving the REPL using the `/analyze` slash command:
+
+```text
+/analyze            # opens the format menu (1-7)
+/analyze all        # generate every artifact
+/analyze json markdown html
+/analyze --format json,markdown,html
+```
+
+This writes the selected reports under the project `.mana/` directory (for example `.mana/analyze.json`, `.mana/analyze.md`, `.mana/diagram.mmd`) and runs before the message reaches the model, so it is fast and read-only apart from those artifacts. [docs/04-commands.md:1-171](docs/04-commands.md:1-171)
+
 ## 4. Resume an automated run
 
 Use `continue` to pick up a persisted auto-execute session:

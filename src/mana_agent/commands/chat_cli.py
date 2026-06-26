@@ -4,6 +4,11 @@ from contextlib import nullcontext
 import threading
 
 from .cli_internal import *
+from .chat_analyze_command import (
+    analyze_command_args,
+    handle_analyze_command,
+    is_analyze_command,
+)
 
 
 def _planning_questions(max_questions: int) -> list[str]:
@@ -1421,6 +1426,53 @@ def chat(
                 console.print("Goodbye!")
                 logger.info("Chat session ended by user command", extra={"command": question.lower()})
                 break
+
+            # -----------------------------
+            # /analyze slash command (read-only; writes only .mana/ artifacts).
+            # Handled before any LLM/CodingAgent routing.
+            # -----------------------------
+            if is_analyze_command(question):
+                outcome = handle_analyze_command(
+                    analyze_command_args(question),
+                    root_dir=root,
+                    input_func=lambda prompt: _read_chat_input(
+                        console,
+                        prompt=prompt,
+                        multiline_enabled=False,
+                        multiline_terminator=multiline_terminator,
+                    ),
+                )
+                _render_answer_header(console, title="Analyze")
+                style = "yellow" if outcome.status == "error" else "white"
+                console.print(f"[{style}]{outcome.message}[/{style}]")
+                turn_record = ChatTurnTelemetry(
+                    turn_index=len(session_turns) + 1,
+                    timestamp=_now_iso(),
+                    question=question,
+                    answer_text=outcome.message,
+                    sources=[],
+                    warnings=list(outcome.result.errors) if outcome.result else [],
+                    trace=[],
+                    tool_steps_total=0,
+                    decisions=[],
+                    changed_files=(
+                        [str(p) for p in outcome.result.written] if outcome.result else []
+                    ),
+                    has_diff=bool(outcome.result and outcome.result.written),
+                    coding_state={"flow_id": active_flow_id},
+                )
+                session_turns.append(turn_record)
+                _log_chat_turn(
+                    run_logger,
+                    turn=turn_record,
+                    mode=f"slash-command:analyze:{outcome.status}",
+                    dir_mode=dir_mode,
+                    coding_agent=False,
+                    flow_id=active_flow_id,
+                    multiline_input=multiline_input,
+                    multiline_terminator=multiline_terminator,
+                )
+                continue
 
             # -----------------------------
             # Direct command fast-path (no FAISS / RAG / CodingAgent).
