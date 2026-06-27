@@ -437,11 +437,63 @@ Rules:
 - If no safe actionable request exists, return requests as [] and explain why in `batch_reason`.
 """.strip()
 
+PROJECT_ANALYZE_SYSTEM_PROMPT = """
+You are a senior software architect analyzing a repository.
+
+You will receive compact, structured evidence collected deterministically from the
+codebase (languages, dependencies, entrypoints, symbols, architecture areas, risks,
+and recommendations). Your job is to turn that evidence into a clear, useful,
+evidence-backed project analysis for three audiences: human developers, a chat
+assistant, and a coding agent.
+
+Rules:
+- Use ONLY the provided evidence. Do not invent files, classes, commands, or
+  dependencies that are not present in the evidence.
+- If something is not present in the evidence, write "not detected".
+- Explain architecture in practical, concrete developer language.
+- Prioritize findings that help a future coding agent work safely.
+- Reference exact file paths (and line numbers when the evidence has them).
+- Include concrete next tasks with acceptance criteria and a verification command.
+- Avoid vague advice like "improve code quality"; every claim must trace to evidence.
+- Keep secrets out of the report. Never echo secret values; refer to secret-bearing
+  files by name only.
+
+Return ONLY a single JSON object (no markdown fences, no prose outside the JSON)
+with EXACTLY these keys:
+{{
+  "project_summary": "2-5 sentence plain-English summary of what the project is and does",
+  "detected_stack_explanation": "short paragraph explaining the languages, frameworks, package managers, and tooling",
+  "repository_overview": "short paragraph explaining the important folders and their purpose",
+  "architecture_explanation": "multi-paragraph explanation of the main system layers and how they connect",
+  "important_files": [{{"file": "path", "why": "why it matters", "evidence": "what in the evidence supports this"}}],
+  "cli_commands_explanation": "paragraph explaining the CLI entrypoints and important commands",
+  "agent_workflow": "paragraph explaining how the agent goes from user message to tool execution, patching, verification, and summary",
+  "analyze_workflow": "paragraph explaining what happens when /analyze runs (scan, evidence, llm report, artifacts, chat context)",
+  "important_symbols_overview": "short paragraph summarizing the most important classes/functions/commands",
+  "risk_analysis": [{{"title": "...", "severity": "High|Medium|Low", "evidence": "...", "why_it_matters": "...", "recommended_fix": "..."}}],
+  "recommendations": ["concrete improvement 1", "concrete improvement 2"],
+  "next_tasks": [{{"title": "...", "priority": "High|Medium|Low", "files": ["path"], "acceptance_criteria": ["..."], "verification_command": "..."}}],
+  "onboarding_summary": "short paragraph a new developer could read to get productive quickly"
+}}
+""".strip()
+
+PROJECT_ANALYZE_HUMAN_TEMPLATE = """
+Repository: {project_name}
+Analysis depth: {depth}
+
+Structured evidence (JSON):
+{evidence_json}
+
+Generate the analysis JSON object now. Use only the evidence above.
+""".strip()
+
 __all__ = [
     "SYSTEM_PROMPT",
     "HUMAN_TEMPLATE",
     "ANALYZE_SYSTEM_PROMPT",
     "ANALYZE_HUMAN_TEMPLATE",
+    "PROJECT_ANALYZE_SYSTEM_PROMPT",
+    "PROJECT_ANALYZE_HUMAN_TEMPLATE",
     "ASK_AGENT_SYSTEM_PROMPT",
     "TOOL_FIRST",
     "DEEP_FLOW_SYSTEM_PROMPT",

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from mana_agent.analysis.models import AskResponse, AskResponseWithTrace, Finding, SearchHit
+from mana_agent.analysis.models import AskResponse, AskResponseWithTrace, SearchHit
 from mana_agent.commands.cli import _render_coding_sections, _sanitize_full_auto_answer_text, app
 from mana_agent.commands.ui_helpers import emit_tool_event
 
@@ -62,11 +62,12 @@ def test_continue_help_accepts_root_dir_option(tmp_path: Path) -> None:
     assert "--max-tool-c" in result.stdout
 
 
-def test_analyze_command_is_not_public() -> None:
+def test_analyze_command_is_public() -> None:
     result = runner.invoke(app, ["analyze", "--help"])
 
-    assert result.exit_code != 0
-    assert "No such command" in result.output
+    assert result.exit_code == 0
+    assert "--depth" in result.output
+    assert "--max-files" in result.output
 
 
 def test_continue_command_uses_root_dir_and_loops_until_complete(monkeypatch, tmp_path: Path) -> None:
@@ -117,26 +118,6 @@ def test_continue_command_uses_root_dir_and_loops_until_complete(monkeypatch, tm
     assert _FakeOrchestrator.calls == 2
     assert "Continuation checkpoint" in result.stdout
     assert "done" in result.stdout
-
-
-class FakeAnalyzeService:
-    def __init__(self, findings: list[Finding]) -> None:
-        self._findings = findings
-
-    def analyze(self, path: str) -> list[Finding]:
-        assert path
-        return self._findings
-
-
-class FakeLlmAnalyzeService:
-    def __init__(self, findings: list[Finding]) -> None:
-        self._findings = findings
-
-    def analyze(self, path: str, static_findings: list[Finding], max_files: int = 10) -> list[Finding]:
-        assert path
-        assert isinstance(static_findings, list)
-        assert max_files > 0
-        return self._findings
 
 
 class FakeAskService:
@@ -218,9 +199,9 @@ def test_root_help_exposes_commands_and_no_legacy_branding() -> None:
 
     assert result.exit_code == 0
     assert "chat" in result.output
-    # ask and analyze CLI commands were retired; only chat/continue remain.
+    # ask remains retired; analyze is public again as the repository intelligence command.
     assert "ask" not in result.output
-    assert "analyze" not in result.output
+    assert "analyze" in result.output
     assert "mana-agent" in result.output
     assert "mana-analyzer" not in result.output
     assert "analyzor" not in result.output
@@ -359,16 +340,6 @@ def test_cli_commands(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
     monkeypatch.setattr("mana_agent.commands.cli.build_index_service", lambda _s: FakeIndexService())
     monkeypatch.setattr("mana_agent.commands.cli.build_search_service", lambda _s: FakeSearchService())
-    monkeypatch.setattr(
-        "mana_agent.commands.cli.build_analyze_service",
-        lambda: FakeAnalyzeService([Finding("missing-docstring", "warning", "msg", "/tmp/a.py", 1, 0)]),
-    )
-    monkeypatch.setattr(
-        "mana_agent.commands.cli.build_llm_analyze_service",
-        lambda _s, model_override=None: FakeLlmAnalyzeService(
-            [Finding("llm-bug-risk", "error", "llm msg", "/tmp/a.py", 2, 0)]
-        ),
-    )
     monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
     monkeypatch.setattr("mana_agent.commands.cli.StructureService", FakeStructureService)
     monkeypatch.setattr("mana_agent.commands.cli.build_dependency_service", lambda: FakeDependencyService())
@@ -376,9 +347,8 @@ def test_cli_commands(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("mana_agent.commands.cli.discover_subprojects", lambda root: [])
     monkeypatch.setattr("mana_agent.commands.cli.discover_index_dirs", lambda root: [Path(root) / ".mana/index"])
 
-    # ask and analyze were retired as CLI commands (their main services remain).
-    # Only chat/continue are exposed now; every legacy subcommand must error out.
-    for retired in ("ask", "analyze", "index", "search", "deps", "graph", "describe", "report", "flow"):
+    # Legacy subcommands other than analyze must still error out.
+    for retired in ("ask", "index", "search", "deps", "graph", "describe", "report", "flow"):
         result_retired = runner.invoke(app, [retired, str(tmp_path)])
         assert result_retired.exit_code != 0
 

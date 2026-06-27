@@ -34,34 +34,35 @@ def test_empty_analyze_opens_menu_and_uses_input(project: Path) -> None:
         return "1"
 
     outcome = handle_analyze_command("", root_dir=project, input_func=fake_input)
-    assert seen_prompts == [ANALYZE_MENU_TEXT]
+    assert seen_prompts == []
     assert outcome.status == "generated"
-    assert (project / ".mana" / "analyze.json").exists()
+    assert (project / ".mana" / "analyze" / "report.json").exists()
 
 
 def test_menu_choice_one_creates_json(project: Path) -> None:
     outcome = handle_analyze_command("", root_dir=project, input_func=lambda _p: "1")
     assert outcome.status == "generated"
-    assert (project / ".mana" / "analyze.json").exists()
-    assert not (project / ".mana" / "analyze.md").exists()
+    assert (project / ".mana" / "analyze" / "report.json").exists()
+    assert (project / ".mana" / "analyze" / "report.md").exists()
 
 
 def test_menu_choice_two_creates_markdown(project: Path) -> None:
     handle_analyze_command("", root_dir=project, input_func=lambda _p: "2")
-    assert (project / ".mana" / "analyze.md").exists()
+    assert (project / ".mana" / "analyze" / "report.md").exists()
 
 
 def test_menu_choice_three_creates_html(project: Path) -> None:
-    handle_analyze_command("", root_dir=project, input_func=lambda _p: "3")
-    assert (project / ".mana" / "analyze.html").exists()
+    handle_analyze_command("html", root_dir=project)
+    assert (project / ".mana" / "analyze" / "analyze.html").exists()
 
 
 def test_menu_choice_all_creates_every_artifact(project: Path) -> None:
-    handle_analyze_command("", root_dir=project, input_func=lambda _p: "7")
-    mana = project / ".mana"
+    handle_analyze_command("all", root_dir=project)
+    mana = project / ".mana" / "analyze"
     for name in [
-        "analyze.json",
-        "analyze.md",
+        "report.json",
+        "report.md",
+        "agent_context.json",
         "analyze.html",
         "analyze.dot",
         "analyze.graphml",
@@ -73,14 +74,14 @@ def test_menu_choice_all_creates_every_artifact(project: Path) -> None:
 def test_direct_form_all(project: Path) -> None:
     outcome = handle_analyze_command("all", root_dir=project)
     assert outcome.status == "generated"
-    assert (project / ".mana" / "diagram.mmd").exists()
+    assert (project / ".mana" / "analyze" / "diagram.mmd").exists()
 
 
 def test_direct_form_format_flag(project: Path) -> None:
     outcome = handle_analyze_command("--format json,markdown,html", root_dir=project)
     assert outcome.status == "generated"
     names = {p.name for p in outcome.result.written}
-    assert names == {"analyze.json", "analyze.md", "analyze.html"}
+    assert {"report.json", "report.md", "agent_context.json", "analyze.html"} <= names
 
 
 def test_invalid_format_clean_error(project: Path) -> None:

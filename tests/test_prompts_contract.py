@@ -26,7 +26,6 @@ def test_prompt_import_smoke_for_dependent_modules() -> None:
     for module_name in [
         "mana_agent.llm.ask_agent",
         "mana_agent.llm.qna_chain",
-        "mana_agent.llm.analyze_chain",
         "mana_agent.llm.repo_chain",
         "mana_agent.services.search_service",
     ]:

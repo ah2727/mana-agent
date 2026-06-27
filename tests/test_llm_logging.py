@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from mana_agent.analysis.models import SearchHit
-from mana_agent.llm.analyze_chain import AnalyzeChain
 from mana_agent.llm.ask_agent import AskAgent
 from mana_agent.llm.qna_chain import QnAChain
 from mana_agent.llm.run_logger import LlmRunLogger
@@ -80,20 +79,6 @@ def test_qna_chain_logs_each_run(tmp_path: Path) -> None:
     rows = _read_rows(log_file)
     assert len(rows) == 1
     assert rows[0]["flow"] == "qna"
-
-
-def test_analyze_chain_logs_each_run(tmp_path: Path) -> None:
-    log_file = tmp_path / "llm.jsonl"
-    chain = AnalyzeChain.__new__(AnalyzeChain)
-    chain.prompt = _FakePrompt("[]")
-    chain.llm = object()
-    chain.model = "fake-analyze"
-    chain.run_logger = LlmRunLogger(log_file)
-    findings = chain.run("/tmp/a.py", "print(1)\n", [])
-    assert findings == []
-    rows = _read_rows(log_file)
-    assert len(rows) == 1
-    assert rows[0]["flow"] == "analyze"
 
 
 def test_ask_agent_logs_each_run(tmp_path: Path) -> None:

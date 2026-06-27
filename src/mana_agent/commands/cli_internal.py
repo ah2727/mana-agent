@@ -34,11 +34,9 @@ from mana_agent.vector_store.embeddings import build_embeddings
 from mana_agent.commands import ui_helpers as _ui_helpers
 from mana_agent.commands.ui_helpers import *  # noqa: F401,F403
 from mana_agent.commands.ui_helpers import _resolve_agent_max_steps
-from mana_agent.analysis.checks import PythonStaticAnalyzer
 from mana_agent.analysis.chunker import CodeChunker
 from mana_agent.parsers.multi_parser import MultiLanguageParser
 from mana_agent.vector_store.faiss_store import FaissStore
-from mana_agent.services.analyze_service import AnalyzeService
 from mana_agent.services.ask_service import AskService
 from mana_agent.services.chat_service import ChatService
 from mana_agent.services.coding_memory_service import CodingMemoryService
@@ -48,10 +46,10 @@ from mana_agent.services.search_service import SearchService
 from mana_agent.services.structure_service import StructureService
 from mana_agent.services.dependency_service import DependencyService
 from mana_agent.services.vulnerability_service import VulnerabilityService
-from mana_agent.services.report_service import ReportService
+from mana_agent.services.project_analyze_service import ProjectAnalyzeOptions, ProjectAnalyzeService
+from mana_agent.services.project_llm_analyze_service import ModelConfig, build_llm_analyzer
 from mana_agent.utils.index_discovery import discover_index_dirs
 from mana_agent.utils.project_discovery import discover_subprojects
-from mana_agent.llm.analyze_chain import AnalyzeChain
 from mana_agent.llm.ask_agent import AskAgent
 from mana_agent.llm.qna_chain import QnAChain
 from mana_agent.llm.coding_agent import CodingAgent
@@ -121,6 +119,73 @@ def _index_has_chunks(index_dir: str | Path) -> bool:
 def _index_has_search_data(index_dir: str | Path) -> bool:
     root = Path(index_dir)
     return (root / "faiss").exists() or (root / "chunks.jsonl").exists()
+
+
+def _build_project_llm_analyzer():
+    """Build the LLM analyzer from settings, or ``None`` when unavailable.
+
+    Returns ``None`` (deterministic-only analyze) when settings cannot be loaded
+    or no API key is configured, so analyze never fails just because the LLM is
+    unavailable.
+    """
+    try:
+        settings = _public_symbol("Settings", Settings)()
+    except Exception as exc:  # noqa: BLE001 - missing env should not break analyze
+        logger.warning("Project analyze LLM disabled (settings unavailable): %s", exc)
+        return None
+    api_key = str(getattr(settings, "openai_api_key", "") or "").strip()
+    if not api_key:
+        return None
+    return build_llm_analyzer(
+        ModelConfig(
+            api_key=api_key,
+            model=getattr(settings, "openai_chat_model", "gpt-4.1-mini"),
+            base_url=getattr(settings, "openai_base_url", None) or os.getenv("OPENAI_BASE_URL") or None,
+        )
+    )
+
+
+@app.command("analyze")
+def analyze_command(
+    path: str = typer.Argument(".", help="Repository path to analyze."),
+    depth: str = typer.Option("normal", "--depth", help="Analysis depth: quick, normal, or full."),
+    output_format: str = typer.Option("both", "--format", help="Output format: md, json, or both."),
+    output: str | None = typer.Option(None, "--output", help="Artifact directory. Defaults to .mana/analyze."),
+    include: str | None = typer.Option(None, "--include", help="Comma-separated paths to include."),
+    exclude: str | None = typer.Option(None, "--exclude", help="Comma-separated paths or folders to exclude."),
+    max_files: int = typer.Option(5000, "--max-files", help="Maximum files to scan."),
+    max_file_size_kb: int = typer.Option(512, "--max-file-size-kb", help="Maximum text file size to scan."),
+) -> None:
+    """Generate reusable repository intelligence artifacts."""
+    if depth not in {"quick", "normal", "full"}:
+        raise typer.BadParameter("depth must be quick, normal, or full")
+    normalized_format = {"markdown": "md"}.get(output_format, output_format)
+    if normalized_format not in {"md", "json", "both"}:
+        raise typer.BadParameter("format must be md, json, or both")
+    root = Path(path).resolve()
+    if root.is_file():
+        root = root.parent
+    out_dir = Path(output).resolve() if output else (root / ".mana" / "analyze")
+    split = lambda value: [item.strip() for item in str(value or "").split(",") if item.strip()]
+    result = ProjectAnalyzeService().run(
+        root,
+        out_dir,
+        options=ProjectAnalyzeOptions(
+            depth=depth,
+            output_format=normalized_format,
+            include=split(include),
+            exclude=split(exclude),
+            max_files=max_files,
+            max_file_size_kb=max_file_size_kb,
+        ),
+        llm_analyzer=_build_project_llm_analyzer(),
+    )
+    for path_item in result.artifacts.values():
+        console.print(f"[green]wrote[/green] {path_item}")
+    if result.errors:
+        for error in result.errors:
+            console.print(f"[red]error[/red] {error}")
+        raise typer.Exit(code=1)
 
 
 @app.command("continue")
@@ -586,42 +651,6 @@ def build_search_service(settings: Settings) -> SearchService:
 
 
 # ---------------------------------------------------------------------------
-# Analyze services
-# ---------------------------------------------------------------------------
-
-def build_analyze_service() -> AnalyzeService:
-    return _public_symbol("AnalyzeService", AnalyzeService)(
-        analyzer=_public_symbol("PythonStaticAnalyzer", PythonStaticAnalyzer)()
-    )
-
-
-def build_llm_analyze_service(
-    settings: Settings,
-    model_override: str | None,
-):
-    model_name = model_override or settings.openai_chat_model
-
-    chat_openai_cls = _public_symbol("ChatOpenAI", ChatOpenAI)
-    analyze_chain_cls = _public_symbol("AnalyzeChain", AnalyzeChain)
-    llm = chat_openai_cls(
-        api_key=settings.openai_api_key,
-        model=model_name,
-        base_url=settings.openai_base_url,
-        temperature=0,
-    )
-
-    chain = analyze_chain_cls(
-        api_key=settings.openai_api_key,
-        model=model_name,
-        base_url=settings.openai_base_url,
-    )
-
-    file_agent = build_file_agent(llm)
-
-    return chain, file_agent
-
-
-# ---------------------------------------------------------------------------
 # Ask service
 # ---------------------------------------------------------------------------
 
@@ -692,51 +721,6 @@ def _build_ask_service_compat(
 def build_dependency_service() -> DependencyService:
     return DependencyService()
 
-
-# ---------------------------------------------------------------------------
-# Report service (with deep‐flow LLM injection)
-# ---------------------------------------------------------------------------
-
-def build_report_service(
-    *,
-    use_llm: bool,
-    model_override: str | None,
-    include_tests: bool,
-) -> ReportService:
-    dependency_service = build_dependency_service()
-    analyze_service = build_analyze_service()
-    
-    settings = Settings()
-    
-    # Always build LLM components since LLM is now mandatory
-    final_model = model_override or settings.openai_chat_model
-    
-    # 1) Build the DeepFlowChain for deep-profile flow synthesis
-    llm_chain = DeepFlowChain(
-        model_name=final_model,
-        temperature=0,
-        openai_api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
-    )
-    
-    # 2) Build describe_service with LLM chain
-    describe_service = build_describe_service(
-        dependency_service=dependency_service,
-        llm_chain=llm_chain,
-        include_tests=include_tests,
-    )
-    
-    structure_service = StructureService(include_tests=include_tests)
-    vulnerability_service = VulnerabilityService()
-    
-    return ReportService(
-        dependency_service=dependency_service,
-        analyze_service=analyze_service,
-        llm_analyze_service=None,
-        describe_service=describe_service,
-        structure_service=structure_service,
-        vulnerability_service=vulnerability_service,
-    )
 
 # ---------------------------------------------------------------------------
 # Export symbols

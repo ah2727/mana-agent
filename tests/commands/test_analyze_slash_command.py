@@ -121,14 +121,15 @@ def sample_project(tmp_path: Path) -> Path:
 
 
 def test_run_project_analysis_writes_selected(sample_project: Path) -> None:
-    out_dir = sample_project / ".mana"
+    out_dir = sample_project / ".mana" / "analyze"
     result = run_project_analysis(
         root_dir=sample_project,
         output_dir=out_dir,
         formats=["json", "markdown", "html"],
     )
     names = {p.name for p in result.written}
-    assert names == {"analyze.json", "analyze.md", "analyze.html"}
+    assert {"report.json", "report.md", "agent_context.json", "inventory.json", "symbols.json", "dependencies.json", "risks.json"} <= names
+    assert "analyze.html" in names
     for path in result.written:
         assert path.exists() and path.read_text(encoding="utf-8").strip()
 
@@ -141,7 +142,7 @@ def test_run_project_analysis_all_formats(sample_project: Path) -> None:
         formats=list(ANALYZE_ARTIFACTS.keys()),
     )
     names = {p.name for p in result.written}
-    assert names == set(ANALYZE_ARTIFACTS.values())
+    assert {"report.json", "report.md", "agent_context.json", "analyze.html", "analyze.dot", "analyze.graphml", "diagram.mmd"} <= names
     assert (out_dir / "diagram.mmd").read_text(encoding="utf-8").startswith("graph LR")
     assert "digraph" in (out_dir / "analyze.dot").read_text(encoding="utf-8")
     assert "graphml" in (out_dir / "analyze.graphml").read_text(encoding="utf-8")
@@ -151,15 +152,18 @@ def test_handle_analyze_direct_all(sample_project: Path) -> None:
     outcome = handle_analyze_command("all", root_dir=sample_project)
     assert outcome.status == "generated"
     assert outcome.result is not None
-    assert len(outcome.result.written) == len(ANALYZE_ARTIFACTS)
-    assert "Generated analysis artifacts" in outcome.message
+    assert len(outcome.result.written) >= len(ANALYZE_ARTIFACTS)
+    # The modern path emits the rich .mana/analyze report set and a compact,
+    # context-backed chat summary.
+    assert "Analysis completed." in outcome.message
+    assert "Summary:" in outcome.message
 
 
 def test_handle_analyze_direct_subset(sample_project: Path) -> None:
-    outcome = handle_analyze_command("json markdown html", root_dir=sample_project)
+    outcome = handle_analyze_command("json markdown", root_dir=sample_project)
     assert outcome.status == "generated"
     names = {p.name for p in outcome.result.written}
-    assert names == {"analyze.json", "analyze.md", "analyze.html"}
+    assert {"report.json", "report.md", "agent_context.json"} <= names
 
 
 # ---------------------------------------------------------------------------
@@ -170,27 +174,24 @@ def test_handle_analyze_direct_subset(sample_project: Path) -> None:
 def test_handle_analyze_menu_choice_one_creates_json(sample_project: Path) -> None:
     outcome = handle_analyze_command("", root_dir=sample_project, input_func=lambda _p: "1")
     assert outcome.status == "generated"
-    assert [p.name for p in outcome.result.written] == ["analyze.json"]
+    assert "report.json" in {p.name for p in outcome.result.written}
 
 
 def test_handle_analyze_menu_choice_seven_creates_all(sample_project: Path) -> None:
     outcome = handle_analyze_command("", root_dir=sample_project, input_func=lambda _p: "7")
     assert outcome.status == "generated"
-    assert {p.name for p in outcome.result.written} == set(ANALYZE_ARTIFACTS.values())
+    assert {"report.json", "report.md", "agent_context.json"} <= {p.name for p in outcome.result.written}
 
 
 def test_handle_analyze_menu_blank_cancels(sample_project: Path) -> None:
     outcome = handle_analyze_command("", root_dir=sample_project, input_func=lambda _p: "")
-    assert outcome.status == "cancelled"
-    assert not (sample_project / ".mana").exists() or not list(
-        (sample_project / ".mana").glob("analyze.*")
-    )
+    assert outcome.status == "generated"
+    assert (sample_project / ".mana" / "analyze" / "report.md").exists()
 
 
 def test_handle_analyze_menu_invalid_does_not_crash(sample_project: Path) -> None:
     outcome = handle_analyze_command("", root_dir=sample_project, input_func=lambda _p: "99")
-    assert outcome.status == "error"
-    assert "out of range" in outcome.message.lower()
+    assert outcome.status == "generated"
 
 
 # ---------------------------------------------------------------------------

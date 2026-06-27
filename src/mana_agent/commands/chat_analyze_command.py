@@ -1,11 +1,11 @@
 """Chat ``/analyze`` slash command: analyze the current project and write the
 selected report artifacts under ``.mana/``.
 
-This is a thin, read-only wrapper around the existing analysis services
-(``DependencyService``, ``StructureService`` and ``AnalyzeService``). It builds
-one combined payload and renders the requested formats from it, so adding a new
-format never re-runs the analysis. The only side effect is writing artifact
-files under the project ``.mana/`` directory.
+The modern JSON/Markdown path delegates to ``ProjectAnalyzeService`` (the unified
+analyze engine). The legacy graph formats (HTML/DOT/GraphML/Mermaid) build one
+combined payload from ``DependencyService``, ``StructureService`` and the
+``PythonStaticAnalyzer`` primitive, so adding a new format never re-runs the
+analysis. The only side effect is writing artifact files under ``.mana/``.
 """
 
 from __future__ import annotations
@@ -19,9 +19,10 @@ from typing import Any
 from mana_agent.analysis.models import DependencyGraphReport
 from mana_agent.dependencies.dependency_service import DependencyService
 from mana_agent.renderers.html_report import render_analyze_html
-from mana_agent.services.analyze_service import AnalyzeService
+from mana_agent.services.project_analyze_service import ProjectAnalyzeOptions, ProjectAnalyzeService
 from mana_agent.services.structure_service import StructureService
 from mana_agent.analysis.checks import PythonStaticAnalyzer
+from mana_agent.utils.io import iter_python_files
 
 from .analyze_formats import (
     ANALYZE_ARTIFACTS,
@@ -219,9 +220,9 @@ def _build_payload(
 
     findings_dicts: list[dict[str, Any]] = []
     try:
-        analyze_service = AnalyzeService(analyzer=PythonStaticAnalyzer())
-        findings = analyze_service.analyze(root_dir)
-        findings_dicts = [item.to_dict() for item in findings]
+        analyzer = PythonStaticAnalyzer()
+        for file_path in iter_python_files(root_dir):
+            findings_dicts.extend(item.to_dict() for item in analyzer.analyze_file(file_path))
     except Exception as exc:  # static analysis is best-effort; never block artifacts
         logger.warning("Static analysis skipped for %s: %s", root_dir, exc)
 
@@ -257,11 +258,19 @@ def run_project_analysis(
     root_dir: Path | str,
     output_dir: Path | str,
     formats: list[str],
+    depth: str = "normal",
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    max_files: int = 5000,
+    max_file_size_kb: int = 512,
+    llm_analyzer: Any | None = None,
 ) -> AnalyzeRunResult:
     """Run project analysis once and write the selected artifacts.
 
     Read-only except for writing files under ``output_dir`` (the ``.mana/``
-    directory). Each format is rendered from one shared payload.
+    directory). Each format is rendered from one shared payload. ``llm_analyzer``
+    is an optional callable injected by the caller to produce LLM-written
+    analysis; when ``None`` the report falls back to deterministic content.
     """
     root = Path(root_dir).resolve()
     out_dir = Path(output_dir)
@@ -269,10 +278,35 @@ def run_project_analysis(
 
     result = AnalyzeRunResult(output_dir=out_dir, formats=list(formats))
 
+    modern_requested = [fmt for fmt in formats if fmt in {"json", "markdown"}]
+    legacy_requested = [fmt for fmt in formats if fmt not in {"json", "markdown"}]
+    if modern_requested:
+        output_format = "json" if modern_requested == ["json"] else "markdown" if modern_requested == ["markdown"] else "both"
+        service_result = ProjectAnalyzeService().run(
+            root,
+            out_dir,
+            options=ProjectAnalyzeOptions(
+                depth=depth,
+                output_format=output_format,
+                include=include or [],
+                exclude=exclude or [],
+                max_files=max_files,
+                max_file_size_kb=max_file_size_kb,
+            ),
+            llm_analyzer=llm_analyzer,
+        )
+        result.written.extend(service_result.artifacts.values())
+        result.errors.extend(service_result.errors)
+        if not legacy_requested:
+            return result
+
+    if not legacy_requested:
+        return result
+
     dep_report = DependencyService().analyze(root)
     payload = _build_payload(root, dep_report=dep_report)
 
-    for fmt in formats:
+    for fmt in legacy_requested:
         filename = ANALYZE_ARTIFACTS.get(fmt)
         if filename is None:
             result.errors.append(f"Unknown analyze format: {fmt}")
@@ -316,13 +350,69 @@ def _format_summary(result: AnalyzeRunResult) -> str:
             shown = path.relative_to(Path.cwd())
         except ValueError:
             shown = path
-        # Prefer the conventional ".mana/<name>" display when possible.
-        rel = Path(result.output_dir.name) / path.name
-        lines.append(f"- {rel if str(rel).startswith('.mana') else shown}")
+        lines.append(f"- {shown}")
     if result.errors:
         lines.append("")
         lines.append("Warnings:")
         lines.extend(f"- {err}" for err in result.errors)
+    return "\n".join(lines)
+
+
+def _chat_summary(result: AnalyzeRunResult, out_dir: Path) -> str:
+    """Compose the short, useful post-``/analyze`` summary for chat.
+
+    Reads the generated ``agent_context.json`` (compact, secret-safe) to surface
+    project, stack, risks, and next tasks without re-running analysis.
+    """
+    import json
+
+    context: dict[str, Any] = {}
+    ctx_path = out_dir / "agent_context.json"
+    if ctx_path.exists():
+        try:
+            context = json.loads(ctx_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - summary is best-effort
+            context = {}
+
+    key_artifacts = [
+        out_dir / "report.md",
+        out_dir / "agent_context.json",
+        out_dir / "evidence.json",
+    ]
+    lines = ["Analysis completed.", "", "Generated:"]
+    for path in key_artifacts:
+        if path.exists():
+            try:
+                shown = path.relative_to(Path.cwd())
+            except ValueError:
+                shown = path
+            lines.append(f"- {shown}")
+
+    if context:
+        stack = ", ".join(context.get("detected_stack", []) or []) or "not detected"
+        risks = context.get("risks", []) or []
+        tasks = context.get("recommended_tasks", []) or []
+        important = [item.get("file", "") if isinstance(item, dict) else str(item) for item in (context.get("important_files", []) or [])][:3]
+        lines += [
+            "",
+            "Summary:",
+            f"- Project: {context.get('project_summary', 'n/a')}",
+            f"- Stack: {stack}",
+            f"- Important areas: {', '.join(p for p in important if p) or 'not detected'}",
+            f"- Risks found: {len(risks)}",
+            f"- Next tasks: {len(tasks)}",
+        ]
+        if not context.get("llm_available", False):
+            lines.append("- Note: LLM analysis unavailable — deterministic fallback report.")
+
+    if result.errors:
+        lines += ["", "Warnings:"]
+        lines.extend(f"- {err}" for err in result.errors)
+
+    lines += [
+        "",
+        'You can now ask: "explain architecture", "what should I fix first?", or "summarize risks".',
+    ]
     return "\n".join(lines)
 
 
@@ -332,6 +422,7 @@ def handle_analyze_command(
     root_dir: Path | str | None,
     output_dir: Path | str | None = None,
     input_func: Callable[[str], str] | None = None,
+    llm_analyzer: Any | None = None,
 ) -> AnalyzeCommandOutcome:
     """Handle a ``/analyze`` command. Pure of console I/O so it is testable.
 
@@ -349,7 +440,7 @@ def handle_analyze_command(
         )
 
     root = Path(root_dir).resolve()
-    out_dir = Path(output_dir) if output_dir is not None else (root / ".mana")
+    out_dir = Path(output_dir) if output_dir is not None else (root / ".mana" / "analyze")
 
     try:
         formats = parse_analyze_formats(args)
@@ -363,27 +454,20 @@ def handle_analyze_command(
         )
 
     if not formats:
-        reader = input_func or (lambda prompt: input(prompt))
-        try:
-            formats = prompt_analyze_format_menu(input_func=reader)
-        except (ValueError, EOFError, KeyboardInterrupt) as exc:
-            return AnalyzeCommandOutcome(
-                status="error",
-                message=(
-                    f"{exc}\n\nValid choices are 1-7 "
-                    f"(e.g. 1, or 1,2,3, or 7 for all)."
-                ),
-            )
-        if not formats:
-            return AnalyzeCommandOutcome(
-                status="cancelled",
-                message="Analyze cancelled — no format selected.",
-            )
+        formats = ["json", "markdown"]
 
-    result = run_project_analysis(root_dir=root, output_dir=out_dir, formats=formats)
+    result = run_project_analysis(
+        root_dir=root,
+        output_dir=out_dir,
+        formats=formats,
+        llm_analyzer=llm_analyzer,
+    )
+    # The modern JSON/Markdown path emits the rich .mana/analyze report set; use
+    # the compact context-backed summary when it is present, else the file list.
+    message = _chat_summary(result, out_dir) if (out_dir / "agent_context.json").exists() else _format_summary(result)
     return AnalyzeCommandOutcome(
         status="generated",
-        message=_format_summary(result),
+        message=message,
         result=result,
     )
 

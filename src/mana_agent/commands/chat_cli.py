@@ -4,11 +4,64 @@ from contextlib import nullcontext
 import threading
 
 from .cli_internal import *
+from .cli_internal import _build_project_llm_analyzer
 from .chat_analyze_command import (
     analyze_command_args,
     handle_analyze_command,
     is_analyze_command,
 )
+
+
+def _load_analysis_context(root) -> str | None:
+    """Load the compact ``agent_context.json`` produced by ``/analyze``.
+
+    Returns a bounded text block suitable for prepending to chat/coding-agent
+    context so later questions ("explain architecture") are grounded in the most
+    recent analysis. Returns ``None`` when no analysis exists or it cannot be read.
+    """
+    import json
+    from pathlib import Path as _Path
+
+    ctx_path = _Path(root) / ".mana" / "analyze" / "agent_context.json"
+    if not ctx_path.exists():
+        return None
+    try:
+        context = json.loads(ctx_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - context load is best-effort
+        return None
+    if not isinstance(context, dict):
+        return None
+
+    lines: list[str] = ["Project analysis (from .mana/analyze/agent_context.json):"]
+    summary = str(context.get("project_summary", "") or "").strip()
+    if summary:
+        lines.append(f"- Summary: {summary}")
+    stack = ", ".join(context.get("detected_stack", []) or [])
+    if stack:
+        lines.append(f"- Stack: {stack}")
+    arch = str(context.get("architecture_summary", "") or "").strip()
+    if arch:
+        lines.append(f"- Architecture: {arch[:600]}")
+    workflow = str(context.get("agent_workflow", "") or "").strip()
+    if workflow:
+        lines.append(f"- Agent workflow: {workflow[:400]}")
+    risks = context.get("risks", []) or []
+    if risks:
+        lines.append("- Top risks:")
+        for item in risks[:5]:
+            if isinstance(item, dict):
+                loc = f" ({item.get('file')}:{item.get('line')})" if item.get("file") else ""
+                lines.append(f"  - [{item.get('severity', 'info')}] {item.get('title', '')}{loc}")
+    tasks = context.get("recommended_tasks", []) or []
+    if tasks:
+        lines.append("- Recommended tasks:")
+        for item in tasks[:5]:
+            if isinstance(item, dict):
+                lines.append(f"  - {item.get('title', '')}")
+    when = str(context.get("last_analyzed_at", "") or "").strip()
+    if when:
+        lines.append(f"- Last analyzed at: {when}")
+    return "\n".join(lines)
 
 
 def _planning_questions(max_questions: int) -> list[str]:
@@ -868,6 +921,9 @@ def chat(
         pending_prechecklist_source: str = ""
         pending_prechecklist_warning: str = ""
         session_turns: list[ChatTurnTelemetry] = []
+        # Most recent /analyze output, loaded so later chat answers are grounded in
+        # the analysis. Refreshed whenever /analyze runs during the session.
+        analysis_context_text: str | None = _load_analysis_context(root)
         full_auto_pass_window_logs: list[dict[str, Any]] = []
         full_auto_pass_window_decisions: list[dict[str, Any]] = []
         full_auto_latest_checklist_counts: dict[str, int] | None = None
@@ -1030,6 +1086,14 @@ def chat(
                                 lines.append(f"- [{status}] {title}")
                     if lines:
                         flow_context_text = "\n".join(lines)
+
+            # Ground the turn in the most recent /analyze output when available.
+            if analysis_context_text:
+                flow_context_text = (
+                    f"{analysis_context_text}\n\n{flow_context_text}"
+                    if flow_context_text
+                    else analysis_context_text
+                )
 
             preview_payload: dict[str, Any] = {}
             if hasattr(orchestrator, "preview_plan"):
@@ -1441,7 +1505,14 @@ def chat(
                         multiline_enabled=False,
                         multiline_terminator=multiline_terminator,
                     ),
+                    llm_analyzer=_build_project_llm_analyzer(),
                 )
+                # Refresh the in-session analysis grounding so the next chat
+                # questions can use the freshly generated report.
+                if outcome.status == "generated":
+                    refreshed = _load_analysis_context(root)
+                    if refreshed:
+                        analysis_context_text = refreshed
                 _render_answer_header(console, title="Analyze")
                 style = "yellow" if outcome.status == "error" else "white"
                 console.print(f"[{style}]{outcome.message}[/{style}]")

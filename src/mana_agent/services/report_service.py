@@ -14,10 +14,8 @@ from mana_agent.models import (
     FileHotspot,
     FlowAnalysis,
 )
-from mana_agent.services.analyze_service import AnalyzeService
 from mana_agent.dependencies.dependency_service import DependencyService
 from mana_agent.describe.describe_service import DescribeService
-from mana_agent.services.llm_analyze_service import LlmAnalyzeService
 from mana_agent.services.structure_service import StructureService
 from mana_agent.services.vulnerability_service import VulnerabilityService
 
@@ -116,8 +114,8 @@ class ReportService:
         self,
         *,
         dependency_service: DependencyService,
-        analyze_service: AnalyzeService,
-        llm_analyze_service: LlmAnalyzeService | None,
+        analyze_service: Any,
+        llm_analyze_service: Any | None = None,
         describe_service: DescribeService,
         structure_service: StructureService,
         vulnerability_service: VulnerabilityService,
@@ -307,8 +305,8 @@ class ReportService:
         llm_findings: list[Any] = []
         if with_llm and self.llm_analyze_service is not None:
             try:
-                # If your LlmAnalyzeService supports a model override, pass it.
-                # If it doesn't, this kwarg will raise; we fall back gracefully.
+                # Optional injected analyzer. If it supports a model override, pass
+                # it; if it doesn't, the kwarg raises and we fall back gracefully.
                 try:
                     llm_findings = self.llm_analyze_service.analyze(
                         str(project_root),
