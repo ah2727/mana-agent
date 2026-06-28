@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from mana_agent.llm.coding_agent import CodingAgent, FlowChecklist, FlowStep
 from mana_agent.llm.tool_worker_process import ToolWorkerProcessError
 from mana_agent.llm.tools_manager import AutoExecuteResult
@@ -102,6 +104,55 @@ class _SequenceAskAgent(_FakeAskAgent):
         return json.dumps(self._next_payload())
 
 
+class _FakeOrchestrator:
+    def __init__(self, response_payload: dict) -> None:
+        self.calls: list[dict] = []
+        self.response_payload = response_payload
+
+    def run(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return AutoExecuteResult(
+            answer=json.dumps(self.response_payload),
+            trace=list(self.response_payload.get("trace", [])),
+            warnings=list(self.response_payload.get("warnings", [])),
+            sources=list(self.response_payload.get("sources", [])),
+            changed_files=list(self.response_payload.get("changed_files", [])),
+            passes=1,
+            terminal_reason="manager_stop",
+            toolsmanager_requests_count=1,
+        )
+
+
+class _SequenceOrchestrator(_FakeOrchestrator):
+    def __init__(self, response_payloads: list[dict]) -> None:
+        super().__init__(response_payload=response_payloads[0] if response_payloads else {})
+        self._payloads = list(response_payloads)
+        self._cursor = 0
+
+    def _next_payload(self) -> dict:
+        if not self._payloads:
+            return {}
+        if self._cursor >= len(self._payloads):
+            return self._payloads[-1]
+        payload = self._payloads[self._cursor]
+        self._cursor += 1
+        return payload
+
+    def run(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        payload = self._next_payload()
+        return AutoExecuteResult(
+            answer=json.dumps(payload),
+            trace=list(payload.get("trace", [])),
+            warnings=list(payload.get("warnings", [])),
+            sources=list(payload.get("sources", [])),
+            changed_files=list(payload.get("changed_files", [])),
+            passes=1,
+            terminal_reason="manager_stop",
+            toolsmanager_requests_count=1,
+        )
+
+
 def _fixed_checklist() -> FlowChecklist:
     return FlowChecklist(
         objective="Implement request",
@@ -174,6 +225,7 @@ def _build_agent(
 ) -> CodingAgent:
     monkeypatch.setattr("mana_agent.llm.coding_agent.build_write_file_tool", lambda **_kwargs: _Tool("write_file"))
     monkeypatch.setattr("mana_agent.llm.coding_agent.build_create_file_tool", lambda **_kwargs: _Tool("create_file"))
+    monkeypatch.setattr("mana_agent.llm.coding_agent.build_delete_file_tool", lambda **_kwargs: _Tool("delete_file"))
     monkeypatch.setattr("mana_agent.llm.coding_agent.build_apply_patch_tool", lambda **_kwargs: _Tool("apply_patch"))
     ask_agent = _FakeAskAgent(payload)
     svc = CodingMemoryService(project_root=tmp_path, max_turns=5, max_tasks=20) if memory else None
@@ -194,12 +246,14 @@ def _build_agent(
     monkeypatch.setattr(agent, "_git_status_paths", lambda: set())  # type: ignore[method-assign]
     monkeypatch.setattr(agent, "_git_diff", lambda _paths: "")  # type: ignore[method-assign]
     monkeypatch.setattr(agent, "_run_static_analysis", lambda _paths: [])  # type: ignore[method-assign]
+    agent.set_tools_manager_orchestrator(_FakeOrchestrator(payload))
     return agent
 
 
 def _build_agent_with_ask(tmp_path: Path, monkeypatch, ask_agent, *, full_auto_mode: bool = False) -> CodingAgent:
     monkeypatch.setattr("mana_agent.llm.coding_agent.build_write_file_tool", lambda **_kwargs: _Tool("write_file"))
     monkeypatch.setattr("mana_agent.llm.coding_agent.build_create_file_tool", lambda **_kwargs: _Tool("create_file"))
+    monkeypatch.setattr("mana_agent.llm.coding_agent.build_delete_file_tool", lambda **_kwargs: _Tool("delete_file"))
     monkeypatch.setattr("mana_agent.llm.coding_agent.build_apply_patch_tool", lambda **_kwargs: _Tool("apply_patch"))
     svc = CodingMemoryService(project_root=tmp_path, max_turns=5, max_tasks=20)
     agent = CodingAgent(
@@ -218,7 +272,15 @@ def _build_agent_with_ask(tmp_path: Path, monkeypatch, ask_agent, *, full_auto_m
     monkeypatch.setattr(agent, "_plan_checklist", lambda request, flow_context=None: (_fixed_checklist(), []))
     monkeypatch.setattr(agent, "_git_diff", lambda _paths: "")  # type: ignore[method-assign]
     monkeypatch.setattr(agent, "_run_static_analysis", lambda _paths: [])  # type: ignore[method-assign]
+    payloads = list(getattr(ask_agent, "_payloads", []) or [getattr(ask_agent, "response_payload", {})])
+    agent.set_tools_manager_orchestrator(_SequenceOrchestrator(payloads))
     return agent
+
+
+def _orchestrator_calls(agent: CodingAgent) -> list[dict]:
+    orchestrator = agent.tools_manager_orchestrator
+    assert isinstance(orchestrator, _FakeOrchestrator)
+    return orchestrator.calls
 
 
 def test_coding_agent_builds_structured_checklist_before_tools(tmp_path: Path, monkeypatch) -> None:
@@ -249,10 +311,9 @@ def test_coding_agent_prevents_duplicate_semantic_search_loops(tmp_path: Path, m
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
-    fake = agent.ask_agent
-    assert isinstance(fake, _FakeAskAgent)
-    assert fake.calls
-    policy = fake.calls[0]["tool_policy"]
+    calls = _orchestrator_calls(agent)
+    assert calls
+    policy = calls[0]["tool_policy"]
     assert policy["search_repeat_limit"] == 1
 
 
@@ -265,9 +326,7 @@ def test_coding_agent_auto_chat_answer_mode_blocks_mutation_tools(tmp_path: Path
         k=4,
         auto_chat_mode="answer_only",
     )
-    fake = agent.ask_agent
-    assert isinstance(fake, _FakeAskAgent)
-    policy = fake.calls[0]["tool_policy"]
+    policy = _orchestrator_calls(agent)[0]["tool_policy"]
     assert "apply_patch" not in policy["allowed_tools"]
     assert "write_file" not in policy["allowed_tools"]
     assert policy["auto_chat_mode"] == "answer_only"
@@ -283,9 +342,7 @@ def test_coding_agent_auto_chat_edit_mode_allows_mutation_tools(tmp_path: Path, 
         k=4,
         auto_chat_mode="edit",
     )
-    fake = agent.ask_agent
-    assert isinstance(fake, _FakeAskAgent)
-    policy = fake.calls[0]["tool_policy"]
+    policy = _orchestrator_calls(agent)[0]["tool_policy"]
     assert "apply_patch" in policy["allowed_tools"]
     assert policy["auto_chat_mode"] == "edit"
 
@@ -314,9 +371,7 @@ def test_coding_agent_enforces_search_budget_and_transitions_phase(tmp_path: Pat
     }
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
-    fake = agent.ask_agent
-    assert isinstance(fake, _FakeAskAgent)
-    policy = fake.calls[0]["tool_policy"]
+    policy = _orchestrator_calls(agent)[0]["tool_policy"]
     assert policy["search_budget"] == 4
     assert result["progress"]["budgets"]["search_used"] == 2
 
@@ -505,19 +560,6 @@ def test_coding_agent_progress_budgets_use_cache_aware_read_metrics(tmp_path: Pa
     assert budgets["read_cache_scope"] == "flow"
 
 
-def test_coding_agent_repo_only_default_disables_internet_without_explicit_user_request(
-    tmp_path: Path, monkeypatch
-) -> None:
-    payload = {"answer": "ok", "trace": [], "warnings": []}
-    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    agent.generate("Implement parser fix", index_dir=tmp_path / ".mana/index", k=4)
-    fake = agent.ask_agent
-    assert isinstance(fake, _FakeAskAgent)
-    assert fake.calls[0]["tool_policy"]["block_internet"] is True
-    agent.generate("Need latest internet docs for this API", index_dir=tmp_path / ".mana/index", k=4)
-    assert fake.calls[1]["tool_policy"]["block_internet"] is False
-
-
 def test_flow_checklist_persists_and_resumes_across_turns(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
@@ -534,10 +576,9 @@ def test_coding_agent_propagates_flow_id_to_ask_agent_run(tmp_path: Path, monkey
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     result = agent.generate("Implement A", index_dir=tmp_path / ".mana/index", k=4)
-    fake = agent.ask_agent
-    assert isinstance(fake, _FakeAskAgent)
-    assert fake.calls
-    assert fake.calls[0]["flow_id"] == result["flow_id"]
+    calls = _orchestrator_calls(agent)
+    assert calls
+    assert calls[0]["flow_id"] == result["flow_id"]
 
 
 def test_dir_mode_coding_agent_flow_context_included(tmp_path: Path, monkeypatch) -> None:
@@ -568,10 +609,9 @@ def test_dir_mode_rewrites_ambiguous_followup_with_flow_context(tmp_path: Path, 
     )
     _ = second
 
-    fake = agent.ask_agent
-    assert isinstance(fake, _FakeAskAgent)
-    assert len(fake.calls) >= 2
-    followup_question = str(fake.calls[1]["question"])
+    calls = _orchestrator_calls(agent)
+    assert len(calls) >= 2
+    followup_question = str(calls[1]["request"])
     assert followup_question != "yes."
     assert "Current objective:" in followup_question
     warnings = second.get("warnings") or []
@@ -594,10 +634,9 @@ def test_plan_trigger_followup_rewrites_to_execute_checklist(tmp_path: Path, mon
         flow_id=flow_id,
     )
 
-    fake = agent.ask_agent
-    assert isinstance(fake, _FakeAskAgent)
-    assert len(fake.calls) >= 2
-    followup_question = str(fake.calls[1]["question"])
+    calls = _orchestrator_calls(agent)
+    assert len(calls) >= 2
+    followup_question = str(calls[1]["request"])
     assert "Execute the active flow checklist now." in followup_question
     assert "Current objective:" in followup_question
     warnings = second.get("warnings") or []
@@ -616,63 +655,77 @@ def test_plan_trigger_followup_not_classified_as_conflict(tmp_path: Path, monkey
     assert agent.is_conflicting_request("implement plan.", flow_id) is False
 
 
-def test_coding_agent_handles_tools_only_worker_violation(tmp_path: Path, monkeypatch) -> None:
-    class _FailingWorker:
-        def run_tools(self, _request):
-            raise ToolWorkerProcessError(
-                code="tools_only_violation",
-                message="no successful tool calls",
-                retriable=False,
-            )
-
+def test_coding_agent_without_orchestrator_does_not_call_ask_agent_run(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    agent.tool_worker_client = _FailingWorker()
+    agent.tools_manager_orchestrator = None
     result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
-    assert "tools-only worker policy" in str(result.get("answer", "")).lower()
+    assert "orchestrator is unavailable" in str(result.get("answer", "")).lower()
     warnings = result.get("warnings") or []
-    assert any("tools_only_violation" in str(item) for item in warnings)
+    assert any("auto_execute_orchestrator_unavailable" in str(item) for item in warnings)
+    fake = agent.ask_agent
+    assert isinstance(fake, _FakeAskAgent)
+    assert fake.calls == []
 
 
-def test_coding_agent_retries_tools_only_violation_once_with_override(tmp_path: Path, monkeypatch) -> None:
-    class _RetryWorker:
+def test_coding_agent_retries_tools_only_violation_once_through_orchestrator(tmp_path: Path, monkeypatch) -> None:
+    class _RetryOrchestrator:
         def __init__(self) -> None:
             self.calls = 0
-            self.requests = []
+            self.kwargs = []
 
-        def run_tools(self, request):
+        def run(self, **kwargs):
             self.calls += 1
-            self.requests.append(request)
+            self.kwargs.append(dict(kwargs))
             if self.calls == 1:
                 raise ToolWorkerProcessError(
                     code="tools_only_violation",
                     message="no successful tool calls",
                     retriable=False,
                 )
-            return type(
-                "_Resp",
-                (),
-                {
-                    "model_dump": lambda self: {
-                        "answer": "fallback answer",
-                        "sources": [],
-                        "mode": "agent-tools",
-                        "trace": [],
-                        "warnings": [],
-                    }
-                },
-            )()
+            return AutoExecuteResult(
+                answer="fallback answer",
+                trace=[],
+                warnings=[],
+                changed_files=[],
+                passes=1,
+                terminal_reason="manager_stop",
+                toolsmanager_requests_count=1,
+            )
 
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
-    worker = _RetryWorker()
-    agent.tool_worker_client = worker
+    orchestrator = _RetryOrchestrator()
+    agent.set_tools_manager_orchestrator(orchestrator)
     result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
-    assert worker.calls == 2
-    assert worker.requests[1].tools_only_strict_override is False
+    assert orchestrator.calls == 2
     assert result.get("render_mode") == "answer_only"
     assert result.get("fallback_reason") == "tools_only_violation"
     assert result.get("fallback_retry_attempted") is True
+    fake = agent.ask_agent
+    assert isinstance(fake, _FakeAskAgent)
+    assert fake.calls == []
+
+
+def test_coding_agent_provider_error_does_not_fallback_to_direct_ask_agent(tmp_path: Path, monkeypatch) -> None:
+    class _BadProviderOrchestrator:
+        def run(self, **_kwargs):
+            raise ToolWorkerProcessError(
+                code="run_failed",
+                message="Error code: 400 - {'error': {'message': 'openai_error', 'type': 'bad_response_status_code'}}",
+                retriable=False,
+            )
+
+    payload = {"answer": "direct fallback must not run", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent.set_tools_manager_orchestrator(_BadProviderOrchestrator())
+
+    with pytest.raises(ToolWorkerProcessError):
+        agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
+
+    fake = agent.ask_agent
+    assert isinstance(fake, _FakeAskAgent)
+    assert fake.calls == []
 
 
 def test_coding_agent_force_fallback_retry_uses_retry_request_text(tmp_path: Path, monkeypatch) -> None:
@@ -694,10 +747,11 @@ def test_coding_agent_force_fallback_retry_uses_retry_request_text(tmp_path: Pat
 
     result = agent.generate("update README section", index_dir=tmp_path / ".mana/index", k=4)
     _ = result
-    assert len(ask_agent.calls) >= 2
+    calls = _orchestrator_calls(agent)
+    assert len(calls) >= 2
     assert any(
-        "apply_patch is unavailable or failed/no-op repeatedly" in str(call.get("question", ""))
-        for call in ask_agent.calls
+        "apply_patch is unavailable or failed/no-op repeatedly" in str(call.get("request", ""))
+        for call in calls
     )
     warnings = result.get("warnings") or []
     assert any("forced_write_file_retry_after_patch_noop" in str(item) for item in warnings)
@@ -789,7 +843,7 @@ def test_coding_agent_conversational_noop_retries_before_terminal(tmp_path: Path
     monkeypatch.setattr(agent, "_git_status_paths", lambda: next(states, {"README.md"}))  # type: ignore[method-assign]
 
     result = agent.generate("please update readme.md", index_dir=tmp_path / ".mana/index", k=4)
-    assert len(ask_agent.calls) >= 2
+    assert len(_orchestrator_calls(agent)) >= 2
     assert result["changed_files"] == ["README.md"]
     warnings = result.get("warnings") or []
     assert any("edit_intent_conversational_noop_detected" in str(item) for item in warnings)

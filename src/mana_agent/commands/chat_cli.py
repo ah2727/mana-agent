@@ -617,7 +617,6 @@ def chat(
             search_budget=max(1, int(coding_search_budget or settings.coding_search_budget)),
             read_budget=max(1, int(coding_read_budget or settings.coding_read_budget)),
             require_read_files=max(1, int(coding_require_read_files or settings.coding_require_read_files)),
-            repo_only_internet_default=True,
             tool_worker_client=tool_worker_client,
             full_auto_mode=(execution_profile == "full-auto"),
             planner_model=settings.openai_coding_planner_model,
@@ -945,7 +944,6 @@ def chat(
                     user_question,
                     auto_chat_mode=(auto_chat_mode.value if auto_chat_mode is not None else None),
                 )
-            block_internet = not bool(re.search(r"(?i)\\b(latest|internet|online|web|news|search web)\\b", user_question))
             policy = {
                 "allowed_tools": [
                     "semantic_search",
@@ -954,13 +952,11 @@ def chat(
                     "apply_patch",
                     "create_file",
                     "write_file",
-                    "search_internet",
                 ],
                 "search_budget": max(1, int(coding_search_budget or settings.coding_search_budget)),
                 "read_budget": max(1, int(coding_read_budget or settings.coding_read_budget)),
                 "read_line_window": 400,
                 "require_read_files": max(1, int(coding_require_read_files or settings.coding_require_read_files)),
-                "block_internet": block_internet,
                 "search_repeat_limit": 1,
                 "max_semantic_k": 50,
             }
@@ -1954,7 +1950,7 @@ def chat(
             ):
                 console.print(
                     "[yellow]This chat session is read-only for file edits.[/yellow] "
-                    "Re-run with [bold]--agent-tools --coding-agent[/bold] to allow create_file/write_file/apply_patch."
+                    "Re-run with [bold]--agent-tools --coding-agent[/bold] to allow create_file/write_file/apply_patch/delete_file."
                 )
                 continue
 

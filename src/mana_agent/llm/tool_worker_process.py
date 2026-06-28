@@ -21,8 +21,7 @@ from mana_agent.services.coding_memory_service import CodingMemoryService
 from mana_agent.services.search_service import SearchService
 from mana_agent.llm.ask_agent import AskAgent
 from mana_agent.vector_store.embeddings import build_embeddings
-from mana_agent.tools import build_apply_patch_tool, build_create_file_tool, build_write_file_tool
-from mana_agent.tools.search_internet import build_search_internet_tool
+from mana_agent.tools import build_apply_patch_tool, build_create_file_tool, build_delete_file_tool, build_write_file_tool
 from mana_agent.vector_store.faiss_store import FaissStore
 from mana_agent.utils.redaction import redact_json_line, redact_secrets
 from mana_agent.utils.tool_policy import expand_tool_aliases
@@ -584,7 +583,7 @@ def _infer_trace_row_success(row: dict[str, Any]) -> bool:
             return False
         if normalized_status in ("ok", "success"):
             tool_name = str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
-            if tool_name in {"apply_patch", "write_file", "create_file"}:
+            if tool_name in {"apply_patch", "write_file", "create_file", "delete_file"}:
                 changed = []
                 for key in ("files_changed", "changed_files", "modified_files"):
                     value = row.get(key)
@@ -672,7 +671,7 @@ def _infer_trace_row_success(row: dict[str, Any]) -> bool:
 
 def _infer_trace_row_mutation_success(row: dict[str, Any]) -> bool:
     tool_name = str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
-    if tool_name not in {"apply_patch", "write_file", "create_file"}:
+    if tool_name not in {"apply_patch", "write_file", "create_file", "delete_file"}:
         return False
     if not _infer_trace_row_success(row):
         return False
@@ -1220,23 +1219,25 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
         project_root=Path(payload.project_root),
         coding_memory_service=CodingMemoryService(project_root=Path(payload.project_root)),
     )
-    ask_agent.tools.extend(
-        [
-            build_write_file_tool(
-                repo_root=Path(payload.repo_root),
-                allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
-            ),
-            build_create_file_tool(
-                repo_root=Path(payload.repo_root),
-                allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
-            ),
-            build_apply_patch_tool(
-                repo_root=Path(payload.repo_root),
-                allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
-            ),
-            build_search_internet_tool(),
-        ]
-    )
+    tools = [
+        build_write_file_tool(
+            repo_root=Path(payload.repo_root),
+            allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+        ),
+        build_create_file_tool(
+            repo_root=Path(payload.repo_root),
+            allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+        ),
+        build_delete_file_tool(
+            repo_root=Path(payload.repo_root),
+            allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+        ),
+        build_apply_patch_tool(
+            repo_root=Path(payload.repo_root),
+            allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+        ),
+    ]
+    ask_agent.tools.extend(tools)
     logger.info(f"[_build_worker_ask_agent] AskAgent built with {len(ask_agent.tools)} tools")
     return ask_agent
 

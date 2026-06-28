@@ -23,7 +23,7 @@ from mana_agent.services.coding_memory_service import CodingMemoryService
 # Tools whose presence in a step means the step performs a real mutation. A
 # step requiring any of these is an "edit" step and is only ``done`` once a
 # mutation has actually landed.
-_MUTATION_TOOLS = frozenset({"apply_patch", "write_file", "create_file"})
+_MUTATION_TOOLS = frozenset({"apply_patch", "write_file", "create_file", "delete_file"})
 _VERIFY_TOOLS = frozenset({"verify_project", "run_tests", "pytest"})
 
 # Keyword fallbacks used only when a step lists no tools (deterministic

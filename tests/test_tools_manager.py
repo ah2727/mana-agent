@@ -4,8 +4,8 @@ from pathlib import Path
 
 from mana_agent.llm.tool_worker_process import ToolRunResponse
 from mana_agent.llm.goal_profiles import ModelDocsGoalProfile, active_goal_profile
+from mana_agent.llm.agent_work_queue import QueueManager
 from mana_agent.llm.tools_manager import (
-    QueueManager,
     RunStateStore,
     ToolsPlan,
     ToolsPlanStep,
@@ -133,13 +133,13 @@ def test_edit_pass_can_read_and_search_to_ground_content(tmp_path: Path) -> None
     assert worker.edit_policies, "expected at least one mutation-required edit pass"
     allowed = set(worker.edit_policies[0].get("allowed_tools") or [])
     assert {"read_file", "repo_search"}.issubset(allowed)
-    assert {"create_file", "write_file", "apply_patch"}.issubset(allowed)
+    assert {"create_file", "write_file", "apply_patch", "delete_file"}.issubset(allowed)
 
 
 def test_mutation_fallback_allowlist_blocks_discovery_tools() -> None:
     for tool in ("repo_search", "read_file", "ls", "list_files"):
         assert _mutation_fallback_tool_allowed(tool, target_exists=False, prior_target_evidence=True) is False
-    for tool in ("create_file", "write_file", "apply_patch"):
+    for tool in ("create_file", "write_file", "apply_patch", "delete_file"):
         assert _mutation_fallback_tool_allowed(tool, target_exists=False, prior_target_evidence=True) is True
     assert _mutation_fallback_tool_allowed("read_file", target_exists=True, prior_target_evidence=False) is True
 
@@ -860,7 +860,7 @@ def test_forced_mutation_prompt_drives_agentic_authoring() -> None:
     assert "ANALYZING THIS PROJECT" in prompt
     # It must point the worker at read/search tools, not just mutation tools.
     assert "read_file" in prompt and "repo_search" in prompt
-    assert "create_file" in prompt and "write_file" in prompt and "apply_patch" in prompt
+    assert "create_file" in prompt and "write_file" in prompt and "apply_patch" in prompt and "delete_file" in prompt
     # No placeholders/boilerplate — there is no template fallback behind it.
     assert "Do NOT write placeholders" in prompt
     assert "Target file: docs/01-overview.md" in prompt

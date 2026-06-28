@@ -49,7 +49,7 @@ def test_coding_prompts_enforce_noop_retry_flow() -> None:
     assert "do not finalize on no-op" in system_text
     assert "if you want me to proceed" in system_text
     assert "no-op" in recog_text
-    assert "apply_patch" in recog_text and "create_file" in recog_text and "write_file" in recog_text
+    assert "apply_patch" in recog_text and "create_file" in recog_text and "write_file" in recog_text and "delete_file" in recog_text
     assert "execute the edit in the same turn" in recog_text
     assert "json patch" in system_text
     assert "json patch" in recog_text

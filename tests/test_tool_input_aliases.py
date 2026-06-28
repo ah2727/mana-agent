@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from mana_agent.tools.apply_patch import build_apply_patch_tool
-from mana_agent.tools.write_file import build_create_file_tool, build_write_file_tool
+from mana_agent.tools.write_file import build_create_file_tool, build_delete_file_tool, build_write_file_tool, safe_delete_file
 
 
 def test_apply_patch_tool_accepts_patch_alias(monkeypatch, tmp_path: Path) -> None:
@@ -167,3 +167,50 @@ def test_create_file_tool_accepts_text_alias(monkeypatch, tmp_path: Path) -> Non
     assert result["ok"] is True
     assert captured["path"] == "src/new_file.py"
     assert captured["content"] == "print('ok')\n"
+
+
+def test_safe_delete_file_deletes_existing_file(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "old.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+
+    result = safe_delete_file(repo_root=tmp_path, path="src/old.py")
+
+    assert result["ok"] is True
+    assert result["path"] == "src/old.py"
+    assert result["deleted"] is True
+    assert result["files_changed"] == ["src/old.py"]
+    assert not target.exists()
+
+
+def test_safe_delete_file_rejects_missing_directory_and_traversal(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+
+    missing = safe_delete_file(repo_root=tmp_path, path="src/missing.py")
+    directory = safe_delete_file(repo_root=tmp_path, path="src")
+    traversal = safe_delete_file(repo_root=tmp_path, path="../outside.py")
+
+    assert missing["ok"] is False
+    assert "does not exist" in missing["error"]
+    assert directory["ok"] is False
+    assert "not a file" in directory["error"]
+    assert traversal["ok"] is False
+    assert "traversal" in traversal["error"]
+
+
+def test_delete_file_tool_calls_safe_delete_file(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_safe_delete_file(*, repo_root: Path, path: str, allowed_prefixes) -> dict:
+        captured["repo_root"] = repo_root
+        captured["path"] = path
+        captured["allowed_prefixes"] = allowed_prefixes
+        return {"ok": True, "path": path, "deleted": True, "files_changed": [path], "error": ""}
+
+    monkeypatch.setattr("mana_agent.tools.write_file.safe_delete_file", _fake_safe_delete_file)
+
+    tool = build_delete_file_tool(repo_root=tmp_path, allowed_prefixes=None)
+    result = tool.invoke({"path": "src/old.py"})
+
+    assert result["ok"] is True
+    assert captured["path"] == "src/old.py"

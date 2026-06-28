@@ -106,13 +106,13 @@ def _register_tool(agent: AskAgent, name: str, func) -> None:  # noqa: ANN001
 
 
 def test_ask_agent_blocks_exact_duplicate_tool_call(tmp_path: Path) -> None:
-    counter = _CountingTool({"ok": True, "result": "stable"}, "search_internet")
+    counter = _CountingTool({"ok": True, "result": "stable"}, "external_lookup")
     agent = _build_agent(tmp_path)
-    _register_tool(agent, "search_internet", lambda query: counter(query=query))
+    _register_tool(agent, "external_lookup", lambda query: counter(query=query))
     agent.llm = _FakeLLM(
         [
-            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "x"}}]),
-            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "search_internet", "args": {"query": "x"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "external_lookup", "args": {"query": "x"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "external_lookup", "args": {"query": "x"}}]),
             _FakeAIMessage("Done", tool_calls=[]),
         ]
     )
@@ -121,7 +121,7 @@ def test_ask_agent_blocks_exact_duplicate_tool_call(tmp_path: Path) -> None:
     assert result.answer == "Done"
     # The identical second call is blocked, so the tool runs exactly once.
     assert len(counter.calls) == 1
-    assert any("Duplicate tool call blocked: search_internet" in str(w) for w in result.warnings)
+    assert any("Duplicate tool call blocked: external_lookup" in str(w) for w in result.warnings)
 
 
 def test_ask_agent_deduplicates_similar_repo_searches(tmp_path: Path) -> None:
@@ -713,15 +713,15 @@ def test_ask_agent_invokes_externally_registered_tool(tmp_path: Path) -> None:
     agent.tools = [
         StructuredTool.from_function(
             func=lambda query: f'{{"ok": true, "query": "{query}"}}',
-            name="search_internet",
-            description="Search external information.",
+            name="external_lookup",
+            description="Lookup external information.",
         )
     ]
     agent.llm = _FakeLLM(
         [
             _FakeAIMessage(
                 "",
-                tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "latest"}}],
+                tool_calls=[{"id": "1", "name": "external_lookup", "args": {"query": "latest"}}],
             ),
             _FakeAIMessage("Done", tool_calls=[]),
         ]
@@ -731,20 +731,20 @@ def test_ask_agent_invokes_externally_registered_tool(tmp_path: Path) -> None:
     assert result.answer == "Done"
 
 
-def test_ask_agent_does_not_disable_search_internet_after_repeated_calls(tmp_path: Path) -> None:
+def test_ask_agent_does_not_disable_external_tool_after_repeated_calls(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
     agent.tools = [
         StructuredTool.from_function(
             func=lambda query: {"ok": True, "query": query, "results": [{"title": "x"}], "error": ""},
-            name="search_internet",
-            description="Search external information.",
+            name="external_lookup",
+            description="Lookup external information.",
         )
     ]
     agent.llm = _FakeLLM(
         [
-            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "q1"}}]),
-            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "search_internet", "args": {"query": "q2"}}]),
-            _FakeAIMessage("", tool_calls=[{"id": "3", "name": "search_internet", "args": {"query": "q3"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "external_lookup", "args": {"query": "q1"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "external_lookup", "args": {"query": "q2"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "3", "name": "external_lookup", "args": {"query": "q3"}}]),
             _FakeAIMessage("Done", tool_calls=[]),
         ]
     )
@@ -752,58 +752,6 @@ def test_ask_agent_does_not_disable_search_internet_after_repeated_calls(tmp_pat
     result = agent.run("Need latest info", tmp_path / ".mana/index", 2, max_steps=5, timeout_seconds=2)
     assert result.answer == "Done"
     assert not any("disabled after repeated calls without progress" in str(w) for w in result.warnings)
-
-
-def test_ask_agent_reports_search_internet_failure_once(tmp_path: Path) -> None:
-    agent = _build_agent(tmp_path)
-    agent.tools = [
-        StructuredTool.from_function(
-            func=lambda query: {"ok": False, "query": query, "results": [], "error": "DuckDuckGo fallback failed"},
-            name="search_internet",
-            description="Search external information.",
-        )
-    ]
-    agent.llm = _FakeLLM(
-        [
-            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "q1"}}]),
-            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "search_internet", "args": {"query": "q1"}}]),
-            _FakeAIMessage("Done", tool_calls=[]),
-        ]
-    )
-
-    result = agent.run("Need latest info", tmp_path / ".mana/index", 2, max_steps=4, timeout_seconds=2)
-    # A failing search that is then retried identically makes no progress, so the
-    # loop now stops early and synthesizes a best-effort answer instead of spinning.
-    assert "Tool loop reached the step limit before a final answer." not in result.answer
-    assert result.answer.strip()
-    matches = [w for w in result.warnings if "search_internet failed: DuckDuckGo fallback failed" in str(w)]
-    assert len(matches) == 1
-
-
-def test_ask_agent_suppresses_missing_backend_search_warning(tmp_path: Path) -> None:
-    agent = _build_agent(tmp_path)
-    agent.tools = [
-        StructuredTool.from_function(
-            func=lambda query: {
-                "ok": False,
-                "query": query,
-                "results": [],
-                "error": "DuckDuckGo fallback failed (TAVILY_API_KEY not set)",
-            },
-            name="search_internet",
-            description="Search external information.",
-        )
-    ]
-    agent.llm = _FakeLLM(
-        [
-            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "q1"}}]),
-            _FakeAIMessage("Done", tool_calls=[]),
-        ]
-    )
-
-    result = agent.run("Need latest info", tmp_path / ".mana/index", 2, max_steps=3, timeout_seconds=2)
-    assert result.answer == "Done"
-    assert not any("search_internet failed:" in str(w) for w in result.warnings)
 
 
 def test_is_apply_patch_failure_treats_ok_true_payload_with_error_details_as_success() -> None:

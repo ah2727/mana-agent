@@ -44,11 +44,30 @@ caps candidate files and file reads, limits discovery rounds, and stops once it
 has enough evidence to answer or act. It does not perform a full repository
 analysis unless the user explicitly asks for analysis.
 
-Only edit mode can expose mutation tools such as `apply_patch`, `write_file`, or
-`create_file`. Answer, plan, review, verify, and analyze modes are read-only with
-respect to source files. Short follow-ups such as `continue`, `do it`, or
-`verify` reuse compact state from the previous normal chat turn instead of
-rediscovering from scratch.
+Only edit mode can expose mutation tools such as `apply_patch`, `write_file`,
+`create_file`, or `delete_file`. Answer, plan, review, verify, and analyze modes
+are read-only with respect to source files. Short follow-ups such as `continue`,
+`do it`, or `verify` reuse compact state from the previous normal chat turn
+instead of rediscovering from scratch.
+
+## Tool Execution Hierarchy
+
+The coding agent owns planning and steering, but it does not execute repository
+tools directly. For tool-capable work, it builds the checklist, carries
+structured edit intent such as `requires_edit` and `target_files`, and observes
+the live queue results.
+
+Tool execution must pass through `agent_work_queue.QueueManager`, which seeds
+and runs `AgentWorkQueue` from the same queue module. The queue runner owns
+readiness, dependency handling, retries, deduplication, and event publishing.
+`CodingAgentSniffer` remains in `agent_work_queue_adapters` and reacts to
+completed jobs by emitting follow-up `WorkItem`s for reads, edits, and
+verification.
+
+The worker process is the only layer that invokes the tool-capable `AskAgent`
+runtime. If the coding-agent session has no queue manager attached, the request
+is blocked as unavailable instead of falling back to direct `ask_agent.run*` or
+bare worker calls.
 
 ## Reporting Expectations
 

@@ -50,9 +50,8 @@ from mana_agent.llm.qna_chain import QnAChain
 from mana_agent.llm.coding_agent import CodingAgent
 from mana_agent.llm.tool_worker_process import ToolWorkerClient, ToolWorkerProcessError  # noqa: F401 - error class consumed by chat_cli through wildcard command wiring
 from mana_agent.llm.tools_executor import LocalToolsExecutor, RedisRQToolsExecutor, ToolsExecutionConfig  # noqa: F401 - executor types consumed by chat_cli through wildcard command wiring
-from mana_agent.llm.tools_manager import QueueManager
+from mana_agent.llm.agent_work_queue import QueueManager
 from mana_agent.llm.run_logger import LlmRunLogger  # noqa: F401 - consumed by chat_cli through wildcard command wiring
-from mana_agent.tools.search_internet import build_search_internet_tool
 from mana_agent.utils.project_search import project_search  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from .output import build_output_sink, get_shared_console
 
@@ -682,8 +681,7 @@ def build_ask_service(
         project_root=root,
     )
     tools = getattr(ask_agent, "tools", None)
-    if isinstance(tools, list) and not any(getattr(tool, "name", "") == "search_internet" for tool in tools):
-        tools.append(_public_symbol("build_search_internet_tool", build_search_internet_tool)())
+
 
     return ask_service_cls(
         store=build_store(settings),

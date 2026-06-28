@@ -47,6 +47,21 @@ class WriteFileResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class DeleteFileResult:
+    ok: bool
+    path: str
+    deleted: bool = False
+    files_changed: list[str] | None = None
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        if data["files_changed"] is None:
+            data["files_changed"] = []
+        return data
+
+
 _DRIVE_LETTER_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 
 
@@ -381,6 +396,32 @@ def safe_create_file(
         return WriteFileResult(ok=False, path=path, error=f"Error: {exc}").to_dict()
 
 
+def safe_delete_file(
+    *,
+    repo_root: Path,
+    path: str,
+    allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES,
+) -> dict[str, Any]:
+    try:
+        target, rel_posix, err = _resolve_target_path(repo_root=repo_root, path=path, allowed_prefixes=allowed_prefixes)
+        if err or target is None or rel_posix is None:
+            return DeleteFileResult(ok=False, path=path, error=err or "Error: invalid path").to_dict()
+        if not target.exists():
+            return DeleteFileResult(ok=False, path=rel_posix, error="Blocked: target file does not exist").to_dict()
+        if not target.is_file():
+            return DeleteFileResult(ok=False, path=rel_posix, error="Blocked: target is not a file").to_dict()
+
+        target.unlink()
+
+        result = DeleteFileResult(ok=True, path=rel_posix, deleted=True, files_changed=[rel_posix])
+        logger.info("Deleted file: %s", rel_posix)
+        return result.to_dict()
+
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("delete_file failed for %s", path)
+        return DeleteFileResult(ok=False, path=path, error=f"Error: {exc}").to_dict()
+
+
 def build_write_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES):
     try:
         from langchain_core.tools import StructuredTool  # type: ignore
@@ -490,5 +531,24 @@ def build_create_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequen
             "Refuses absolute paths, path traversal, paths escaping the repository root, and existing targets. "
             "Creates parent directories as needed and writes atomically. "
             + PATCH_FORMAT_GUIDANCE
+        ),
+    )
+
+
+def build_delete_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES):
+    try:
+        from langchain_core.tools import StructuredTool  # type: ignore
+    except Exception:  # pragma: no cover
+        from langchain.tools import StructuredTool  # type: ignore
+
+    def _tool(path: str) -> dict[str, Any]:
+        return safe_delete_file(repo_root=repo_root, path=path, allowed_prefixes=allowed_prefixes)
+
+    return StructuredTool.from_function(
+        func=_tool,
+        name="delete_file",
+        description=(
+            "Safely delete one existing file under the repository root. "
+            "Refuses absolute paths, path traversal, paths escaping the repository root, directories, and missing targets."
         ),
     )

@@ -20,7 +20,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
     "file_system": ["ls", "list_files", "read_file", "repo_search"],
     "inspect": ["ls", "list_files", "read_file", "repo_search", "find_symbols", "call_graph"],
     "search": ["semantic_search", "repo_search", "list_files", "find_symbols", "call_graph"],
-    "edit": ["apply_patch", "write_file", "create_file", "git_diff"],
+    "edit": ["apply_patch", "write_file", "create_file", "delete_file", "git_diff"],
     "verify": ["verify_project", "run_command"],
 }
 
@@ -45,8 +45,8 @@ REGISTERED_TOOLS: frozenset[str] = frozenset(
         "tool_contracts",
         "write_file",
         "create_file",
+        "delete_file",
         "apply_patch",
-        "search_internet",
         "github_search",
     }
 )

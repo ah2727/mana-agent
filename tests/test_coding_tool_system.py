@@ -17,7 +17,16 @@ def test_tool_contracts_are_machine_readable() -> None:
     contracts = coding_tool_contracts()
 
     names = {item.name for item in contracts}
-    assert {"read_file", "apply_patch", "create_file", "verify_project", "repo_search", "find_symbols", "call_graph"} <= names
+    assert {
+        "read_file",
+        "apply_patch",
+        "create_file",
+        "delete_file",
+        "verify_project",
+        "repo_search",
+        "find_symbols",
+        "call_graph",
+    } <= names
     for contract in contracts:
         payload = contract.model_dump()
         assert payload["name"]

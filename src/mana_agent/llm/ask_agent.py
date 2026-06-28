@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 _FORCED_WRITE_INSTRUCTION = (
     "You have gathered enough evidence from the repository. Do NOT read, search, "
     "or list anything else. Right now, in this step, call exactly one mutation "
-    "tool (create_file, write_file, or apply_patch) to write the required "
+    "tool (create_file, write_file, apply_patch, or delete_file) to apply the required "
     "deliverable file with its full, final, project-specific content. Do not "
     "answer in prose and do not emit placeholder or stub content."
 )
@@ -443,18 +443,6 @@ class AskAgent:
         return digest
 
     @classmethod
-    def _search_error_detail(cls, content: Any) -> str:
-        payload = cls._coerce_tool_payload(content)
-        if payload is not None:
-            detail = str(payload.get("error", "")).strip()
-            lowered = detail.lower()
-            # Suppress noisy env/config-only web-search warnings.
-            if "duckduckgo fallback failed" in lowered and "tavily_api_key not set" in lowered:
-                return ""
-            return detail
-        return ""
-
-    @classmethod
     def _extract_model_text(cls, content: Any) -> str:
         """Normalize model message content to user-facing text.
 
@@ -493,6 +481,13 @@ class AskAgent:
                     parts.append(extracted)
             return "\n".join(parts).strip()
         return str(content).strip()
+
+    @classmethod
+    def _tool_error_detail(cls, content: Any) -> str:
+        payload = cls._coerce_tool_payload(content)
+        if isinstance(payload, dict):
+            return str(payload.get("error", "") or payload.get("error_code", "") or "").strip()
+        return ""
 
     @staticmethod
     def _normalize_read_mode(mode: str | None) -> Literal["line", "full"]:
@@ -608,7 +603,7 @@ class AskAgent:
         when the payload omits a list. Returns ``[]`` for non-mutation tools or
         when the call did not succeed.
         """
-        if name not in {"apply_patch", "create_file", "write_file"}:
+        if name not in {"apply_patch", "create_file", "write_file", "delete_file"}:
             return []
         if name == "apply_patch":
             if self._is_apply_patch_failure(content):
@@ -1394,7 +1389,6 @@ class AskAgent:
         read_budget = int(policy.get("read_budget", 0) or 0)
         read_line_window = max(200, min(int(policy.get("read_line_window", 400) or 400), 2000))
         require_read_files = int(policy.get("require_read_files", 0) or 0)
-        block_internet = bool(policy.get("block_internet", False))
         search_repeat_limit = int(policy.get("search_repeat_limit", 1) or 1)
         search_seen: dict[str, int] = defaultdict(int)
         max_semantic_k = int(policy.get("max_semantic_k", 50) or 50)
@@ -1430,7 +1424,7 @@ class AskAgent:
         mutation_required = bool(policy.get("mutation_required") or policy.get("mutation_strict"))
         mutation_tool_names = [
             name
-            for name in ("apply_patch", "write_file", "create_file")
+            for name in ("apply_patch", "write_file", "create_file", "delete_file")
             if name in tool_map and (not allowed_tools or name in allowed_tools)
         ]
         bound_mutation = None
@@ -1635,9 +1629,6 @@ class AskAgent:
                         }
                     )
                     persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
-                elif block_internet and name == "search_internet":
-                    content = json.dumps({"error": "search_internet blocked by coding-agent repo-only policy"})
-                    persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                 else:
                     # Record signatures so the next identical/equivalent call is
                     # recognized as a duplicate (read_file is intentionally
@@ -1750,7 +1741,7 @@ class AskAgent:
                                     tool_name=name,
                                     args_summary=json.dumps(args, sort_keys=True, default=str)[:500],
                                     duration_ms=(perf_counter() - tool_started) * 1000,
-                                    status="ok" if not self._search_error_detail(content) else "error",
+                                    status="ok" if not self._tool_error_detail(content) else "error",
                                     output_preview=str(content)[:4000],
                                     changed_files=self._mutation_changed_files(
                                         name=name,
@@ -1774,7 +1765,7 @@ class AskAgent:
                         name,
                         args if isinstance(args, dict) else {},
                         content,
-                        "error" if self._search_error_detail(content) else "ok",
+                        "error" if self._tool_error_detail(content) else "ok",
                     )
                     # No-progress detection: a successful result that adds new
                     # evidence resets the stagnation counter; an executed result
@@ -1783,7 +1774,7 @@ class AskAgent:
                     # except for tools that already have dedicated failure guards
                     # (apply_patch -> write_file fallback, read_file -> repeated-
                     # failure limit), which would otherwise be cut off early.
-                    if self._search_error_detail(content):
+                    if self._tool_error_detail(content):
                         if name not in {"apply_patch", "read_file"}:
                             stagnant_steps += 1
                     else:
@@ -1840,12 +1831,6 @@ class AskAgent:
                     if changed_paths:
                         evidence_memory.invalidate_many(set(changed_paths))
                         mutation_succeeded = True
-                if name == "search_internet":
-                    detail = self._search_error_detail(content)
-                    if detail:
-                        warning = f"search_internet failed: {detail}"
-                        if warning not in warnings:
-                            warnings.append(warning)
                 messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
 
                 if stagnant_steps >= self.MAX_STAGNANT_STEPS and not force_synthesis_reason:

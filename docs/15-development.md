@@ -8,7 +8,7 @@ verification flow so changes stay grounded in the codebase.
 
 1. Inspect the repository before editing.
 2. Read the relevant source files and docs for the area you are changing.
-3. Make focused mutations with `create_file`, `write_file`, or `apply_patch`.
+3. Make focused mutations with `create_file`, `write_file`, `apply_patch`, or `delete_file`.
 4. Verify the result with the narrowest useful checks.
 5. Report the files that changed and any checks that were skipped.
 

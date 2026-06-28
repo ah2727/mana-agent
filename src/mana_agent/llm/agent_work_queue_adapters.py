@@ -122,7 +122,7 @@ def classify_result(item: WorkItem, response: ToolRunResponse, *, repo_root: Pat
             trace=list(response.trace),
         )
 
-    if tool in {"apply_patch", "write_file", "create_file"}:
+    if tool in {"apply_patch", "write_file", "create_file", "delete_file"}:
         changed = sorted(paths)
         for row in response.trace:
             if isinstance(row, dict):
@@ -214,6 +214,7 @@ def make_worker_executor(
                 "apply_patch",
                 "write_file",
                 "create_file",
+                "delete_file",
                 "git_diff",
                 "git_status",
             ]
@@ -352,7 +353,7 @@ class CodingAgentSniffer:
             question=(
                 "Using the file evidence already gathered in this run, carry out "
                 f"the user's request: {self._request}. Apply concrete changes with "
-                "create_file/write_file/apply_patch and report the changed files."
+                "create_file/write_file/apply_patch/delete_file and report the changed files."
                 f"{target_instruction}"
             ),
             gate="apply_edit",

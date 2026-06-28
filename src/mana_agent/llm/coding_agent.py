@@ -2,7 +2,7 @@
 mana_agent.llm.coding_agent
 
 Coding agent wrapper with:
-- mutation tools (create_file/write_file/apply_patch)
+- mutation tools (create_file/write_file/apply_patch/delete_file)
 - structured flow/checklist planning
 - anti-loop tool policy (search/read budgets, duplicate search guards)
 - flow-memory continuity integration
@@ -11,7 +11,6 @@ Coding agent wrapper with:
 from __future__ import annotations
 from tenacity import retry, stop_after_attempt, wait_exponential
 import ast
-import inspect
 import json
 import logging
 import os
@@ -34,7 +33,7 @@ from mana_agent.llm.prompts import (
     FULL_AUTO_EXECUTION_PROMPT,
     TOOLSMANAGER_PROMPT
 )
-from mana_agent.llm.tools_manager import QueueManager
+from mana_agent.llm.agent_work_queue import QueueManager
 from mana_agent.llm.coding_agent_models import (
     AskAgentLike,
     DynamicReadPolicy,
@@ -54,7 +53,7 @@ from mana_agent.llm.tool_worker_process import (
 )
 
 from mana_agent.services.coding_memory_service import CodingMemoryService
-from mana_agent.tools import build_create_file_tool, build_write_file_tool, build_apply_patch_tool
+from mana_agent.tools import build_create_file_tool, build_delete_file_tool, build_write_file_tool, build_apply_patch_tool
 
 logger = logging.getLogger(__name__)
 _as_jsonable = as_jsonable
@@ -80,7 +79,6 @@ class CodingAgent:
         "rename",
         "cleanup",
     )
-    _WEB_INTENT_TOKENS = ("latest", "internet", "online", "web", "news", "search web")
     _EXPLICIT_FILE_RE = re.compile(r"(?i)\b([A-Za-z0-9_\-./]+\.[A-Za-z0-9_]+)\b")
     _EXPLICIT_DOTFILE_RE = re.compile(
         r"(?i)(?<![\w/.-])"
@@ -353,7 +351,7 @@ class CodingAgent:
                     title="Apply requested change",
                     reason="Implement the user request in repository files",
                     status="pending",
-                    requires_tools=["apply_patch", "create_file", "write_file"],
+                    requires_tools=["apply_patch", "create_file", "write_file", "delete_file"],
                 ),
                 FlowStep(
                     id="s3",
@@ -381,7 +379,6 @@ class CodingAgent:
         search_budget: int = 4,
         read_budget: int = 6,
         require_read_files: int = 2,
-        repo_only_internet_default: bool = True,
         tool_worker_client: ToolWorkerClient | None = None,
         full_auto_mode: bool = False,
         planner_model: str | None = None,
@@ -400,7 +397,6 @@ class CodingAgent:
         self.search_budget = max(1, int(search_budget))
         self.read_budget = max(1, int(read_budget))
         self.require_read_files = max(1, int(require_read_files))
-        self.repo_only_internet_default = bool(repo_only_internet_default)
         self.tool_worker_client = tool_worker_client
         self.full_auto_mode = bool(full_auto_mode)
         self.planner_model = str(planner_model).strip() if planner_model else None
@@ -412,6 +408,7 @@ class CodingAgent:
                 [
                     build_write_file_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
                     build_create_file_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
+                    build_delete_file_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
                     build_apply_patch_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
                 ]
             )
@@ -478,6 +475,10 @@ class CodingAgent:
                         allowed_prefixes=self.allowed_prefixes
                     ),
                     build_create_file_tool(
+                        repo_root=self.repo_root,
+                        allowed_prefixes=self.allowed_prefixes
+                    ),
+                    build_delete_file_tool(
                         repo_root=self.repo_root,
                         allowed_prefixes=self.allowed_prefixes
                     ),
@@ -980,10 +981,6 @@ class CodingAgent:
         )
         return any(token in lowered for token in patterns)
 
-    def _allows_web_search(self, request: str) -> bool:
-        lowered = request.lower()
-        return any(token in lowered for token in self._WEB_INTENT_TOKENS)
-
     @staticmethod
     def _looks_like_model_docs_request(*values: str) -> bool:
         combined = " ".join(str(value or "") for value in values).lower()
@@ -1179,7 +1176,7 @@ class CodingAgent:
 
     # Mutation tools whose presence in a planned step means the run must end in
     # an actual edit (and verify), not just discovery/reads.
-    _MUTATION_TOOLS = frozenset({"apply_patch", "create_file", "write_file"})
+    _MUTATION_TOOLS = frozenset({"apply_patch", "create_file", "write_file", "delete_file"})
 
     @classmethod
     def _checklist_requires_edit(cls, checklist: "FlowChecklist | None") -> bool:
@@ -1217,43 +1214,6 @@ class CodingAgent:
         if payload is not None and isinstance(payload.get("answer"), str):
             return str(payload["answer"]).strip()
         return (answer or "").strip()
-
-    @staticmethod
-    def _is_provider_bad_response_status_error(exc: ToolWorkerProcessError) -> bool:
-        text = str(exc or "").lower()
-        if exc.code not in {"run_failed", "model_not_found"}:
-            return False
-        return "bad_response_status_code" in text or ("error code: 400" in text and "openai_error" in text)
-
-    def _stringify_worker_fallback_result(
-        self,
-        fallback_result: Any,
-        *,
-        worker_exc: ToolWorkerProcessError,
-        mode: str,
-    ) -> str:
-        existing_payload = self._extract_payload(self._stringify(fallback_result)) or {}
-        answer_text = ""
-        if isinstance(existing_payload.get("answer"), str):
-            answer_text = str(existing_payload.get("answer") or "").strip()
-        if not answer_text:
-            answer_text = str(fallback_result or "").strip()
-        warnings: list[str] = []
-        for item in existing_payload.get("warnings", []) if isinstance(existing_payload.get("warnings"), list) else []:
-            text = str(item).strip()
-            if text:
-                warnings.append(text)
-        warnings.append(f"tool_worker_provider_error: {worker_exc}")
-        warnings.append("tool_worker_direct_agent_fallback_used")
-        payload = {
-            "answer": answer_text,
-            "sources": existing_payload.get("sources", []),
-            "mode": mode,
-            "trace": existing_payload.get("trace", []),
-            "warnings": warnings,
-            "fallback_reason": "tool_worker_bad_response_status_code",
-        }
-        return self._stringify(payload)
 
     @classmethod
     def _trace_read_metrics(cls, trace: list[dict[str, Any]]) -> dict[str, int]:
@@ -1553,7 +1513,6 @@ class CodingAgent:
         flow_context: str | None = None,
         auto_chat_mode: str | None = None,
     ) -> dict[str, Any]:
-        block_internet = self.repo_only_internet_default and (not self._allows_web_search(request))
         require_read_files = self.require_read_files
         explicit_files = {
             match.group(1).strip()
@@ -1591,7 +1550,7 @@ class CodingAgent:
                 "apply_patch",
                 "create_file",
                 "write_file",
-                "search_internet",
+                "delete_file",
             ],
             "search_budget": self.search_budget,
             "read_budget": int(dynamic_read_policy.get("read_budget", self.read_budget) or self.read_budget),
@@ -1610,7 +1569,6 @@ class CodingAgent:
             ),
             "dynamic_read_budget_reason": str(dynamic_read_policy.get("dynamic_read_budget_reason", "") or ""),
             "require_read_files": require_read_files,
-            "block_internet": block_internet,
             "search_repeat_limit": 1,
             "max_semantic_k": 50,
         }
@@ -2013,48 +1971,45 @@ class CodingAgent:
         k: "int | None" = None,
         flow_context: "str | None" = None,
     ) -> "ToolRunResponse":
-        """Route a ToolRunRequest through the QueueManager when available.
+        """Route a ToolRunRequest through the QueueManager.
 
-        Using the manager as the single gateway prevents the same command from
-        being dispatched to the worker subprocess more than once when multiple
-        processes share the same CodingAgent instance.  If no orchestrator has
-        been attached, the request falls back to the bare ToolWorkerClient so
-        that nothing is broken for callers that do not wire up an orchestrator.
+        CodingAgent does not execute repository tools directly. Tool work must
+        enter through QueueManager so AgentWorkQueue owns scheduling and the
+        worker process owns actual tool execution.
         """
         from mana_agent.llm.tool_worker_process import ToolRunResponse as _TRR
 
-        if self.tools_manager_orchestrator is not None:
-            resolved_tool_policy = tool_policy or {}
-            orchestrated = self.tools_manager_orchestrator.run(
-                request=tool_req.question,
-                flow_context=flow_context,
-                index_dir=index_dir,
-                index_dirs=index_dirs,
-                k=int(k if k is not None else 8),
-                max_steps=max_steps,
-                timeout_seconds=timeout_seconds,
-                tool_policy=resolved_tool_policy,
-                pass_cap=max(1, pass_cap),
-                on_event=self._log_worker_event,
-                flow_id=flow_id,
-                run_id=tool_req.run_id,
-            )
+        if self.tools_manager_orchestrator is None:
             return _TRR(
-                answer=str(orchestrated.answer or ""),
-                sources=list(orchestrated.sources),
+                answer="Auto-execute orchestrator is unavailable for this coding-agent session.",
+                sources=[],
                 mode="agent-tools",
-                trace=list(orchestrated.trace),
-                warnings=list(orchestrated.warnings),
+                trace=[],
+                warnings=["auto_execute_orchestrator_unavailable"],
             )
 
-        if self.tool_worker_client is None:
-            return _TRR(answer="No tool worker or orchestrator available.", sources=[], mode="agent-tools", trace=[], warnings=[])
-
-        try:
-            response = self.tool_worker_client.run_tools(tool_req, on_event=self._log_worker_event)
-        except TypeError:
-            response = self.tool_worker_client.run_tools(tool_req)
-        return response
+        resolved_tool_policy = tool_policy or {}
+        orchestrated = self.tools_manager_orchestrator.run(
+            request=tool_req.question,
+            flow_context=flow_context,
+            index_dir=index_dir,
+            index_dirs=index_dirs,
+            k=int(k if k is not None else 8),
+            max_steps=max_steps,
+            timeout_seconds=timeout_seconds,
+            tool_policy=resolved_tool_policy,
+            pass_cap=max(1, pass_cap),
+            on_event=self._log_worker_event,
+            flow_id=flow_id,
+            run_id=tool_req.run_id,
+        )
+        return _TRR(
+            answer=str(orchestrated.answer or ""),
+            sources=list(orchestrated.sources),
+            mode="agent-tools",
+            trace=list(orchestrated.trace),
+            warnings=list(orchestrated.warnings),
+        )
 
     def _call_agent_single(
         self,
@@ -2069,22 +2024,36 @@ class CodingAgent:
         tool_policy: dict[str, Any] | None = None,
         flow_id: str | None = None,
     ) -> str:
+        _ = callbacks
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
-        if self.tool_worker_client is not None or self.tools_manager_orchestrator is not None:
-            tool_req = ToolRunRequest(
-                question=request,
-                index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
-                k=int(k if k is not None else 8),
-                max_steps=max_steps,
-                timeout_seconds=timeout_seconds,
+        tool_req = ToolRunRequest(
+            question=request,
+            index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
+            k=int(k if k is not None else 8),
+            max_steps=max_steps,
+            timeout_seconds=timeout_seconds,
+            tool_policy=tool_policy,
+            system_prompt=effective_prompt,
+            flow_id=flow_id,
+            run_id=flow_id,
+        )
+        try:
+            response = self._execute_via_manager(
+                tool_req,
                 tool_policy=tool_policy,
-                system_prompt=effective_prompt,
+                index_dir=index_dir,
                 flow_id=flow_id,
-                run_id=flow_id,
+                timeout_seconds=timeout_seconds,
+                max_steps=max_steps,
+                k=k,
+                flow_context=flow_context,
             )
-            try:
-                response = self._execute_via_manager(
+            return self._stringify(response.model_dump())
+        except ToolWorkerProcessError as exc:
+            if exc.code == "tools_only_violation":
+                return self._retry_after_tools_only_violation(
                     tool_req,
+                    exc,
                     tool_policy=tool_policy,
                     index_dir=index_dir,
                     flow_id=flow_id,
@@ -2093,82 +2062,7 @@ class CodingAgent:
                     k=k,
                     flow_context=flow_context,
                 )
-                return self._stringify(response.model_dump())
-            except ToolWorkerProcessError as exc:
-                if exc.code == "tools_only_violation":
-                    retry_req = tool_req.model_copy(update={"tools_only_strict_override": False})
-                    retry_warnings = [
-                        f"tools_only_violation: {exc}",
-                        "tools_only_violation_retry_attempted: strict override disabled for one retry",
-                    ]
-                    try:
-                        retry_response = self._execute_via_manager(
-                            retry_req,
-                            tool_policy=tool_policy,
-                            index_dir=index_dir,
-                            flow_id=flow_id,
-                            timeout_seconds=timeout_seconds,
-                            max_steps=max_steps,
-                            k=k,
-                            flow_context=flow_context,
-                        )
-                        payload = retry_response.model_dump()
-                        existing = [str(item) for item in payload.get("warnings", []) if str(item).strip()]
-                        payload["warnings"] = [*existing, *retry_warnings, "tools_only_violation_retry_result: success"]
-                        payload["fallback_reason"] = "tools_only_violation"
-                        payload["fallback_retry_attempted"] = True
-                        return self._stringify(payload)
-                    except ToolWorkerProcessError as retry_exc:
-                        retry_warnings.append(f"tools_only_violation_retry_failed: {retry_exc}")
-                    return self._stringify(
-                        {
-                            "answer": (
-                                "Request blocked by tools-only worker policy: no successful tool calls were made. "
-                                "Please provide a tool-executable request with specific files or operations."
-                            ),
-                            "trace": [],
-                            "warnings": retry_warnings,
-                            "render_mode": "answer_only",
-                            "fallback_reason": "tools_only_violation",
-                            "fallback_retry_attempted": True,
-                        }
-                    )
-                if self._is_provider_bad_response_status_error(exc):
-                    logger.warning("Tool worker provider error; falling back to direct ask_agent.run: %s", exc)
-                    fallback_result = self._invoke_run_like(
-                        "run",
-                        question=request,
-                        index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
-                        k=k,
-                        max_steps=max_steps,
-                        timeout_seconds=timeout_seconds,
-                        callbacks=callbacks,
-                        system_prompt=effective_prompt,
-                        tool_policy=tool_policy,
-                        flow_id=flow_id,
-                    )
-                    return self._stringify_worker_fallback_result(
-                        fallback_result,
-                        worker_exc=exc,
-                        mode="agent-tools",
-                    )
-                raise
-        if hasattr(self.ask_agent, "run"):
-            return self._stringify(
-                self._invoke_run_like(
-                    "run",
-                    question=request,
-                    index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
-                    k=k,
-                    max_steps=max_steps,
-                    timeout_seconds=timeout_seconds,
-                    callbacks=callbacks,
-                    system_prompt=effective_prompt,
-                    tool_policy=tool_policy,
-                    flow_id=flow_id,
-                )
-            )
-        return self._call_ask_like(request, system_prompt=effective_prompt)
+            raise
 
     def _call_agent_multi(
         self,
@@ -2183,25 +2077,39 @@ class CodingAgent:
         tool_policy: dict[str, Any] | None = None,
         flow_id: str | None = None,
     ) -> str:
+        _ = callbacks
         resolved = [str(Path(p).resolve()) for p in index_dirs if str(p).strip()]
         if not resolved:
             return "No index_dirs provided for dir-mode."
         effective_prompt = self._effective_system_prompt_for(request, flow_context=flow_context)
-        if self.tool_worker_client is not None or self.tools_manager_orchestrator is not None:
-            tool_req = ToolRunRequest(
-                question=request,
-                index_dirs=resolved,
-                k=int(k if k is not None else 8),
-                max_steps=max_steps,
-                timeout_seconds=timeout_seconds,
+        tool_req = ToolRunRequest(
+            question=request,
+            index_dirs=resolved,
+            k=int(k if k is not None else 8),
+            max_steps=max_steps,
+            timeout_seconds=timeout_seconds,
+            tool_policy=tool_policy,
+            system_prompt=effective_prompt,
+            flow_id=flow_id,
+            run_id=flow_id,
+        )
+        try:
+            response = self._execute_via_manager(
+                tool_req,
                 tool_policy=tool_policy,
-                system_prompt=effective_prompt,
+                index_dirs=resolved,
                 flow_id=flow_id,
-                run_id=flow_id,
+                timeout_seconds=timeout_seconds,
+                max_steps=max_steps,
+                k=k,
+                flow_context=flow_context,
             )
-            try:
-                response = self._execute_via_manager(
+            return self._stringify(response.model_dump())
+        except ToolWorkerProcessError as exc:
+            if exc.code == "tools_only_violation":
+                return self._retry_after_tools_only_violation(
                     tool_req,
+                    exc,
                     tool_policy=tool_policy,
                     index_dirs=resolved,
                     flow_id=flow_id,
@@ -2210,123 +2118,60 @@ class CodingAgent:
                     k=k,
                     flow_context=flow_context,
                 )
-                return self._stringify(response.model_dump())
-            except ToolWorkerProcessError as exc:
-                if exc.code == "tools_only_violation":
-                    retry_req = tool_req.model_copy(update={"tools_only_strict_override": False})
-                    retry_warnings = [
-                        f"tools_only_violation: {exc}",
-                        "tools_only_violation_retry_attempted: strict override disabled for one retry",
-                    ]
-                    try:
-                        retry_response = self._execute_via_manager(
-                            retry_req,
-                            tool_policy=tool_policy,
-                            index_dirs=resolved,
-                            flow_id=flow_id,
-                            timeout_seconds=timeout_seconds,
-                            max_steps=max_steps,
-                            k=k,
-                            flow_context=flow_context,
-                        )
-                        payload = retry_response.model_dump()
-                        existing = [str(item) for item in payload.get("warnings", []) if str(item).strip()]
-                        payload["warnings"] = [*existing, *retry_warnings, "tools_only_violation_retry_result: success"]
-                        payload["fallback_reason"] = "tools_only_violation"
-                        payload["fallback_retry_attempted"] = True
-                        return self._stringify(payload)
-                    except ToolWorkerProcessError as retry_exc:
-                        retry_warnings.append(f"tools_only_violation_retry_failed: {retry_exc}")
-                    return self._stringify(
-                        {
-                            "answer": (
-                                "Request blocked by tools-only worker policy: no successful tool calls were made. "
-                                "Please provide a tool-executable request with specific files or operations."
-                            ),
-                            "trace": [],
-                            "warnings": retry_warnings,
-                            "render_mode": "answer_only",
-                            "fallback_reason": "tools_only_violation",
-                            "fallback_retry_attempted": True,
-                        }
-                    )
-                if self._is_provider_bad_response_status_error(exc):
-                    logger.warning("Tool worker provider error; falling back to direct ask_agent call: %s", exc)
-                    if hasattr(self.ask_agent, "run_multi"):
-                        fallback_result = self._invoke_run_like(
-                            "run_multi",
-                            question=request,
-                            index_dirs=resolved,
-                            k=k,
-                            max_steps=max_steps,
-                            timeout_seconds=timeout_seconds,
-                            callbacks=callbacks,
-                            system_prompt=effective_prompt,
-                            tool_policy=tool_policy,
-                            flow_id=flow_id,
-                        )
-                    else:
-                        stitched = (
-                            f"{request}\n\n"
-                            "DIR-MODE CONTEXT:\n"
-                            f"- index_dirs:\n  - " + "\n  - ".join(resolved) + "\n"
-                            "- Use these indexes when searching context.\n"
-                        )
-                        fallback_result = self._invoke_run_like(
-                            "run",
-                            question=stitched,
-                            index_dir=resolved[0],
-                            k=k,
-                            max_steps=max_steps,
-                            timeout_seconds=timeout_seconds,
-                            callbacks=callbacks,
-                            system_prompt=effective_prompt,
-                            tool_policy=tool_policy,
-                            flow_id=flow_id,
-                        )
-                    return self._stringify_worker_fallback_result(
-                        fallback_result,
-                        worker_exc=exc,
-                        mode="agent-tools",
-                    )
-                raise
-        if hasattr(self.ask_agent, "run_multi"):
-            return self._stringify(
-                self._invoke_run_like(
-                    "run_multi",
-                    question=request,
-                    index_dirs=resolved,
-                    k=k,
-                    max_steps=max_steps,
-                    timeout_seconds=timeout_seconds,
-                    callbacks=callbacks,
-                    system_prompt=effective_prompt,
-                    tool_policy=tool_policy,
-                    flow_id=flow_id,
-                )
+            raise
+
+    def _retry_after_tools_only_violation(
+        self,
+        tool_req: "ToolRunRequest",
+        exc: ToolWorkerProcessError,
+        *,
+        tool_policy: "dict[str, Any] | None" = None,
+        index_dir: "str | Path | None" = None,
+        index_dirs: "list[str] | None" = None,
+        flow_id: "str | None" = None,
+        timeout_seconds: int = 60,
+        max_steps: int = 6,
+        k: "int | None" = None,
+        flow_context: "str | None" = None,
+    ) -> str:
+        retry_req = tool_req.model_copy(update={"tools_only_strict_override": False})
+        retry_warnings = [
+            f"tools_only_violation: {exc}",
+            "tools_only_violation_retry_attempted: strict override disabled for one retry",
+        ]
+        try:
+            retry_response = self._execute_via_manager(
+                retry_req,
+                tool_policy=tool_policy,
+                index_dir=index_dir,
+                index_dirs=index_dirs,
+                flow_id=flow_id,
+                timeout_seconds=timeout_seconds,
+                max_steps=max_steps,
+                k=k,
+                flow_context=flow_context,
             )
-        if hasattr(self.ask_agent, "run"):
-            stitched = (
-                f"{request}\n\n"
-                "DIR-MODE CONTEXT:\n"
-                f"- index_dirs:\n  - " + "\n  - ".join(resolved) + "\n"
-                "- Use these indexes when searching context.\n"
-            )
-            return self._stringify(
-                self._invoke_run_like(
-                    "run",
-                    question=stitched,
-                    index_dir=resolved[0],
-                    k=k,
-                    max_steps=max_steps,
-                    timeout_seconds=timeout_seconds,
-                    callbacks=callbacks,
-                    system_prompt=effective_prompt,
-                    tool_policy=tool_policy,
-                    flow_id=flow_id,
-                )
-            )
-        return self._call_ask_like(request, system_prompt=effective_prompt)
+            payload = retry_response.model_dump()
+            existing = [str(item) for item in payload.get("warnings", []) if str(item).strip()]
+            payload["warnings"] = [*existing, *retry_warnings, "tools_only_violation_retry_result: success"]
+            payload["fallback_reason"] = "tools_only_violation"
+            payload["fallback_retry_attempted"] = True
+            return self._stringify(payload)
+        except ToolWorkerProcessError as retry_exc:
+            retry_warnings.append(f"tools_only_violation_retry_failed: {retry_exc}")
+        return self._stringify(
+            {
+                "answer": (
+                    "Request blocked by tools-only worker policy: no successful tool calls were made. "
+                    "Please provide a tool-executable request with specific files or operations."
+                ),
+                "trace": [],
+                "warnings": retry_warnings,
+                "render_mode": "answer_only",
+                "fallback_reason": "tools_only_violation",
+                "fallback_retry_attempted": True,
+            }
+        )
 
     @contextmanager
     def _without_tool(self, tool_name: str):
@@ -2340,43 +2185,6 @@ class CodingAgent:
             yield
         finally:
             tools[:] = original
-
-    def _call_ask_like(self, request: str, *, system_prompt: str) -> str:
-        kwargs: dict[str, Any] = {}
-        try:
-            sig = inspect.signature(self.ask_agent.ask)
-            if "tool_use" in sig.parameters:
-                kwargs["tool_use"] = True
-            if "system_prompt" or "instructions" in sig.parameters:
-                kwargs["system_prompt"] = system_prompt
-
-        except Exception:
-            pass
-        if "system_prompt" not in kwargs and "instructions" not in kwargs:
-            request = f"{system_prompt}\n\nUser request:\n{request}"
-        result = self.ask_agent.ask(request, **kwargs)
-        return self._stringify(result)
-
-    def _invoke_run_like(self, method_name: str, *, system_prompt: str, **args: Any) -> Any:
-        fn = getattr(self.ask_agent, method_name)
-        try:
-            sig = inspect.signature(fn)
-            filtered: dict[str, Any] = {}
-            for k, v in args.items():
-                if v is None:
-                    continue
-                if k in sig.parameters:
-                    filtered[k] = v
-            if "system_prompt" in sig.parameters:
-                filtered["system_prompt"] = system_prompt
-            elif "instructions" in sig.parameters:
-                filtered["instructions"] = system_prompt
-            return fn(**filtered)
-        except Exception:
-            try:
-                return fn(args.get("question"))
-            except Exception:
-                raise
 
     def _stringify(self, result: Any) -> str:
         if isinstance(result, str):

@@ -148,6 +148,27 @@ def coding_tool_contracts() -> list[ToolContract]:
             examples=[{"input": {"path": "docs/new-note.md", "content": "# New note\n"}}],
         ),
         ToolContract(
+            name="delete_file",
+            description="Delete one existing repository file without touching directories or paths outside the repository.",
+            input_schema=_schema({"path": {"type": "string"}}, ["path"]),
+            output_schema=_schema(
+                {
+                    "ok": {"type": "boolean"},
+                    "path": {"type": "string"},
+                    "deleted": {"type": "boolean"},
+                    "files_changed": {"type": "array"},
+                    "error": {"type": "string"},
+                }
+            ),
+            error_format=common_error,
+            safety_rules=[
+                "Reject traversal, absolute paths, paths outside root, and disallowed prefixes.",
+                "Refuse to delete directories.",
+                "Refuse missing targets so accidental no-op deletes do not count as progress.",
+            ],
+            examples=[{"input": {"path": "docs/obsolete-note.md"}}],
+        ),
+        ToolContract(
             name="list_files",
             description="List repository files with optional glob filtering.",
             input_schema=_schema({"glob": {"type": "string"}, "limit": {"type": "integer"}}),

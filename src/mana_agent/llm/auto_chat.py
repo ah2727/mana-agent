@@ -53,7 +53,6 @@ EDIT_TOOLS = [
     "apply_patch",
     "create_file",
     "write_file",
-    "search_internet",
 ]
 
 VERIFY_TOOLS = ["run_command", "verify_project", "git_status", "git_diff", "read_file", "ls", "list_files"]

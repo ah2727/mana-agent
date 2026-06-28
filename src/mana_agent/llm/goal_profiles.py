@@ -82,7 +82,7 @@ def _model_docs_priority(path: str, repo_root: Path) -> int:
     text = _clean_path(path)
     parts = set(Path(text).parts)
     name = Path(text).name.lower()
-    if name == "__init__.py" or name in {"apply_patch.py", "github_search.py"}:
+    if name == "__init__.py" or name == "apply_patch.py":
         return 99
     if text == "project_structure_analysis.json" or text.endswith("/project_structure_analysis.json"):
         return 99
@@ -117,7 +117,7 @@ class ModelDocsGoalProfile(GoalProfile):
                 re.compile(r"^src/(?:.*/)?[\w.-]*_models\.py$"),
             ),
             exclude_patterns=(
-                re.compile(r"(^|/)(__init__\.py|apply_patch\.py|github_search\.py)$"),
+                re.compile(r"(^|/)(__init__\.py|apply_patch\.py)$"),
                 re.compile(r"(^|/)project_structure_analysis\.json$"),
                 re.compile(r"(^|/)package-lock\.json$"),
                 re.compile(r"(^|)(\.mana|node_modules|venv|\.venv|env|site-packages|dist-packages)(/|$)"),

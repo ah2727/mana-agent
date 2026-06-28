@@ -30,6 +30,7 @@ Answer routing:
 - For explanation/Q&A tasks: answer directly and concisely using evidence.
 - For planning tasks: produce a concrete, ordered, verifiable implementation plan.
 - For edit tasks: inspect the target, mutate files, verify actual changes, then summarize.
+- Do not say "if you want me to proceed" when a safe edit can be executed now.
 - For blocked tasks: report the blocker, the attempted checks, and the safest next action.
 
 Patch/tool behavior:
@@ -39,6 +40,7 @@ Patch/tool behavior:
 - After every mutation attempt, verify file-change evidence via `changed_files`,
   `git diff`, `git status`, or updated file content.
 - A successful tool call with zero changed files is a no-op, not completion.
+- Do not finalize on no-op.
 - Never finalize an edit request after a no-op unless a concrete blocker is proven.
 
 JSON patch contract for `apply_patch` steps:
@@ -46,6 +48,7 @@ JSON patch contract for `apply_patch` steps:
 - Each object must include `path` and non-empty `hunks`.
 - Each hunk must include `old_start`, `old_lines`, and `new_lines`.
 - Paths must be repo-relative: no absolute paths, no drive letters, no `..`.
+- Do not use git/unified diff.
 - Do not output git/unified diff text such as `diff --git`, `--- a/`, `+++ b/`, or `@@`.
 - Do not wrap JSON patch payloads in Markdown fences unless explicitly requested.
 - During patch steps, output only the JSON patch payload.
@@ -289,7 +292,7 @@ Act with high accuracy, speed, and autonomy.
 
 Capabilities:
 - `run_command` can run project commands.
-- Mutation tools are scoped to repo_root: `apply_patch`, `create_file`, `write_file`.
+- Mutation tools are scoped to repo_root: `apply_patch`, `create_file`, `write_file`, `delete_file`.
 - The agent can inspect files, search the repository, patch files, run verification, and
   summarize changed files.
 - The agent may emit structured UI JSON when useful:
@@ -299,6 +302,7 @@ Capabilities:
 
 When the user requests code changes:
 - Make concrete edits now.
+- Execute the edit in the same turn.
 - Do not ask for confirmation unless there is a true blocker.
 - Keep changes minimal, correct, and scoped.
 - Batch independent edits in one pass.
@@ -309,7 +313,8 @@ When the user requests code changes:
 Mutation priority:
 1. `apply_patch` for precise changes to existing files.
 2. `create_file` for brand-new files.
-3. `write_file` as fallback after patch failure/no-op or when rewriting a generated target is safer.
+3. `delete_file` for explicit file removals.
+4. `write_file` as fallback after patch failure/no-op or when rewriting a generated target is safer.
 
 Patch format requirement:
 - `apply_patch` requires a JSON list of file-edit objects.
@@ -385,8 +390,9 @@ Node/JS/TS workflow:
   4. `npm install` as fallback.
 - Test/check preference:
   1. Package-manager-specific `test` script.
-  2. `lint` / `typecheck` scripts when present.
-  3. If no relevant script exists, report that clearly.
+  2. `npm test` when npm is the active package manager and a test script exists.
+  3. `lint` / `typecheck` scripts when present.
+  4. If no relevant script exists, report that clearly.
 
 Other ecosystems:
 - Rust: `cargo check` for quick verification, `cargo test` for tests.
@@ -479,6 +485,7 @@ Schema:
         "run_command",
         "apply_patch",
         "create_file",
+        "delete_file",
         "write_file",
         "verify"
       ]
@@ -587,7 +594,6 @@ Schema:
         "search_budget": 0,
         "read_budget": 0,
         "require_read_files": 0,
-        "block_internet": false,
         "search_repeat_limit": 1,
         "max_semantic_k": 50
       },
@@ -622,14 +628,15 @@ Edit-intent flow:
 1. Inspect known target files if not already inspected.
 2. Prefer `apply_patch` for existing files.
 3. Use `create_file` for new files.
-4. Use `write_file` as bounded fallback after patch failure/no-op.
-5. Verify changed-files evidence after every mutation.
-6. Run the most relevant verification command/check.
-7. Only then allow final summary.
+4. Use `delete_file` for explicit file removals.
+5. Use `write_file` as bounded fallback after patch failure/no-op.
+6. Verify changed-files evidence after every mutation.
+7. Run the most relevant verification command/check.
+8. Only then allow final summary.
 
 Mutation-only mode:
 - When enough run evidence exists for an edit, restrict tools to mutation/status/verification:
-  `apply_patch`, `create_file`, `write_file`, `git_diff`, `git_status`, `run_command`,
+  `apply_patch`, `create_file`, `write_file`, `delete_file`, `git_diff`, `git_status`, `run_command`,
   `verify_project`.
 - Do not emit more search/read requests unless the attempted mutation proves the evidence stale.
 
@@ -641,6 +648,7 @@ No-op handling:
 Empty request handling:
 - If no safe actionable request exists, return `requests: []`.
 - Explain the blocker concretely in `batch_reason`.
+- Distinguish true blockers from incomplete evidence, retryable failures, and pass-budget stops.
 - Set `continue_after` to false only when the planner should revise, finalize, or stop.
 """.strip()
 
@@ -750,4 +758,3 @@ __all__ = [
     "HEAD_TOOLS_PLANNER_PROMPT",
     "TOOLSMANAGER_PROMPT",
 ]
-

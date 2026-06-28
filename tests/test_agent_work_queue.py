@@ -31,6 +31,7 @@ _AGENTIC_EDIT_TOOLS = [
     "apply_patch",
     "write_file",
     "create_file",
+    "delete_file",
     "git_diff",
     "git_status",
 ]
@@ -243,7 +244,7 @@ def test_sniffer_without_edit_signal_does_not_finalize(tmp_path: Path):
 def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path):
     """End-to-end through the LIVE path (QueueManager.run), with a fake worker."""
     from mana_agent.llm.tool_worker_process import ToolRunResponse
-    from mana_agent.llm.tools_manager import QueueManager
+    from mana_agent.llm.agent_work_queue import QueueManager
 
     (tmp_path / "found.py").write_text("x = 1\n")
 
@@ -299,7 +300,7 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
 
 
 def test_queue_manager_blocks_edit_when_no_mutation_tool_attempted(tmp_path: Path):
-    from mana_agent.llm.tools_manager import QueueManager
+    from mana_agent.llm.agent_work_queue import QueueManager
 
     class _FakeWorker:
         def __init__(self) -> None:
@@ -330,7 +331,7 @@ def test_queue_manager_blocks_edit_when_no_mutation_tool_attempted(tmp_path: Pat
 
 
 def test_queue_manager_blocks_edit_when_mutation_has_no_changed_files(tmp_path: Path):
-    from mana_agent.llm.tools_manager import QueueManager
+    from mana_agent.llm.agent_work_queue import QueueManager
 
     class _FakeWorker:
         def run_tools(self, request, on_event=None):  # noqa: ANN001
@@ -355,7 +356,7 @@ def test_queue_manager_blocks_edit_when_mutation_has_no_changed_files(tmp_path: 
 
 
 def test_queue_manager_uses_latest_useful_answer_only_for_edit_success(tmp_path: Path):
-    from mana_agent.llm.tools_manager import QueueManager
+    from mana_agent.llm.agent_work_queue import QueueManager
 
     class _FakeWorker:
         def run_tools(self, request, on_event=None):  # noqa: ANN001
@@ -497,7 +498,7 @@ def test_eventbus_broadcasts_transitions():
 def test_apply_patch_run_never_claims_no_edit_tool(tmp_path: Path):
     """A worker that wrongly says 'no edit tool was available' must not win when
     the trace proves apply_patch executed and changed a file."""
-    from mana_agent.llm.tools_manager import QueueManager
+    from mana_agent.llm.agent_work_queue import QueueManager
 
     class _FakeWorker:
         def run_tools(self, request, on_event=None):  # noqa: ANN001
@@ -534,7 +535,7 @@ def test_apply_patch_run_never_claims_no_edit_tool(tmp_path: Path):
 
 
 def test_non_empty_changed_files_never_claims_no_changes(tmp_path: Path):
-    from mana_agent.llm.tools_manager import QueueManager
+    from mana_agent.llm.agent_work_queue import QueueManager
 
     class _FakeWorker:
         def run_tools(self, request, on_event=None):  # noqa: ANN001
@@ -560,7 +561,7 @@ def test_non_empty_changed_files_never_claims_no_changes(tmp_path: Path):
 
 
 def test_failed_verify_project_is_surfaced_in_final_answer(tmp_path: Path):
-    from mana_agent.llm.tools_manager import QueueManager
+    from mana_agent.llm.agent_work_queue import QueueManager
 
     class _FakeWorker:
         def run_tools(self, request, on_event=None):  # noqa: ANN001
@@ -606,7 +607,7 @@ def test_failed_verify_project_is_surfaced_in_final_answer(tmp_path: Path):
 
 
 def test_passed_verify_reports_changed_files_and_checks_passed(tmp_path: Path):
-    from mana_agent.llm.tools_manager import QueueManager
+    from mana_agent.llm.agent_work_queue import QueueManager
 
     class _FakeWorker:
         def run_tools(self, request, on_event=None):  # noqa: ANN001
@@ -643,7 +644,7 @@ def test_passed_verify_reports_changed_files_and_checks_passed(tmp_path: Path):
 def test_edit_request_cannot_finalize_after_only_read_search(tmp_path: Path):
     """An edit request where the worker only ever reads/searches must end blocked,
     and the final answer must not claim success."""
-    from mana_agent.llm.tools_manager import QueueManager
+    from mana_agent.llm.agent_work_queue import QueueManager
 
     class _FakeWorker:
         def run_tools(self, request, on_event=None):  # noqa: ANN001

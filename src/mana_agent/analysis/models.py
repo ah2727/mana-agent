@@ -151,7 +151,7 @@ class ToolInvocationTrace:
     duration_ms: float
     status: str
     output_preview: str
-    # Repo-relative paths a mutation tool (apply_patch/write_file/create_file)
+    # Repo-relative paths a mutation tool (apply_patch/write_file/create_file/delete_file)
     # actually changed. Populated so strict mutation gates can recognize a
     # successful write; empty for non-mutating tools.
     changed_files: list[str] = field(default_factory=list)

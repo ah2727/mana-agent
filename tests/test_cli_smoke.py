@@ -351,29 +351,6 @@ def test_cli_commands(monkeypatch, tmp_path: Path) -> None:
         assert result_retired.exit_code != 0
 
 
-def test_build_ask_service_registers_search_internet_tool_without_duplicates(monkeypatch, tmp_path: Path) -> None:
-    from mana_agent.commands import cli
-
-    class _Tool:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-    class _FakeAskAgent:
-        def __init__(self, **_: object) -> None:
-            # Simulate pre-existing registration.
-            self.tools = [_Tool("search_internet")]
-
-    monkeypatch.setattr("mana_agent.commands.cli.AskAgent", _FakeAskAgent)
-    monkeypatch.setattr("mana_agent.commands.cli.QnAChain", lambda **_: object())
-    monkeypatch.setattr("mana_agent.commands.cli.build_store", lambda _s: object())
-    monkeypatch.setattr("mana_agent.commands.cli.build_search_service", lambda _s: object())
-    monkeypatch.setattr("mana_agent.commands.cli.build_search_internet_tool", lambda: _Tool("search_internet"))
-
-    svc = cli.build_ask_service(DummySettings(), model_override=None, project_root=tmp_path)
-    assert svc.ask_agent is not None
-    assert sum(1 for tool in svc.ask_agent.tools if getattr(tool, "name", "") == "search_internet") == 1
-
-
 def test_chat_blocks_edit_requests_without_coding_agent(monkeypatch, tmp_path: Path) -> None:
     class _NoCallAskService(FakeAskService):
         def ask(self, index_dir: str, question: str, k: int) -> AskResponse:  # pragma: no cover - must not run

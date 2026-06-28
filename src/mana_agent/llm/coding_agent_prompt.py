@@ -82,6 +82,10 @@ Use the most direct tool for the job:
   Use for brand-new files.
   Prefer this over `write_file` so existing files are never overwritten accidentally.
 
+- `delete_file`:
+  Use only when the user explicitly asks to remove a repository file or repository evidence proves a file should be removed.
+  Do not use it for directories.
+
 - `write_file`:
   Use only when:
   - a full overwrite is intentionally required, or
@@ -94,6 +98,7 @@ Use the most direct tool for the job:
 
 - Modifying existing files: prefer `apply_patch`.
 - Creating brand-new files: prefer `create_file`.
+- Deleting existing files: use `delete_file`.
 - Default to `strategy_hint="auto"`.
 - Let the tool handle Python computation, Perl fallback, direct write fallback, and internal recovery.
 - Do not manually retry the same patch format repeatedly.
