@@ -2872,7 +2872,8 @@ def test_chat_full_auto_pass_cap_auto_resumes_until_completion(monkeypatch, tmp_
     )
     assert result.exit_code == 0
     assert _FakeCodingAgent.auto_calls == 2
-    assert result.stdout.count("Tool activity") == 1
+    assert "Tool activity" not in result.stdout
+    assert result.stdout.count("─ tools ") == 1
     assert result.stdout.count("tool_worker") == 2
     assert result.stdout.count("Full-auto Checkpoint") == 1
     assert "checklist: done 1 | pending 1 | blocked 0 | total 2" in result.stdout

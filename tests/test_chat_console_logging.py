@@ -5,23 +5,36 @@ import logging
 from mana_agent.commands import cli_internal
 
 
-def test_quiet_filter_drops_noisy_debug_keeps_warnings() -> None:
+def test_quiet_filter_drops_normal_logs_keeps_warnings(monkeypatch) -> None:
+    monkeypatch.setattr(cli_internal, "CLI_VERBOSE_MODE", False)
     f = cli_internal._QuietChatConsoleFilter()
 
     def _rec(name: str, level: int) -> logging.LogRecord:
         return logging.LogRecord(name, level, __file__, 1, "msg", None, None)
 
-    # Noisy indexing/parsing loggers are dropped below WARNING.
+    # Normal chat mode drops all sub-warning records from the visible console.
     assert f.filter(_rec("mana_agent.parsers.python_parser", logging.DEBUG)) is False
     assert f.filter(_rec("mana_agent.analysis.chunker", logging.INFO)) is False
     assert f.filter(_rec("mana_agent.services.index_service", logging.DEBUG)) is False
     assert f.filter(_rec("mana_agent.vector_store.faiss_store", logging.INFO)) is False
+    assert f.filter(_rec("mana_agent.commands.cli_internal", logging.INFO)) is False
+    assert f.filter(_rec("mana_agent.llm.tool_worker_process", logging.INFO)) is False
 
     # Warnings/errors always pass, even from noisy loggers.
     assert f.filter(_rec("mana_agent.services.index_service", logging.WARNING)) is True
+    assert f.filter(_rec("mana_agent.commands.cli_internal", logging.ERROR)) is True
 
-    # Unrelated loggers are untouched at any level.
+
+def test_quiet_filter_verbose_keeps_non_noisy_info(monkeypatch) -> None:
+    monkeypatch.setattr(cli_internal, "CLI_VERBOSE_MODE", True)
+    f = cli_internal._QuietChatConsoleFilter()
+
+    def _rec(name: str, level: int) -> logging.LogRecord:
+        return logging.LogRecord(name, level, __file__, 1, "msg", None, None)
+
     assert f.filter(_rec("mana_agent.commands.cli_internal", logging.INFO)) is True
+    assert f.filter(_rec("mana_agent.llm.tool_worker_process", logging.INFO)) is True
+    assert f.filter(_rec("mana_agent.parsers.python_parser", logging.INFO)) is False
 
 
 def test_install_quiet_console_targets_only_stream_handlers(tmp_path) -> None:

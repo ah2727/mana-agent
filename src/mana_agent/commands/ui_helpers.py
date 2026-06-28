@@ -25,7 +25,6 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.spinner import Spinner
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
@@ -86,7 +85,7 @@ def _sanitize_full_auto_answer_text(
 
 
 class RichToolCallbackHandler(BaseCallbackHandler):
-    """Stream tool start/end/error into the live tool-activity panel."""
+    """Stream tool start/end/error into the active chat log."""
 
     def __init__(self, *, show_inputs: bool = True) -> None:
         self.show_inputs = show_inputs
@@ -121,38 +120,225 @@ class RichToolCallbackHandler(BaseCallbackHandler):
 
 
 # -----------------------------------------
-# Tool-activity panel
+# Chat log timeline
 # -----------------------------------------
 
-# Glyph + accent palette per tool family, so the panel reads at a glance.
-_TOOL_GLYPHS: dict[str, str] = {
-    "read_file": "📖",
-    "chunk_file": "📖",
-    "write_file": "✍️",
-    "create_file": "✨",
-    "apply_patch": "🩹",
-    "list_files": "🗂️",
-    "ls": "🗂️",
-    "repo_search": "🔍",
-    "semantic_search": "🔍",
-    "search_internet": "🌐",
-    "find_symbols": "🔣",
-    "call_graph": "🕸️",
-    "run_command": "⚙️",
-    "verify_project": "✅",
-    "git_status": "🌱",
-    "git_diff": "🌱",
-    "list_tools": "🧰",
-    "tool_contracts": "🧰",
-}
+@dataclass
+class ChatLogEntry:
+    role: str
+    content: str = ""
+    status: str = ""
+    tool_name: str = ""
+    tool_args: str = ""
+    duration: float | None = None
+    run_id: str = ""
+    tool_call_id: str = ""
+    timestamp: float = field(default_factory=time.time)
+    error: str = ""
 
 
-def _tool_glyph(tool: str) -> str:
-    return _TOOL_GLYPHS.get(str(tool or "").strip(), "🔧")
+def _compact_display_text(value: Any, limit: int = 80) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if parsed is not None:
+        if isinstance(parsed, dict):
+            candidates: list[str] = []
+            for key in ("path", "file", "query", "pattern", "command", "url", "glob"):
+                raw = parsed.get(key)
+                if isinstance(raw, (str, int, float)) and str(raw).strip():
+                    candidates.append(str(raw).strip())
+            text = " ".join(candidates) if candidates else json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+        elif isinstance(parsed, list):
+            text = json.dumps(parsed[:3], ensure_ascii=False, separators=(",", ":"))
+    text = text.replace("\n", " ")
+    text = re.sub(r"https?://[^\s'\"]+", lambda match: _summary(match.group(0), 28), text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return _summary(text, limit)
+
+
+def _looks_like_raw_log_record(text: str) -> bool:
+    return bool(re.match(r"^\s*(?:\[[A-Z]+\]|\b(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)\b)\s+", str(text or "")))
+
+
+class ChatLog:
+    """One ordered chat transcript with stable, updatable tool entries."""
+
+    def __init__(self) -> None:
+        self.entries: list[ChatLogEntry] = []
+        self._tool_entries: dict[str, ChatLogEntry] = {}
+
+    def add_user(self, content: str) -> ChatLogEntry:
+        return self._append(ChatLogEntry(role="user", content=_compact_display_text(content, 220)))
+
+    def add_thinking(self, content: str) -> ChatLogEntry:
+        return self._append(ChatLogEntry(role="thinking", content=_compact_display_text(content, 220), status="running"))
+
+    def start_tool(
+        self,
+        tool_name: str,
+        *,
+        tool_args: str = "",
+        run_id: str = "",
+        tool_call_id: str = "",
+    ) -> ChatLogEntry:
+        key = self._tool_key(tool_name, tool_args, run_id, tool_call_id)
+        existing = self._tool_entries.get(key)
+        if existing is not None:
+            existing.status = "running"
+            existing.tool_args = _compact_display_text(tool_args)
+            existing.timestamp = time.time()
+            return existing
+        entry = ChatLogEntry(
+            role="tool",
+            status="running",
+            tool_name=str(tool_name or "tool").strip() or "tool",
+            tool_args=_compact_display_text(tool_args),
+            run_id=str(run_id or "").strip(),
+            tool_call_id=str(tool_call_id or "").strip(),
+        )
+        self._tool_entries[key] = entry
+        self.entries.append(entry)
+        return entry
+
+    def finish_tool(
+        self,
+        tool_name: str,
+        *,
+        duration: float | None = None,
+        run_id: str = "",
+        tool_call_id: str = "",
+        tool_args: str = "",
+    ) -> ChatLogEntry:
+        entry = self._resolve_tool(tool_name, tool_args, run_id, tool_call_id)
+        entry.status = "success"
+        entry.duration = duration
+        if tool_args and not entry.tool_args:
+            entry.tool_args = _compact_display_text(tool_args)
+        return entry
+
+    def fail_tool(
+        self,
+        tool_name: str,
+        *,
+        error: str = "",
+        duration: float | None = None,
+        run_id: str = "",
+        tool_call_id: str = "",
+        tool_args: str = "",
+    ) -> ChatLogEntry:
+        entry = self._resolve_tool(tool_name, tool_args, run_id, tool_call_id)
+        entry.status = "failure"
+        entry.duration = duration
+        entry.error = _compact_display_text(error, 120)
+        if tool_args and not entry.tool_args:
+            entry.tool_args = _compact_display_text(tool_args)
+        return entry
+
+    def add_assistant(self, content: str) -> ChatLogEntry:
+        return self._append(ChatLogEntry(role="assistant", content=str(content or "").strip(), status="done"))
+
+    def add_error(self, content: str) -> ChatLogEntry:
+        if _looks_like_raw_log_record(content):
+            return ChatLogEntry(role="error", status="filtered")
+        return self._append(ChatLogEntry(role="error", content=_compact_display_text(content, 180), status="failure"))
+
+    def _append(self, entry: ChatLogEntry) -> ChatLogEntry:
+        if entry.content:
+            self.entries.append(entry)
+        return entry
+
+    @staticmethod
+    def _tool_key(tool_name: str, tool_args: str, run_id: str, tool_call_id: str) -> str:
+        explicit = str(tool_call_id or run_id or "").strip()
+        if explicit:
+            return explicit
+        return f"{str(tool_name or 'tool').strip()}:{str(tool_args or '').strip()}"
+
+    def _resolve_tool(
+        self,
+        tool_name: str,
+        tool_args: str,
+        run_id: str,
+        tool_call_id: str,
+    ) -> ChatLogEntry:
+        key = self._tool_key(tool_name, tool_args, run_id, tool_call_id)
+        existing = self._tool_entries.get(key)
+        if existing is not None:
+            return existing
+        if not (run_id or tool_call_id or tool_args):
+            for entry in reversed(self.entries):
+                if entry.role == "tool" and entry.tool_name == str(tool_name or "tool").strip() and entry.status == "running":
+                    return entry
+        return self.start_tool(tool_name, tool_args=tool_args, run_id=run_id, tool_call_id=tool_call_id)
+
+
+class ChatLogRenderer:
+    def __init__(self, chat_log: ChatLog, *, spinner_text: str = "Working…", max_rows: int = 20) -> None:
+        self.chat_log = chat_log
+        self.spinner_text = spinner_text
+        self.max_rows = max(1, int(max_rows))
+
+    def __rich__(self):
+        parts: list[Any] = []
+        non_tools = [entry for entry in self.chat_log.entries if entry.role != "tool"]
+        tools = [entry for entry in self.chat_log.entries if entry.role == "tool"]
+        for entry in non_tools:
+            if entry.role == "user":
+                parts.append(self._text_panel(entry.content, "user", "green"))
+            elif entry.role == "thinking":
+                parts.append(self._text_panel(entry.content or self.spinner_text, "thinking", "cyan"))
+            elif entry.role == "assistant":
+                parts.append(self._text_panel(entry.content, "assistant", "blue"))
+            elif entry.role == "error":
+                parts.append(self._text_panel(entry.content, "error", "red"))
+        if tools:
+            parts.append(self._tools_panel(tools[-self.max_rows :]))
+        if not parts:
+            parts.append(self._text_panel(self.spinner_text, "thinking", "cyan"))
+        return Group(*parts)
+
+    @staticmethod
+    def _text_panel(content: str, title: str, border_style: str) -> Panel:
+        return Panel(
+            Text(str(content or "").strip() or "-", overflow="fold"),
+            title=title,
+            title_align="left",
+            border_style=border_style,
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+
+    @staticmethod
+    def _duration_text(duration: float | None) -> str:
+        return f"{float(duration):0.1f}s" if isinstance(duration, (int, float)) else ""
+
+    def _tools_panel(self, tools: list[ChatLogEntry]) -> Panel:
+        table = Table.grid(padding=(0, 1))
+        table.add_column(no_wrap=True)
+        table.add_column(style="cyan", no_wrap=True)
+        table.add_column(overflow="fold", style="dim")
+        table.add_column(justify="right", no_wrap=True, style="dim")
+        for entry in tools:
+            if entry.status == "success":
+                status = Text("✓", style="green")
+                detail = entry.tool_args
+            elif entry.status == "failure":
+                status = Text("✗", style="red")
+                detail = entry.error or entry.tool_args
+            else:
+                status = Text("⠙", style="cyan")
+                detail = entry.tool_args
+            table.add_row(status, entry.tool_name or "tool", detail, self._duration_text(entry.duration))
+        return Panel(table, title="tools", title_align="left", border_style="cyan", box=box.ROUNDED, padding=(0, 1))
 
 
 class LiveToolActivity:
-    """Collect tool calls and render the tool-activity panel."""
+    """Compatibility wrapper that now renders the chat log tools timeline."""
 
     def __init__(
         self,
@@ -164,10 +350,9 @@ class LiveToolActivity:
         self.spinner_text = spinner_text
         self.show_all_logs = show_all_logs
         self.max_rows = max(1, int(max_rows))
-        self._spinner = Spinner("dots", text=Text(spinner_text, style="cyan"))
-        self._rows: deque[dict[str, Any]] = deque(maxlen=200)
-        self._running: dict[str, dict[str, Any]] = {}
-        self._deduped_rows: dict[str, dict[str, Any]] = {}
+        self.log = ChatLog()
+        self._started_at: dict[str, float] = {}
+        self._running_meta: dict[str, dict[str, str]] = {}
         self._log_lines: deque[str] = deque(maxlen=14)
         self._ok = 0
         self._failed = 0
@@ -187,13 +372,15 @@ class LiveToolActivity:
         args = str(args or "")
         key = self._event_key(tool, args, event_id)
         if kind == "start":
-            self._running[key] = {"tool": tool, "started": time.time(), "args": args}
+            self._started_at[key] = time.time()
+            self._running_meta[key] = {"tool": tool, "args": args}
+            self.log.start_tool(tool, tool_args=args, tool_call_id=event_id or "")
         elif kind == "end":
             key = self._matching_running_key(key, tool, args, event_id)
-            self._finish(key, tool, duration=duration, ok=True)
+            self._finish(key, tool, duration=duration, ok=True, event_id=event_id)
         elif kind == "error":
             key = self._matching_running_key(key, tool, args, event_id)
-            self._finish(key, tool, duration=duration, ok=False, error=str(error or ""))
+            self._finish(key, tool, duration=duration, ok=False, error=str(error or ""), event_id=event_id)
 
     @staticmethod
     def _event_key(tool: str, args: str, event_id: str | None) -> str:
@@ -202,15 +389,6 @@ class LiveToolActivity:
             return explicit_id
         return f"{str(tool or 'tool').strip()}:{str(args or '').strip()}"
 
-    @staticmethod
-    def _row_dedup_key(tool: str, args: str, ok: bool, error: str = "") -> str | None:
-        if str(tool or "").strip() != "tool_worker":
-            return None
-        detail = str(error if not ok and error else args or "").strip()
-        if not detail:
-            detail = str(tool or "tool_worker").strip()
-        return f"tool_worker:{ok}:{detail}"
-
     def _matching_running_key(
         self,
         key: str,
@@ -218,9 +396,9 @@ class LiveToolActivity:
         args: str,
         event_id: str | None,
     ) -> str:
-        if key in self._running or event_id or args:
+        if key in self._started_at or event_id or args:
             return key
-        for running_key, running in reversed(list(self._running.items())):
+        for running_key, running in reversed(list(self._running_meta.items())):
             if str(running.get("tool", "") or "") == tool:
                 return running_key
         return key
@@ -233,26 +411,19 @@ class LiveToolActivity:
         duration: float | None,
         ok: bool,
         error: str = "",
+        event_id: str | None = None,
     ) -> None:
-        start = self._running.pop(key, None)
-        if duration is None and start is not None:
-            duration = max(0.0, time.time() - float(start["started"]))
-        args = str(start.get("args", "")) if start is not None else ""
+        started = self._started_at.pop(key, None)
+        meta = self._running_meta.pop(key, None) or {}
+        if duration is None and started is not None:
+            duration = max(0.0, time.time() - float(started))
+        args = str(meta.get("args", ""))
         if ok:
             self._ok += 1
+            self.log.finish_tool(tool, duration=duration, tool_call_id=event_id or key, tool_args=args)
         else:
             self._failed += 1
-        row = {"tool": tool, "duration": duration, "ok": ok, "args": args, "error": error, "count": 1}
-        dedup_key = self._row_dedup_key(tool, args, ok, error)
-        if dedup_key is not None:
-            existing = self._deduped_rows.get(dedup_key)
-            if existing is not None and any(existing is item for item in self._rows):
-                count = int(existing.get("count", 1) or 1) + 1
-                existing.update(row)
-                existing["count"] = count
-                return
-            self._deduped_rows[dedup_key] = row
-        self._rows.append(row)
+            self.log.fail_tool(tool, error=error, duration=duration, tool_call_id=event_id or key, tool_args=args)
 
     def add_log_line(self, line: str) -> None:
         text = str(line or "").strip()
@@ -260,90 +431,8 @@ class LiveToolActivity:
             self._log_lines.append(text)
 
     # -- rendering --------------------------------------------------------
-    def _status_renderable(self):
-        running = list(self._running.values())
-        if running:
-            current = running[-1]
-            tool = str(current.get("tool", "") or "tool")
-            args = str(current.get("args", "") or "")
-            elapsed = max(0.0, time.time() - float(current.get("started", time.time())))
-            label = Text()
-            label.append(f"{_tool_glyph(tool)} ", style="")
-            label.append(tool, style="bold cyan")
-            if args:
-                label.append("  ")
-                label.append(_summary(args, 70), style="dim")
-            label.append(f"   {elapsed:0.1f}s", style="dim")
-            self._spinner.update(text=label)
-            return self._spinner
-
-        summary = Text()
-        summary.append("✓ ", style="bold green")
-        summary.append(f"{self._ok} ok", style="green")
-        if self._failed:
-            summary.append("   ✗ ", style="bold red")
-            summary.append(f"{self._failed} failed", style="red")
-        summary.append(f"   {self.spinner_text}", style="dim")
-        return summary
-
     def __rich__(self):
-        parts: list[Any] = [self._status_renderable()]
-
-        if self._rows:
-            table = Table.grid(padding=(0, 1))
-            table.add_column(no_wrap=True)           # glyph
-            table.add_column(no_wrap=True)           # status
-            table.add_column(style="cyan", no_wrap=True)  # tool
-            table.add_column(justify="right", no_wrap=True, style="dim")  # duration
-            table.add_column(overflow="fold", style="dim")  # detail
-            for row in list(self._rows)[-self.max_rows :]:
-                ok = bool(row.get("ok"))
-                status = Text("✓", style="green") if ok else Text("✗", style="red")
-                duration = row.get("duration")
-                dur_text = (
-                    f"{float(duration):0.1f}s"
-                    if isinstance(duration, (int, float))
-                    else "·"
-                )
-                detail = str(row.get("args") or "")
-                if not ok and row.get("error"):
-                    detail = str(row["error"])
-                detail_renderable: str | Text = ""
-                if detail:
-                    if ok:
-                        detail_renderable = _summary(detail, 70)
-                    else:
-                        detail_renderable = Text(detail, style="red")
-                count = int(row.get("count", 1) or 1)
-                if count > 1:
-                    if detail_renderable:
-                        if isinstance(detail_renderable, Text):
-                            detail_renderable.append(f"  ×{count}", style="dim")
-                        else:
-                            detail_renderable = f"{detail_renderable}  ×{count}"
-                    else:
-                        detail_renderable = f"×{count}"
-                table.add_row(
-                    _tool_glyph(str(row.get("tool", ""))),
-                    status,
-                    str(row.get("tool", "")),
-                    dur_text,
-                    detail_renderable,
-                )
-            parts.append(table)
-
-        if self.show_all_logs and self._log_lines:
-            parts.append(Rule(style="bright_black"))
-            parts.append(Text("\n".join(self._log_lines), style="dim"))
-
-        return Panel(
-            Group(*parts),
-            title="🔧 Tool activity",
-            title_align="left",
-            border_style="cyan",
-            box=box.ROUNDED,
-            padding=(0, 1),
-        )
+        return ChatLogRenderer(self.log, spinner_text=self.spinner_text, max_rows=self.max_rows).__rich__()
 
 
 # Currently-active activity panel, set while a tool run is in progress.
@@ -380,7 +469,7 @@ def _use_live_tool_activity(console: Console) -> bool:
 
 
 def set_active_tool_activity(activity: LiveToolActivity | None) -> None:
-    """Register (or clear) the live panel that tool events should stream into."""
+    """Register (or clear) the active chat log that tool events should stream into."""
     global _ACTIVE_TOOL_ACTIVITY
     _ACTIVE_TOOL_ACTIVITY = activity
 
@@ -394,7 +483,7 @@ def emit_tool_event(
     error: str = "",
     event_id: str | None = None,
 ) -> None:
-    """Send a tool start/end/error event to the active live panel, if any."""
+    """Send a tool start/end/error event to the active chat log, if any."""
     activity = _ACTIVE_TOOL_ACTIVITY
     if activity is None:
         return
@@ -730,8 +819,9 @@ def _run_with_live_buffer(
     manage_live: bool = True,
 ) -> tuple[object, str]:
     """
-    Runs fn() while collecting logs into one tool-activity panel.
-    Returns (result, debug_tail_text).
+    Runs fn() while collecting tool events into one chat-log transcript.
+    Returns (result, debug_tail_text). The visible debug tail is intentionally
+    empty; full logger output belongs in the configured log files, not chat UI.
     """
     live_activity = activity or LiveToolActivity(spinner_text=spinner_text, show_all_logs=show_all_logs)
     log_buf = LiveLogBuffer(
@@ -764,7 +854,7 @@ def _run_with_live_buffer(
             set_active_tool_activity(None)
             console.print(live_activity)
 
-    return result, log_buf.tail(35).strip()
+    return result, ""
 
 
 def _summary(text: str, limit: int = 260) -> str:
@@ -2138,7 +2228,7 @@ def _render_full_auto_checkpoint(
 
 
 class LiveLogBuffer(logging.Handler):
-    """Capture recent log records and (in verbose mode) feed them to the panel."""
+    """Keep compatibility with the old live-buffer hook without rendering logs."""
 
     def __init__(
         self,
@@ -2154,15 +2244,9 @@ class LiveLogBuffer(logging.Handler):
         self.show_all_logs = show_all_logs
 
     def emit(self, record: logging.LogRecord) -> None:
-        if not self.show_all_logs:
-            return
-        try:
-            msg = self.format(record)
-        except Exception:
-            msg = record.getMessage()
-        self.records.append(msg)
-        if self.activity is not None:
-            self.activity.add_log_line(msg)
+        _ = record
+        return
 
     def tail(self, n: int = 35) -> str:
-        return "\n".join(list(self.records)[-n:])
+        _ = n
+        return ""

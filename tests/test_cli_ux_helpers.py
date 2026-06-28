@@ -8,6 +8,8 @@ from typer.testing import CliRunner
 from mana_agent.commands import cli
 from mana_agent.commands.chat_cli import _should_use_coding_agent_turn
 from mana_agent.commands.ui_helpers import (
+    ChatLog,
+    ChatLogRenderer,
     LiveToolActivity,
     _looks_like_edit_request,
     _looks_like_plan_trigger_request,
@@ -135,7 +137,9 @@ def test_tool_activity_buffer_renders_one_box_for_managed_request() -> None:
     assert result == {"ok": True}
     assert debug_tail == ""
     rendered = console.export_text()
-    assert rendered.count("Tool activity") == 1
+    assert "Tool activity" not in rendered
+    assert "─ thinking " not in rendered
+    assert rendered.count("─ tools ") == 1
     assert "list_tools" in rendered
     assert "read_file" in rendered
 
@@ -144,6 +148,34 @@ def test_tool_activity_live_is_disabled_for_recorded_output() -> None:
     console = Console(record=True)
 
     assert _use_live_tool_activity(console) is False
+
+
+def test_chat_log_renderer_shows_timeline_roles_and_updates_tool_rows() -> None:
+    chat_log = ChatLog()
+    chat_log.add_user("use logo.png or https://api.manadev.net/v1/projects/abcdef")
+    chat_log.add_thinking("Locating logo references, patching, then verifying changes.")
+    chat_log.start_tool("repo_search", tool_args='{"query":"logo.png"}', tool_call_id="call-1")
+    chat_log.finish_tool("repo_search", duration=1.6, tool_call_id="call-1")
+    chat_log.start_tool("apply_patch", tool_args='{"patch":"very long patch body"}', tool_call_id="call-2")
+    chat_log.fail_tool("apply_patch", error="hunk not found", tool_call_id="call-2")
+    chat_log.add_assistant("Updated README.md and verified the change.")
+    chat_log.add_error("[INFO] hidden internal log line")
+    chat_log.add_error("clean warning")
+
+    console = Console(record=True, width=100)
+    console.print(ChatLogRenderer(chat_log))
+    rendered = console.export_text()
+
+    assert "user" in rendered
+    assert "thinking" in rendered
+    assert rendered.count("repo_search") == 1
+    assert "✓" in rendered and "repo_search" in rendered and "logo.png" in rendered
+    assert "✗" in rendered and "apply_patch" in rendered and "hunk not found" in rendered
+    assert "assistant" in rendered
+    assert "Updated README.md" in rendered
+    assert "https://api.manadev.net/v1/projects/abcdef" not in rendered
+    assert "[INFO]" not in rendered
+    assert "clean warning" in rendered
 
 
 def test_tool_activity_can_use_live_without_fallback_duplicate(monkeypatch) -> None:
@@ -184,7 +216,9 @@ def test_tool_activity_can_use_live_without_fallback_duplicate(monkeypatch) -> N
     assert result == {"ok": True}
     assert live_entries == 1
     assert live_transient_values == [True]
-    assert console.export_text().count("Tool activity") == 1
+    rendered = console.export_text()
+    assert "Tool activity" not in rendered
+    assert rendered.count("─ tools ") == 1
 
 
 def test_tool_activity_can_share_one_box_across_request_cycles() -> None:
@@ -213,7 +247,8 @@ def test_tool_activity_can_share_one_box_across_request_cycles() -> None:
         console.print(activity)
 
     rendered = console.export_text()
-    assert rendered.count("Tool activity") == 1
+    assert "Tool activity" not in rendered
+    assert rendered.count("─ tools ") == 1
     assert "list_tools" in rendered
     assert "read_file" in rendered
 
@@ -253,7 +288,8 @@ def test_worker_request_error_renders_one_tool_activity_box_without_tool_call() 
 
     assert result == {"status": "warning"}
     rendered = console.export_text()
-    assert rendered.count("Tool activity") == 1
+    assert "Tool activity" not in rendered
+    assert rendered.count("─ tools ") == 1
     assert "tool_worker" in rendered
     assert "tools_only_violation" in rendered
 
@@ -280,9 +316,9 @@ def test_tool_activity_collapses_duplicate_tool_worker_rows() -> None:
     )
 
     rendered = console.export_text()
-    assert rendered.count("Tool activity") == 1
+    assert "Tool activity" not in rendered
+    assert rendered.count("─ tools ") == 1
     assert rendered.count("tool_worker") == 1
-    assert "3 ok" in rendered
     assert "Read the content of Front/.gitignore" in rendered
 
 
@@ -330,8 +366,8 @@ def test_tool_activity_failed_tool_error_is_not_summarized() -> None:
 
     rendered = console.export_text()
     assert "apply_patch" in rendered
-    assert "Input should be a valid string, got dict instead" in rendered
-    assert "See https://errors.pydantic.dev/ for details" in rendered
+    assert "Input should be a valid string" in rendered
+    assert "https://errors.pydantic.dev/" not in rendered
 
 
 def test_render_turn_transparency_preserves_multiline_command_preview() -> None:
@@ -391,4 +427,3 @@ def test_render_coding_sections_contains_expected_blocks() -> None:
 def test_index_command_is_retired(tmp_path: Path) -> None:
     result = runner.invoke(cli.app, ["index", str(tmp_path)])
     assert result.exit_code != 0
-

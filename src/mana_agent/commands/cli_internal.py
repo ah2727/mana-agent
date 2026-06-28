@@ -350,9 +350,8 @@ def continue_command(
         )
 
 
-# Loggers whose DEBUG/INFO chatter would flood the interactive chat console
-# (especially while a background index build is running). They stay fully
-# intact in the file log — only the console handler is quieted.
+# Loggers whose DEBUG/INFO chatter would flood the interactive chat console.
+# They stay fully intact in the file log — only the console handler is quieted.
 _NOISY_CHAT_LOG_PREFIXES: tuple[str, ...] = (
     "mana_agent.parsers",
     "mana_agent.analysis",
@@ -364,20 +363,22 @@ _NOISY_CHAT_LOG_PREFIXES: tuple[str, ...] = (
 
 
 class _QuietChatConsoleFilter(logging.Filter):
-    """Drop sub-WARNING records from noisy indexing loggers on the console."""
+    """Drop normal INFO/DEBUG records from the visible chat console."""
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
         if record.levelno >= logging.WARNING:
             return True
-        return not record.name.startswith(_NOISY_CHAT_LOG_PREFIXES)
+        if bool(CLI_VERBOSE_MODE) or bool(_public_symbol("CLI_VERBOSE_MODE", CLI_VERBOSE_MODE)):
+            return not record.name.startswith(_NOISY_CHAT_LOG_PREFIXES)
+        return False
 
 
 def _install_quiet_chat_console_logging() -> None:
-    """Keep noisy indexing logs off the interactive console (file log unchanged).
+    """Keep normal Python logs off the interactive chat console.
 
     Targets only console stream handlers (stderr/stdout), never FileHandlers, so
-    the prompt is not buried under per-file parse/chunk DEBUG lines while the
-    semantic index builds in the background.
+    the prompt is not interrupted by INFO/DEBUG records while the file log keeps
+    full details.
     """
     root = logging.getLogger()
     for handler in root.handlers:

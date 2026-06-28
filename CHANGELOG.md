@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-06-28 (chat: ChatLog tool timeline)
+
+- Replaced the visible `Tool activity` chat panel with a compact ChatLog-style transcript renderer in `ui_helpers.py`; tool events now update stable rows in the normal chat timeline and display compact running/success/failure status.
+- Stopped surfacing captured Python/debug log records through the visible chat UI while leaving normal logger behavior for log files unchanged; long args, JSON, URLs, and errors are shortened for display.
+- Suppressed normal INFO/DEBUG logger records from the interactive chat console and removed the retained standalone `thinking` box from completed tool transcripts.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_cli_ux_helpers.py tests/test_chat_console_logging.py -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_cli_smoke.py::test_chat_full_auto_pass_cap_auto_resumes_until_completion -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/commands/ui_helpers.py src/mana_agent/commands/cli_internal.py tests/test_cli_ux_helpers.py tests/test_chat_console_logging.py` passed.
+
 ## 2026-06-28 (analyze: ReportService audit artifacts)
 
 - Connected `ReportService` to the `/analyze` flow so every successful analyze run also writes `audit_report.json`, `audit_report.md`, and `audit_report.html` alongside the existing analyzer artifacts. The audit report runs offline OSV and uses a no-cache describe adapter so `/analyze` still writes only under the selected analyze output directory.
