@@ -4,7 +4,7 @@
 
 `mana-agent` is an installable Python CLI for understanding and changing software projects. It can index a repository, run static and dependency analysis, generate reports, answer questions with repository context, and drive a constrained coding agent that can inspect files, apply patches, and run verification commands.
 
-Current documented version: **v0.0.6**.
+Current documented version: **v0.0.7**.
 
 ---
 
