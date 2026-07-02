@@ -14,7 +14,12 @@ from mana_agent.llm.prompts import (
 from mana_agent.prompting.layers import PromptLayer, compose_layers
 from mana_agent.prompting.memory_snapshot import render_memory_snapshot
 from mana_agent.prompting.mode_rules import render_mode_rules
+from mana_agent.prompting.output_contract import render_output_contract
 from mana_agent.prompting.skills_index import render_compact_skills_index
+
+
+def _join_sections(*sections: str | None) -> str:
+    return "\n\n".join(section.strip() for section in sections if section and section.strip())
 
 
 def build_coding_system_prompt(
@@ -33,25 +38,32 @@ def build_coding_system_prompt(
         explicit_mode=explicit_mode,
         flow_context=flow_context,
     )
+    tool_rules = CODING_AGENT_LANGUAGE_TOOLING_PROMPT
+    if include_edit_rules:
+        tool_rules = _join_sections(tool_rules, CODING_AGENT_RECOGNITION_PROMPT)
+
+    mode_rules = render_mode_rules(flow.context.mode)
+    if full_auto_mode:
+        mode_rules = _join_sections(mode_rules, FULL_AUTO_EXECUTION_PROMPT)
+
+    memory_snapshot = render_memory_snapshot(repo_root=repo_root)
+    if flow_context:
+        memory_snapshot = _join_sections(
+            memory_snapshot,
+            CODING_FLOW_MEMORY_PROMPT,
+            f"Active Flow Context\n{flow_context.strip()}",
+        )
+
     layers = [
         PromptLayer("core_identity", base_prompt),
-        PromptLayer("tool_rules", CODING_AGENT_LANGUAGE_TOOLING_PROMPT),
-        PromptLayer("mode_rules", render_mode_rules(flow.context.mode)),
+        PromptLayer("tool_rules", tool_rules),
+        PromptLayer("mode_rules", mode_rules),
         PromptLayer("skills_index", render_compact_skills_index(request, repo_root=repo_root)),
-        PromptLayer("memory_snapshot", render_memory_snapshot(repo_root=repo_root)),
-        PromptLayer("verification", render_verification_rules(flow.verification)),
+        PromptLayer("memory_snapshot", memory_snapshot),
         PromptLayer("task_context", render_task_context(flow.context)),
+        PromptLayer(
+            "output_contract",
+            _join_sections(render_verification_rules(flow.verification), render_output_contract(flow.context.mode)),
+        ),
     ]
-    if include_edit_rules:
-        layers.insert(2, PromptLayer("edit_rules", CODING_AGENT_RECOGNITION_PROMPT))
-    if full_auto_mode:
-        layers.insert(3, PromptLayer("full_auto", FULL_AUTO_EXECUTION_PROMPT))
-    if flow_context:
-        layers.append(
-            PromptLayer(
-                "flow_memory",
-                f"{CODING_FLOW_MEMORY_PROMPT}\n\nFlow context:\n{flow_context.strip()}",
-            )
-        )
     return compose_layers(layers)
-
