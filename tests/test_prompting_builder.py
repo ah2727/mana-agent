@@ -2,7 +2,14 @@ from pathlib import Path
 
 from mana_agent.agent.flow import FLOW_ORDER, build_agent_flow
 from mana_agent.agent.selection import AgentPhase
-from mana_agent.prompting.builder import build_coding_system_prompt
+from mana_agent.prompting.builder import (
+    PromptCache,
+    build_coding_system_prompt,
+    build_ephemeral_context,
+    compose,
+    get_or_build_stable_prompt,
+    render_ephemeral_context,
+)
 from mana_agent.prompting.layers import PROMPT_LAYER_ORDER, PromptLayer, compose_layers
 
 
@@ -39,11 +46,12 @@ def test_coding_prompt_builder_composes_stable_layers(tmp_path: Path) -> None:
     )
 
     assert prompt.index("Core Identity") < prompt.index("Language-aware tooling")
-    assert prompt.index("Mode Rules") < prompt.index("Compact Skills Index")
-    assert prompt.index("Compact Skills Index") < prompt.index("Project Memory Snapshot")
-    assert prompt.index("Project Memory Snapshot") < prompt.index("Current Task Context")
-    assert prompt.index("Current Task Context") < prompt.index("Output Contract")
-    assert "testing (project): Testing Skill" in prompt
+    assert prompt.index("Language-aware tooling") < prompt.index("Agent Behavior Rules")
+    assert prompt.index("Agent Behavior Rules") < prompt.index("Compact Skills Index")
+    assert prompt.index("Compact Skills Index") < prompt.index("Repository Rules")
+    assert prompt.index("Repository Rules") < prompt.index("Safety and Verification Rules")
+    assert prompt.index("Safety and Verification Rules") < prompt.index("Ephemeral Prompt Context")
+    assert "testing (project, hash=" in prompt
     assert "Project Memory Snapshot" in prompt
     assert "Known command: pytest -q" in prompt
     assert "Current Task Context" in prompt
@@ -51,6 +59,7 @@ def test_coding_prompt_builder_composes_stable_layers(tmp_path: Path) -> None:
     assert "done_criteria" in prompt
     assert "Output Contract" in prompt
     assert "Flow ID: abc123" in prompt
+    assert prompt.count("Core Identity") == 1
 
 
 def test_compose_layers_rejects_unstable_order() -> None:
@@ -62,3 +71,153 @@ def test_compose_layers_rejects_unstable_order() -> None:
         assert "stable order" in str(exc)
     else:
         raise AssertionError("compose_layers should reject prompts outside the stable order")
+
+
+def test_stable_prompt_cache_reuses_across_turns(tmp_path: Path) -> None:
+    cache = PromptCache()
+    kwargs = {
+        "base_prompt": "Core Identity",
+        "repo_root": tmp_path,
+        "full_auto_mode": False,
+        "enabled_tools": ("read_file", "apply_patch"),
+        "model_profile": {"model": "test-model", "provider": "test"},
+        "cache": cache,
+    }
+
+    first = get_or_build_stable_prompt(**kwargs)
+    assert cache.last_hit is False
+    second = get_or_build_stable_prompt(**kwargs)
+
+    assert cache.last_hit is True
+    assert second is first
+    assert second.cache_key == first.cache_key
+
+
+def test_current_task_does_not_affect_stable_cache_key(tmp_path: Path) -> None:
+    cache = PromptCache()
+    first = build_coding_system_prompt(
+        base_prompt="Core Identity",
+        request="Fix docs",
+        repo_root=tmp_path,
+        prompt_cache=cache,
+        enabled_tools=("read_file",),
+        model_profile={"model": "test"},
+    )
+    first_key = cache._state.cache_key  # noqa: SLF001
+    second = build_coding_system_prompt(
+        base_prompt="Core Identity",
+        request="Implement a different feature",
+        repo_root=tmp_path,
+        prompt_cache=cache,
+        enabled_tools=("read_file",),
+        model_profile={"model": "test"},
+    )
+
+    assert cache.last_hit is True
+    assert cache._state.cache_key == first_key  # noqa: SLF001
+    assert "Fix docs" in first
+    assert "Implement a different feature" in second
+    assert "Implement a different feature" not in cache._state.identity  # noqa: SLF001
+
+
+def test_retrieved_files_do_not_affect_stable_cache_key(tmp_path: Path) -> None:
+    cache = PromptCache()
+    stable = get_or_build_stable_prompt(
+        base_prompt="Core Identity",
+        repo_root=tmp_path,
+        enabled_tools=("read_file",),
+        model_profile={"model": "test"},
+        cache=cache,
+    )
+    first_key = stable.cache_key
+
+    compose(stable, build_ephemeral_context("Task", retrieved_files=["src/a.py snippet"]), "Task")
+    compose(stable, build_ephemeral_context("Task", retrieved_files=["src/b.py snippet"]), "Task")
+
+    assert cache._state.cache_key == first_key  # noqa: SLF001
+
+
+def test_compose_adds_tool_messages_only_when_needed(tmp_path: Path) -> None:
+    stable = get_or_build_stable_prompt(base_prompt="Core Identity", repo_root=tmp_path, cache=PromptCache())
+    without_tools = compose(stable, build_ephemeral_context("Task"), "Task")
+    with_tools = compose(stable, build_ephemeral_context("Task", tool_results=["pytest passed"]), "Task")
+
+    assert [item["role"] for item in without_tools] == ["system", "developer", "user"]
+    assert [item["role"] for item in with_tools] == ["system", "developer", "user", "tool"]
+    assert with_tools[-1]["content"] == "pytest passed"
+
+
+def test_skill_change_invalidates_stable_cache(tmp_path: Path) -> None:
+    (tmp_path / "skills").mkdir()
+    skill = tmp_path / "skills" / "testing.md"
+    skill.write_text("# Testing Skill\n\nUse focused checks.\n", encoding="utf-8")
+    cache = PromptCache()
+    first = get_or_build_stable_prompt(
+        base_prompt="Core Identity",
+        repo_root=tmp_path,
+        enabled_tools=("read_file",),
+        model_profile={"model": "test"},
+        cache=cache,
+    )
+
+    skill.write_text("# Testing Skill\n\nUse focused checks and cache invalidation checks.\n", encoding="utf-8")
+    second = get_or_build_stable_prompt(
+        base_prompt="Core Identity",
+        repo_root=tmp_path,
+        enabled_tools=("read_file",),
+        model_profile={"model": "test"},
+        cache=cache,
+    )
+
+    assert cache.last_hit is False
+    assert second.cache_key != first.cache_key
+
+
+def test_tool_registry_change_invalidates_stable_cache(tmp_path: Path) -> None:
+    cache = PromptCache()
+    first = get_or_build_stable_prompt(
+        base_prompt="Core Identity",
+        repo_root=tmp_path,
+        enabled_tools=("read_file",),
+        model_profile={"model": "test"},
+        cache=cache,
+    )
+    second = get_or_build_stable_prompt(
+        base_prompt="Core Identity",
+        repo_root=tmp_path,
+        enabled_tools=("read_file", "apply_patch"),
+        model_profile={"model": "test"},
+        cache=cache,
+    )
+
+    assert cache.last_hit is False
+    assert second.cache_key != first.cache_key
+
+
+def test_ephemeral_prompt_changes_every_turn() -> None:
+    first = render_ephemeral_context(build_ephemeral_context("Fix A", mode="edit", tool_results=["pytest failed"]))
+    second = render_ephemeral_context(build_ephemeral_context("Explain B", mode="analyze", tool_results=["search found B"]))
+
+    assert first != second
+    assert "Fix A" in first
+    assert "Explain B" in second
+
+
+def test_prompt_size_does_not_grow_unbounded_across_turns(tmp_path: Path) -> None:
+    cache = PromptCache()
+    prompts = [
+        build_coding_system_prompt(
+            base_prompt="Core Identity",
+            request=f"Turn {idx}: update docs with {'x' * 2000}",
+            repo_root=tmp_path,
+            prompt_cache=cache,
+            enabled_tools=("read_file", "apply_patch"),
+            model_profile={"model": "test"},
+        )
+        for idx in range(5)
+    ]
+
+    lengths = [len(item) for item in prompts]
+    assert max(lengths) - min(lengths) < 600
+    assert prompts[-1].count("Core Identity") == 1
+    assert "Turn 0" not in prompts[-1]

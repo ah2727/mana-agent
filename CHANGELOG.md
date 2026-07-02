@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-02 (stable prompt cache)
+
+- Split coding-agent prompt assembly into cached `StablePromptState` and per-call `EphemeralPromptContext`, with stable cache keys based only on mana-agent/template versions, enabled tools, skill index hash, repository rules hash, identity/rules hash, and model/provider profile.
+- Added a session-local `PromptCache`, stable repository-rule rendering from `AGENTS.md`, skill content hashes for invalidation, bounded ephemeral context rendering, and cache/debug token-estimate logs without full prompt contents.
+- Wired `CodingAgent._effective_system_prompt_for()` through the session prompt cache while preserving the existing string prompt compatibility surface for chat/auto-execute flows, and documented the prompt-cache boundary.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_prompting_builder.py -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_prompting_builder.py tests/test_coding_agent.py::test_coding_agent_effective_prompt_includes_language_tooling_guide tests/test_prompts_contract.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/prompting/layers.py src/mana_agent/prompting/builder.py src/mana_agent/prompting/skills_index.py src/mana_agent/prompting/repo_rules.py src/mana_agent/llm/coding_agent.py tests/test_prompting_builder.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/prompting/layers.py src/mana_agent/prompting/builder.py src/mana_agent/prompting/skills_index.py src/mana_agent/prompting/repo_rules.py src/mana_agent/llm/coding_agent.py tests/test_prompting_builder.py --select F,E9` passed.
+
 ## 2026-07-02 (agent flow and prompt layers)
 
 - Added the new `mana_agent.agent` flow modules for mode/phase selection, task context rendering, and verification planning, plus the new `mana_agent.prompting` modules for stable prompt layers, compact skills indexing, project memory snapshots, mode rules, and prompt composition.

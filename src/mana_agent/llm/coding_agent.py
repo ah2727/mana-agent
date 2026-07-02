@@ -18,7 +18,7 @@ import re
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -40,7 +40,7 @@ from mana_agent.llm.coding_agent_models import (
 )
 from mana_agent.llm.auto_chat import apply_auto_chat_tool_policy
 from mana_agent.llm.coding_agent_prompt import CODING_SYSTEM_PROMPT
-from mana_agent.prompting.builder import build_coding_system_prompt
+from mana_agent.prompting.builder import PromptCache, build_coding_system_prompt
 
 
 from mana_agent.llm.tool_worker_process import (
@@ -61,6 +61,9 @@ from mana_agent.tools import (
 
 logger = logging.getLogger(__name__)
 _as_jsonable = as_jsonable
+
+if TYPE_CHECKING:
+    from mana_agent.llm.tool_worker_process import ToolRunResponse
 
 
 class CodingAgent:
@@ -403,6 +406,7 @@ class CodingAgent:
         self.full_auto_mode = bool(full_auto_mode)
         self.planner_model = str(planner_model).strip() if planner_model else None
         self.tools_manager_orchestrator: QueueManager | None = None
+        self._prompt_cache = PromptCache()
         self._setup_planner()
 
         if hasattr(self.ask_agent, "tools"):
@@ -416,6 +420,22 @@ class CodingAgent:
                     build_delete_file_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
                 ]
             )
+
+    def _enabled_tool_names(self) -> tuple[str, ...]:
+        names: list[str] = []
+        for tool in getattr(self.ask_agent, "tools", []) or []:
+            name = str(getattr(tool, "name", "") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        return tuple(names)
+
+    def _prompt_model_profile(self) -> dict[str, str]:
+        return {
+            "provider": "openai-compatible",
+            "model": str(self.planner_model or getattr(self.ask_agent, "model", "") or ""),
+            "base_url": str(self.base_url or ""),
+            "planner_model": str(getattr(getattr(self, "planner_llm", None), "model_name", "") or self.planner_model or ""),
+        }
 
     def update_model(self, model_name: str):
         """قابلیت تغییر مدل در زمان اجرا"""
@@ -1085,6 +1105,9 @@ class CodingAgent:
             flow_context=flow_context,
             full_auto_mode=self.full_auto_mode,
             include_edit_rules=self._looks_like_edit_request(request),
+            prompt_cache=self._prompt_cache,
+            enabled_tools=self._enabled_tool_names(),
+            model_profile=self._prompt_model_profile(),
         )
 
     @staticmethod
