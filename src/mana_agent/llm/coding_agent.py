@@ -987,6 +987,7 @@ class CodingAgent:
             "request_retry_exhausted": orchestrated.request_retry_exhausted,
             "edit_retry_mode_activations": orchestrated.edit_retry_mode_activations,
             "persisted_fingerprint_counts": orchestrated.persisted_fingerprint_counts,
+            "pre_existing_changed_files": list(orchestrated.pre_existing_changed_files),
             "prechecklist": prechecklist,
             "prechecklist_source": prechecklist_source,
             "prechecklist_warning": prechecklist_warning,
