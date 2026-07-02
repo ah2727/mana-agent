@@ -20,6 +20,7 @@ def test_safe_write_file_part_then_finalize(tmp_path: Path) -> None:
 
     finalize = safe_finalize_file_parts(repo_root=tmp_path, path="src/big.txt")
     assert finalize["ok"] is True
+    assert finalize["files_changed"] == ["src/big.txt"]
     assert (tmp_path / "src" / "big.txt").read_text(encoding="utf-8") == "hello world"
     assert not (tmp_path / "src" / ".big.txt.parts").exists()
 
@@ -61,4 +62,5 @@ def test_create_file_tool_creates_missing_parent_dirs(tmp_path: Path) -> None:
     result = tool.invoke({"path": "docs/new/note.md", "content": "# Note\n"})
 
     assert result["ok"] is True
+    assert result["files_changed"] == ["docs/new/note.md"]
     assert (tmp_path / "docs" / "new" / "note.md").read_text(encoding="utf-8") == "# Note\n"

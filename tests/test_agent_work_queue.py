@@ -131,6 +131,19 @@ def test_mutation_result_requires_changed_files():
     assert result.error == "mutation_no_modified_files"
 
 
+def test_delete_result_reports_deleted_file_as_changed():
+    item = WorkItem(kind="edit", tool_name="delete_file", tool_args={"path": "src/old.py"})
+    response = ToolRunResponse(
+        answer="deleted",
+        trace=[{"tool_name": "delete_file", "status": "ok", "files_changed": ["src/old.py"]}],
+    )
+
+    result = classify_result(item, response, repo_root=Path("/nonexistent"))
+
+    assert result.ok is True
+    assert result.files_changed == ["src/old.py"]
+
+
 # --------------------------------------------------------------------------- #
 # Live loop: executor runs each fingerprint exactly once
 # --------------------------------------------------------------------------- #
@@ -330,6 +343,31 @@ def test_queue_manager_blocks_edit_when_no_mutation_tool_attempted(tmp_path: Pat
     assert worker.policies[-1]["allowed_tools"] == _AGENTIC_EDIT_TOOLS
 
 
+def test_deterministic_preview_uses_project_level_edit_checklist(tmp_path: Path):
+    from mana_agent.llm.agent_work_queue import QueueManager
+
+    mgr = QueueManager(worker_client=object(), repo_root=tmp_path)
+    payload = mgr.preview_plan(
+        request="create src/mana_agent/commands/new_command.py",
+        requires_edit=True,
+        target_files=["src/mana_agent/commands/new_command.py"],
+    )
+
+    steps = payload["prechecklist"]["steps"]
+    edit = next(step for step in steps if step["id"] == "edit")
+    assert "imports, exports" in edit["title"]
+    assert "registries" in edit["title"]
+    assert "call sites" in edit["title"]
+    assert edit["requires_tools"] == ["apply_patch", "write_file", "create_file", "delete_file"]
+    assert edit["checks"] == [
+        "target file changed/created/deleted",
+        "related imports/usages updated",
+        "integration path updated",
+        "stale references removed",
+        "verification selected and executed when possible",
+    ]
+
+
 def test_queue_manager_blocks_edit_when_mutation_has_no_changed_files(tmp_path: Path):
     from mana_agent.llm.agent_work_queue import QueueManager
 
@@ -410,6 +448,8 @@ def test_sniffer_uses_planner_target_file_for_edit_job(tmp_path: Path):
     assert edit.tool_name == "write_file"
     assert edit.tool_args == {"path": "docs/analyze.md"}
     assert "Target file: docs/analyze.md" in edit.question
+    assert "related importers, exports, registries" in edit.question
+    assert "stale docs/config references" in edit.question
 
 
 def test_edit_with_evidence_uses_agentic_policy_without_duplicate_reads(tmp_path: Path):

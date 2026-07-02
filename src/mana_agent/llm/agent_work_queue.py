@@ -735,9 +735,20 @@ class QueueManager:
             steps.append(
                 {
                     "id": "edit",
-                    "title": f"Apply changes to {targets_label}",
+                    "title": (
+                        "Apply the requested change and update all related imports, exports, "
+                        "registries, routers, commands, call sites, tests, and docs required "
+                        f"for {targets_label} to remain working"
+                    ),
                     "status": "pending",
                     "requires_tools": ["apply_patch", "write_file", "create_file", "delete_file"],
+                    "checks": [
+                        "target file changed/created/deleted",
+                        "related imports/usages updated",
+                        "integration path updated",
+                        "stale references removed",
+                        "verification selected and executed when possible",
+                    ],
                 }
             )
             steps.append(
@@ -1005,6 +1016,7 @@ class QueueManager:
                         "apply_patch",
                         "write_file",
                         "create_file",
+                        "delete_file",
                         "git_diff",
                         "git_status",
                     ],

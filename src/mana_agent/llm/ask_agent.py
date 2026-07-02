@@ -52,8 +52,10 @@ _FORCED_WRITE_INSTRUCTION = (
     "You have gathered enough evidence from the repository. Do NOT read, search, "
     "or list anything else. Right now, in this step, call exactly one mutation "
     "tool (create_file, write_file, apply_patch, or delete_file) to apply the required "
-    "deliverable file with its full, final, project-specific content. Do not "
-    "answer in prose and do not emit placeholder or stub content."
+    "project-level change with its full, final, project-specific content. Update "
+    "all required imports, exports, registries, routers, commands, call sites, tests, "
+    "and docs, and remove stale references. Do not answer in prose and do not emit "
+    "placeholder or stub content."
 )
 
 
@@ -567,7 +569,7 @@ class AskAgent:
         unique_read_files: set[str],
     ) -> list[str]:
         targets: list[str] = []
-        if name in {"write_file", "create_file"}:
+        if name in {"write_file", "create_file", "delete_file"}:
             raw_path = str(args.get("path", "")).strip()
             if raw_path:
                 try:
@@ -1697,7 +1699,7 @@ class AskAgent:
                             persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
-                    if name in {"apply_patch", "create_file", "write_file"} and require_read_files > 0:
+                    if name in {"apply_patch", "create_file", "write_file", "delete_file"} and require_read_files > 0:
                         if len(unique_read_files) < require_read_files:
                             content = json.dumps(
                                 {
@@ -1709,7 +1711,7 @@ class AskAgent:
                             persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
-                    if name in {"apply_patch", "create_file", "write_file"}:
+                    if name in {"apply_patch", "create_file", "write_file", "delete_file"}:
                         unread_targets = self._mutation_unread_targets(
                             name=name,
                             args=args if isinstance(args, dict) else {},
@@ -1822,7 +1824,7 @@ class AskAgent:
                                 unique_read_files.add(file_path)
                         if not bool(payload.get("cache_hit", False)) and not read_failed:
                             disk_read_count += 1
-                if name in {"apply_patch", "create_file", "write_file"}:
+                if name in {"apply_patch", "create_file", "write_file", "delete_file"}:
                     changed_paths = self._mutation_changed_files(
                         name=name,
                         args=args if isinstance(args, dict) else {},

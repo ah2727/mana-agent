@@ -79,6 +79,7 @@ def test_auto_chat_edit_policy_keeps_mutation_tools_but_still_bounded() -> None:
     )
 
     assert "apply_patch" in policy["allowed_tools"]
+    assert {"apply_patch", "create_file", "write_file", "delete_file"} <= set(policy["allowed_tools"])
     assert policy["mutation_allowed"] is True
     assert policy["search_budget"] == AUTO_MAX_SEARCH_QUERIES
     assert policy["read_budget"] == AUTO_MAX_FILES_TO_READ

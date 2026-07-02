@@ -41,10 +41,14 @@ class WriteFileResult:
     path: str
     bytes_written: int = 0
     sha256: str = ""
+    files_changed: list[str] | None = None
     error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if data["files_changed"] is None:
+            data["files_changed"] = []
+        return data
 
 
 @dataclass(frozen=True)
@@ -319,6 +323,7 @@ def safe_finalize_file_parts(
             path=rel_posix,
             bytes_written=total,
             sha256=hashlib.sha256(final_data).hexdigest(),
+            files_changed=[rel_posix],
         ).to_dict()
     except Exception as exc:  # noqa: BLE001
         logger.exception("write_file finalize failed for %s", path)
@@ -353,6 +358,7 @@ def safe_write_file(
             path=rel_posix,
             bytes_written=len(data),
             sha256=hashlib.sha256(data).hexdigest(),
+            files_changed=[rel_posix],
         )
         logger.info("Wrote file: %s (%d bytes)", rel_posix, result.bytes_written)
         return result.to_dict()
@@ -387,6 +393,7 @@ def safe_create_file(
             path=rel_posix,
             bytes_written=len(data),
             sha256=hashlib.sha256(data).hexdigest(),
+            files_changed=[rel_posix],
         )
         logger.info("Created file: %s (%d bytes)", rel_posix, result.bytes_written)
         return result.to_dict()

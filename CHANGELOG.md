@@ -2,6 +2,18 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-02 (coding workflow mutation guard)
+
+- Strengthened edit-task workflow instructions so create/modify/delete runs require project-level related-file cleanup across imports, exports, registries, routers, commands, call sites, tests, docs, and stale references.
+- Kept `delete_file` in bounded edit tool policies and mutation-required forced retries, and made write/create/delete mutation payloads report changed files consistently for completion guards and cache invalidation.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_auto_chat.py tests/test_write_file_chunking.py -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_ask_agent.py::test_ask_agent_keeps_looping_after_apply_patch_failures_for_write_file_fallback tests/test_tool_input_aliases.py::test_safe_delete_file_deletes_existing_file -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/llm/auto_chat.py src/mana_agent/llm/ask_agent.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py src/mana_agent/tools/write_file.py tests/test_agent_work_queue.py tests/test_auto_chat.py tests/test_write_file_chunking.py` passed.
+
+## 2026-07-02 (chat new topic flow)
+
+- Added explicit chat new-topic handling so `/new`, `/new-topic`, `new topic`, and `new topic chat` reset/deactivate the active coding flow while preserving the visible session history.
+- Expanded the active-flow divergence prompt to accept `new topic` as a new-flow choice and reset the old flow before rerunning the pending request.
+- Verification: `.venv/bin/python -m pytest tests/test_cli_smoke.py::test_chat_new_topic_resets_flow_but_keeps_history tests/test_cli_smoke.py::test_chat_conflict_new_topic_choice_starts_new_flow tests/test_cli_smoke.py::test_chat_clear_still_clears_visible_history -q` passed; `.venv/bin/python -m py_compile src/mana_agent/commands/chat_cli.py tests/test_cli_smoke.py` passed.
+
 ## 2026-07-01 (CLI modes and root skills)
 
 - Added a polished Mana Agent root CLI entry flow with banner/menu rendering, root mode flags (`--chat`, `--analyze`, `--plan`), `--repo`, `--model`, `--debug`, and `--no-banner` handling.

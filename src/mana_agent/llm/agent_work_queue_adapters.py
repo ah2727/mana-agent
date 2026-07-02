@@ -122,7 +122,7 @@ def classify_result(item: WorkItem, response: ToolRunResponse, *, repo_root: Pat
             trace=list(response.trace),
         )
 
-    if tool in {"apply_patch", "write_file", "create_file", "delete_file"}:
+    if tool in {"apply_patch", "write_file", "create_file", "delete_file", "move_file"}:
         changed = sorted(paths)
         for row in response.trace:
             if isinstance(row, dict):
@@ -353,7 +353,11 @@ class CodingAgentSniffer:
             question=(
                 "Using the file evidence already gathered in this run, carry out "
                 f"the user's request: {self._request}. Apply concrete changes with "
-                "create_file/write_file/apply_patch/delete_file and report the changed files."
+                "create_file/write_file/apply_patch/delete_file and report the changed files. "
+                "Before mutating, use bounded exact path/name/symbol evidence to account for "
+                "related importers, exports, registries, routers, commands, call sites, tests, "
+                "and stale docs/config references; update or remove each one required for the "
+                "project to remain working."
                 f"{target_instruction}"
             ),
             gate="apply_edit",

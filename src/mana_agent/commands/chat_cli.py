@@ -21,6 +21,13 @@ from mana_agent.llm.auto_chat import (
 from mana_agent.ui.banner import render_mode_header
 
 
+_NEW_TOPIC_COMMANDS = {"/new", "/new-topic", "new topic", "new topic chat"}
+
+
+def _is_new_topic_command(text: str) -> bool:
+    return str(text or "").strip().lower() in _NEW_TOPIC_COMMANDS
+
+
 def _load_analysis_context(root) -> str | None:
     """Load the compact ``agent_context.json`` produced by ``/analyze``.
 
@@ -942,6 +949,17 @@ def chat(
         full_auto_passes_total: int = 0
         full_auto_pass_checkpoints_emitted: int = 0
 
+        def _start_new_topic() -> str | None:
+            nonlocal active_flow_id, pending_conflict_question
+            reset_id: str | None = None
+            if coding_agent_instance is not None:
+                target_flow = active_flow_id or coding_agent_instance.get_active_flow_id()
+                if isinstance(target_flow, str) and target_flow.strip():
+                    reset_id = coding_agent_instance.reset_flow(target_flow.strip())
+            active_flow_id = None
+            pending_conflict_question = None
+            return reset_id
+
         def _base_auto_execute_tool_policy(user_question: str, *, auto_chat_mode: AutoChatMode | None = None) -> dict[str, Any]:
             if coding_agent_instance is not None:
                 return coding_agent_instance._tool_policy_for_request(  # type: ignore[attr-defined]
@@ -1560,6 +1578,13 @@ def chat(
                 console.clear()
                 console.print("[green]Chat history cleared.[/green]")
                 continue
+            if pending_conflict_question is None and _is_new_topic_command(question):
+                reset_id = _start_new_topic()
+                if reset_id:
+                    console.print(f"[green]Started new chat topic; flow reset: {reset_id}[/green]")
+                else:
+                    console.print("[green]Started new chat topic.[/green]")
+                continue
             if question.lower() == "/help":
                 question = "help"
             if question.strip().startswith("/plan"):
@@ -1965,6 +1990,34 @@ def chat(
             logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
 
             if (
+                coding_agent_instance is not None
+                and coding_memory
+                and pending_conflict_question is not None
+                and not plan_trigger_request
+            ):
+                choice = question.strip().lower()
+                if choice in {"continue", "c", "1"}:
+                    question = pending_conflict_question
+                elif choice in {"new", "n", "2"} or _is_new_topic_command(question):
+                    conflict_question = pending_conflict_question
+                    _start_new_topic()
+                    question = conflict_question
+                elif edit_request:
+                    logger.info(
+                        "Pending flow conflict replaced by new edit request",
+                        extra={
+                            "flow_id": active_flow_id,
+                            "pending_question": pending_conflict_question,
+                            "question": question,
+                        },
+                    )
+                    _start_new_topic()
+                else:
+                    console.print("[yellow]Reply 'continue' or 'new topic'.[/yellow]")
+                    continue
+                pending_conflict_question = None
+
+            if (
                 edit_request
                 and coding_agent_instance is None
                 and not (agent_tools and auto_execute_plan and tool_worker_process and plan_trigger_request)
@@ -1981,28 +2034,7 @@ def chat(
                 and edit_request
                 and not plan_trigger_request
             ):
-                if pending_conflict_question is not None:
-                    choice = question.strip().lower()
-                    if choice in {"continue", "c", "1"}:
-                        question = pending_conflict_question
-                    elif choice in {"new", "n", "2"}:
-                        active_flow_id = None
-                        question = pending_conflict_question
-                    elif edit_request:
-                        logger.info(
-                            "Pending flow conflict replaced by new edit request",
-                            extra={
-                                "flow_id": active_flow_id,
-                                "pending_question": pending_conflict_question,
-                                "question": question,
-                            },
-                        )
-                        active_flow_id = None
-                    else:
-                        console.print("[yellow]Reply 'continue' or 'new'.[/yellow]")
-                        continue
-                    pending_conflict_question = None
-                elif active_flow_id and coding_agent_instance.is_conflicting_request(question, active_flow_id):
+                if active_flow_id and coding_agent_instance.is_conflicting_request(question, active_flow_id):
                     if execution_profile == "full-auto":
                         logger.info(
                             "Full-auto flow conflict auto-continued",
@@ -2012,7 +2044,7 @@ def chat(
                         pending_conflict_question = question
                         console.print(
                             "[yellow]This request appears to diverge from the active flow.[/yellow] "
-                            "Type [bold]continue[/bold] to keep current flow or [bold]new[/bold] to start a new flow."
+                            "Type [bold]continue[/bold] to keep current flow or [bold]new/new topic[/bold] to start a new flow."
                         )
                         continue
 
