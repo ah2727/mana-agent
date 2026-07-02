@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-02 (edit flow mutation guard)
+
+- Fixed target resolution for bare documentation filenames so existing repo matches such as `docs/08-architecture.md` win over invented planner paths like `src/08-architecture.md`, while generated/cache paths are ignored.
+- Hardened mutation-required queue behavior so a forced mutation retry that returns without any mutation tool attempt raises `AgentFlowError` instead of silently producing a normal final answer.
+- Added run-scoped changed-file accounting metadata for pre-existing dirty files and removed a duplicate verification decision key.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_tools_manager.py tests/test_agent_work_queue.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/llm/tools_manager.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/coding_agent.py tests/test_agent_work_queue.py tests/test_tools_manager.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/llm/tools_manager.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/coding_agent.py tests/test_agent_work_queue.py tests/test_tools_manager.py --select F,E9` passed.
+
 ## 2026-07-02 (stable prompt cache)
 
 - Split coding-agent prompt assembly into cached `StablePromptState` and per-call `EphemeralPromptContext`, with stable cache keys based only on mana-agent/template versions, enabled tools, skill index hash, repository rules hash, identity/rules hash, and model/provider profile.

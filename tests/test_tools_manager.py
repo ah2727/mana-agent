@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from mana_agent.llm.tool_worker_process import ToolRunResponse
 from mana_agent.llm.goal_profiles import ModelDocsGoalProfile, active_goal_profile
 from mana_agent.llm.agent_work_queue import QueueManager
 from mana_agent.llm.tools_manager import (
+    AgentFlowError,
     RunStateStore,
     ToolsPlan,
     ToolsPlanStep,
@@ -39,20 +42,17 @@ def test_no_fabricated_content_when_worker_writes_nothing(tmp_path: Path) -> Non
     worker = _NoopWorker()
     manager = QueueManager(worker_client=worker, repo_root=tmp_path)
 
-    result = manager.run(
-        request="analyze project and create a analyze.md in docs",
-        index_dir=str(tmp_path / ".mana" / "index"),
-        requires_edit=True,
-        target_files=[],
-        pass_cap=1,
-        max_steps=1,
-    )
+    with pytest.raises(AgentFlowError, match="Forced mutation retry ran but did not attempt a mutation tool"):
+        manager.run(
+            request="analyze project and create a analyze.md in docs",
+            index_dir=str(tmp_path / ".mana" / "index"),
+            requires_edit=True,
+            target_files=[],
+            pass_cap=1,
+            max_steps=1,
+        )
 
     assert not (tmp_path / "docs" / "analyze.md").exists()
-    assert result.run_status == "blocked"
-    decision = result.planner_decisions[0]
-    assert decision["verification_passed"] is False
-    assert "docs/analyze.md" in decision["missing_required_files"]
 
 
 def test_discovery_pass_does_not_run_under_mutation_required(tmp_path: Path) -> None:
@@ -78,18 +78,18 @@ def test_discovery_pass_does_not_run_under_mutation_required(tmp_path: Path) -> 
             return ToolRunResponse(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])
 
     worker = _StrictAwareWorker()
-    result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
-        request="analyze whole project,and update readme.md",
-        index_dir=str(tmp_path / ".mana" / "index"),
-        requires_edit=True,
-        target_files=[],
-        pass_cap=1,
-        max_steps=1,
-    )
+    with pytest.raises(AgentFlowError, match="Forced mutation retry ran but did not attempt a mutation tool"):
+        QueueManager(worker_client=worker, repo_root=tmp_path).run(
+            request="analyze whole project,and update readme.md",
+            index_dir=str(tmp_path / ".mana" / "index"),
+            requires_edit=True,
+            target_files=[],
+            pass_cap=1,
+            max_steps=1,
+        )
 
     # Worker authored nothing, so the stub README is not a satisfied deliverable.
     assert (tmp_path / "README.md").read_text(encoding="utf-8") == "# Old\n"
-    assert result.run_status == "blocked"
     assert worker.policies[0].get("mutation_required") is None
 
 
@@ -822,22 +822,15 @@ def test_missing_required_file_blocks_completion(tmp_path: Path) -> None:
     # deterministic generator declines and the missing file cannot be produced.
     worker = _NoopWorker()
 
-    result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
-        request="refactor docs/01-overview.md and docs/02-installation.md in docs",
-        index_dir=str(tmp_path / ".mana" / "index"),
-        requires_edit=True,
-        pass_cap=1,
-        max_steps=1,
-    )
-
-    assert result.run_status == "blocked"
+    with pytest.raises(AgentFlowError, match="Forced mutation retry ran but did not attempt a mutation tool"):
+        QueueManager(worker_client=worker, repo_root=tmp_path).run(
+            request="refactor docs/01-overview.md and docs/02-installation.md in docs",
+            index_dir=str(tmp_path / ".mana" / "index"),
+            requires_edit=True,
+            pass_cap=1,
+            max_steps=1,
+        )
     assert not (tmp_path / "docs" / "01-overview.md").exists()
-    decision = result.planner_decisions[0]
-    assert decision["verification_passed"] is False
-    assert set(decision["missing_required_files"]) == {
-        "docs/01-overview.md",
-        "docs/02-installation.md",
-    }
 
 
 def test_wrong_path_at_repo_root_does_not_satisfy_docs_requirement(tmp_path: Path) -> None:

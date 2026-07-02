@@ -6,7 +6,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Container, Literal, Sequence, TypeVar
+from typing import Any, Container, Literal, Sequence, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -21,13 +21,7 @@ from mana_agent.llm.gate_command import (
     validate_gate_proof,
 )
 from mana_agent.llm.goal_profiles import GoalProfile, active_goal_profile
-from mana_agent.llm.tool_worker_process import ToolRunResponse, ToolWorkerClient
-from mana_agent.llm.tools_executor import (
-    ToolsExecutionConfig,
-    ToolsExecutor,
-)
-from mana_agent.services.coding_memory_service import CodingMemoryService
-from mana_agent.services.coding_todo_service import TodoService
+from mana_agent.llm.tool_worker_process import ToolRunResponse
 from mana_agent.tools.write_file import safe_create_file, safe_write_file
 
 logger = logging.getLogger(__name__)
@@ -1924,7 +1918,7 @@ def resolve_target_paths(
             elif len(repo_matches) > 1:
                 return []
             else:
-                chosen = raw
+                continue
         if chosen not in resolved:
             resolved.append(chosen)
     return resolved
@@ -1932,7 +1926,7 @@ def resolve_target_paths(
 
 def _resolve_mutation_target_path(task: str, repo_root: Path, target_files: Sequence[str] = ()) -> str:
     repo_files = _repo_files_for_target_resolution(repo_root)
-    resolved_targets = resolve_target_paths(task, target_files, repo_files)
+    resolved_targets = resolve_target_paths(task, (), repo_files)
     if resolved_targets:
         return resolved_targets[0]
 
@@ -2003,7 +1997,7 @@ def _resolve_required_deliverables(
     demands. The run is held to *all* of them by the verification gate.
     """
     repo_files = _repo_files_for_target_resolution(repo_root)
-    resolved_targets = resolve_target_paths(request, target_files, repo_files)
+    resolved_targets = resolve_target_paths(request, (), repo_files)
     if resolved_targets:
         return resolved_targets
 

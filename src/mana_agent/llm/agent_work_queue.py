@@ -1297,7 +1297,6 @@ class QueueManager:
                     "forced_retry_mutation_attempted": forced_retry_mutation_attempted,
                     "forced_retry_changed_files": forced_retry_changed_files,
                     "verification_ran": bool(verification.get("ran")),
-                    "verification_passed": bool(verification.get("passed")),
                     "verification_failed": bool(verification.get("failed")),
                     "verification_failing_checks": list(verification.get("failing", [])),
                     "mutation_tool_attempted": bool(mutation_state.get("mutation_attempted")),
