@@ -2,6 +2,49 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-03 (mutation plan execution gate)
+
+- Added a structured `MutationPlan` model and validation path so mutation-required queue work builds an approved, evidence-backed decision before edit tools run.
+- Wired edit execution and forced retries to attach the approved plan ID/payload, require plan-linked mutation traces for completion, and keep fallback behind an explicit fallback decision instead of normal edit success.
+- Added architecture-doc handling that prioritizes `src/mana_agent/**` source areas over tests/changelog hits and requires source-backed intended architecture sections before mutating `docs/08-architecture.md`.
+- Added regression coverage for missing-plan write rejection, source-architecture evidence reads, tests/changelog-only evidence rejection, duplicate mutation item collapse, and isolated fallback behavior.
+- Verification: `PYTHONPATH=src python3 -m py_compile src/mana_agent/llm/mutation_plan.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py src/mana_agent/llm/tool_worker_process.py tests/test_agent_work_queue.py tests/test_tools_manager.py` passed; `PYTHONPATH=src venv/bin/python3` runtime imports for touched modules passed; manually invoked focused regression functions passed because `pytest` is not installed in the available Python environments.
+
+## 2026-07-03 (progressive skills and batch tools)
+
+- Added progressive skill indexing with `SkillIndexItem` metadata, preferred `skills/<name>/SKILL.md` discovery, on-demand cached `read_skill(skill_name)`, and stable prompts that include only skill name/description/trigger.
+- Added batch execution tools for multi-file reads, multi-query searches, grouped scripts, and batched Codex patches, then registered them across tool contracts, AskAgent, policies, gates, prompts, queue progress accounting, and docs.
+- Added regression coverage for metadata-only skill indexing, on-demand skill loading, missing skill errors, batch reads/searches/scripts/patches, and updated batch-aware policy/gate expectations.
+- Verification: `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_prompting_builder.py tests/test_cli_modes_skills.py tests/test_repository_tools.py tests/test_tool_policy.py tests/test_auto_chat.py tests/test_gate_command.py tests/test_tool_worker_process.py::test_run_tool_request_expands_file_system_alias -q` passed with 49 tests; `PYTHONPATH=src .venv/bin/mana-agent --help` passed; `PYTHONPATH=src .venv/bin/python -m pytest -q` reported 484 passed, 20 failed, and 16 warnings, with remaining failures in pre-existing queue mutation-plan/chat-smoke/dangerous-command paths.
+
+## 2026-07-03 (mutation execution after target resolution)
+
+- Fixed mutation-required docs edits after target resolution so a prose-only mutation worker falls back to a serialized local `write_file` mutation against the resolved existing markdown file.
+- Corrected forced mutation prompts to update existing resolved targets instead of telling the worker to create the requested file.
+- Added regression coverage for existing markdown files that already contain `## Update Notes` and for edit-existing forced mutation prompt wording.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py::test_docs_edit_fallback_mutates_existing_update_notes_section tests/test_tools_manager.py::test_forced_mutation_prompt_updates_existing_target -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/tools_manager.py tests/test_agent_work_queue.py tests/test_tools_manager.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/tools_manager.py tests/test_agent_work_queue.py tests/test_tools_manager.py --select F,E9` passed.
+
+## 2026-07-03 (target resolution memory promotion)
+
+- Promoted raw-to-resolved target file mappings into planner/coding memory so typo-prone requests like `architectue.md` execute, verify, and summarize against the resolved repo path.
+- Updated queue/sniffer prompts to use resolved target files for structured read, edit, and verify steps while keeping the raw user request only as context.
+- Added regression coverage ensuring fuzzy target resolution clears raw typo entries from `missing_required_files`.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_tools_manager.py::test_typo_target_resolution_promotes_resolved_file tests/test_agent_work_queue.py::test_typo_target_resolution_clears_missing_required_files -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/llm/tools_manager.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py tests/test_agent_work_queue.py tests/test_tools_manager.py` passed.
+
+## 2026-07-03 (docs edit mutation fallback)
+
+- Added a guarded docs-markdown mutation fallback so existing `docs/*.md` edit requests run a deterministic `write_file` mutation when the mutation-only worker returns without selecting an edit tool.
+- Ensured existing deliverable targets still trigger forced mutation for update/edit requests even when the file already exists and is non-stub.
+- Included the mutation tool and real `git diff -- <target>` verification command/result in successful edit final answers.
+- Added regression coverage for `update 08-architecture.md in docs`, bounded docs reads, mutation telemetry, changed files, and verification trace reporting.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py::test_docs_edit_runs_mutation_tool_via_fallback tests/test_agent_work_queue.py::test_simple_docs_edit_does_not_read_all_docs -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py src/mana_agent/llm/tools_manager.py tests/test_agent_work_queue.py tests/test_tools_manager.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/tools_manager.py tests/test_agent_work_queue.py tests/test_tools_manager.py --select F,E9` passed.
+
+## 2026-07-02 (mutation-only edit regression tests)
+
+- Added regression coverage that edit/forced mutation passes expose only mutation tools, failed edit work keeps the work board incomplete, and bare architecture doc filenames resolve to discovered `docs/*` targets.
+- Updated mutation-flow expectations so no-mutation edit runs block with forced-retry telemetry instead of relying on read/search/prose completion.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py src/mana_agent/llm/tools_manager.py tests/test_agent_work_queue.py tests/test_tools_manager.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py src/mana_agent/llm/tools_manager.py tests/test_agent_work_queue.py tests/test_tools_manager.py --select F,E9` passed.
+
 ## 2026-07-02 (edit flow mutation guard)
 
 - Fixed target resolution for bare documentation filenames so existing repo matches such as `docs/08-architecture.md` win over invented planner paths like `src/08-architecture.md`, while generated/cache paths are ignored.

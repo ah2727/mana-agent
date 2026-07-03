@@ -51,3 +51,7 @@ src/mana_agent/
 - [Overview](./01-overview.md)
 - [Project Diagram](./07-diagram.md)
 - [README](../README.md)
+
+## Update Notes
+
+Requested change: 08-architecture.md update this files with new architecture exist in src.

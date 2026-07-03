@@ -2,7 +2,7 @@
 mana_agent.llm.coding_agent
 
 Coding agent wrapper with:
-- mutation tools (edit_file/multi_edit_file/apply_patch/create_file/write_file/delete_file)
+- mutation tools (edit_file/multi_edit_file/apply_patch/apply_patch_batch/create_file/write_file/delete_file)
 - structured flow/checklist planning
 - anti-loop tool policy (search/read budgets, duplicate search guards)
 - flow-memory continuity integration
@@ -1208,7 +1208,7 @@ class CodingAgent:
 
     # Mutation tools whose presence in a planned step means the run must end in
     # an actual edit (and verify), not just discovery/reads.
-    _MUTATION_TOOLS = frozenset({"edit_file", "multi_edit_file", "apply_patch", "create_file", "write_file", "delete_file"})
+    _MUTATION_TOOLS = frozenset({"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"})
 
     @classmethod
     def _checklist_requires_edit(cls, checklist: "FlowChecklist | None") -> bool:
@@ -1650,7 +1650,7 @@ class CodingAgent:
         mutation_tools_seen = {str(row.get("tool_name", "")) for row in combined_trace_rows}
         attempted_apply_patch = "apply_patch" in mutation_tools_seen
         attempted_write_file = "write_file" in mutation_tools_seen
-        attempted_mutation = bool(mutation_tools_seen.intersection({"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"}))
+        attempted_mutation = bool(mutation_tools_seen.intersection({"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}))
 
         if edit_intent and not changed and attempted_apply_patch:
             warnings.append("mutation_noop_after_apply_patch")

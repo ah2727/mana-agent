@@ -32,7 +32,17 @@ def test_build_agent_flow_connects_selection_context_and_verification(tmp_path: 
 
 def test_coding_prompt_builder_composes_stable_layers(tmp_path: Path) -> None:
     (tmp_path / "skills").mkdir()
-    (tmp_path / "skills" / "testing.md").write_text("# Testing Skill\n\nUse focused checks.\n", encoding="utf-8")
+    (tmp_path / "skills" / "testing").mkdir()
+    (tmp_path / "skills" / "testing" / "SKILL.md").write_text(
+        "---\n"
+        "name: testing\n"
+        "description: Focused verification skill.\n"
+        "trigger: Use when tests or pytest are mentioned.\n"
+        "---\n\n"
+        "# Testing Skill\n\n"
+        "SECRET FULL BODY SHOULD ONLY BE EPHEMERAL.\n",
+        encoding="utf-8",
+    )
     (tmp_path / ".mana").mkdir()
     (tmp_path / ".mana" / "memory.md").write_text("Known command: pytest -q\n", encoding="utf-8")
 
@@ -47,11 +57,14 @@ def test_coding_prompt_builder_composes_stable_layers(tmp_path: Path) -> None:
 
     assert prompt.index("Core Identity") < prompt.index("Language-aware tooling")
     assert prompt.index("Language-aware tooling") < prompt.index("Agent Behavior Rules")
-    assert prompt.index("Agent Behavior Rules") < prompt.index("Compact Skills Index")
-    assert prompt.index("Compact Skills Index") < prompt.index("Repository Rules")
+    assert prompt.index("Agent Behavior Rules") < prompt.index("Available skills:")
+    assert prompt.index("Available skills:") < prompt.index("Repository Rules")
     assert prompt.index("Repository Rules") < prompt.index("Safety and Verification Rules")
     assert prompt.index("Safety and Verification Rules") < prompt.index("Ephemeral Prompt Context")
-    assert "testing (project, hash=" in prompt
+    assert "description: Focused verification skill." in prompt
+    assert "trigger: Use when tests or pytest are mentioned." in prompt
+    assert "Matched Skill Content" in prompt
+    assert "SECRET FULL BODY SHOULD ONLY BE EPHEMERAL." in prompt
     assert "Project Memory Snapshot" in prompt
     assert "Known command: pytest -q" in prompt
     assert "Current Task Context" in prompt
@@ -149,8 +162,12 @@ def test_compose_adds_tool_messages_only_when_needed(tmp_path: Path) -> None:
 
 def test_skill_change_invalidates_stable_cache(tmp_path: Path) -> None:
     (tmp_path / "skills").mkdir()
-    skill = tmp_path / "skills" / "testing.md"
-    skill.write_text("# Testing Skill\n\nUse focused checks.\n", encoding="utf-8")
+    (tmp_path / "skills" / "testing").mkdir()
+    skill = tmp_path / "skills" / "testing" / "SKILL.md"
+    skill.write_text(
+        "---\nname: testing\ndescription: Focused checks.\ntrigger: Use when tests are mentioned.\n---\n\nBody v1\n",
+        encoding="utf-8",
+    )
     cache = PromptCache()
     first = get_or_build_stable_prompt(
         base_prompt="Core Identity",
@@ -160,7 +177,10 @@ def test_skill_change_invalidates_stable_cache(tmp_path: Path) -> None:
         cache=cache,
     )
 
-    skill.write_text("# Testing Skill\n\nUse focused checks and cache invalidation checks.\n", encoding="utf-8")
+    skill.write_text(
+        "---\nname: testing\ndescription: Focused checks v2.\ntrigger: Use when tests are mentioned.\n---\n\nBody v2\n",
+        encoding="utf-8",
+    )
     second = get_or_build_stable_prompt(
         base_prompt="Core Identity",
         repo_root=tmp_path,
@@ -171,6 +191,27 @@ def test_skill_change_invalidates_stable_cache(tmp_path: Path) -> None:
 
     assert cache.last_hit is False
     assert second.cache_key != first.cache_key
+
+
+def test_stable_prompt_skill_index_excludes_full_skill_body_until_matched(tmp_path: Path) -> None:
+    (tmp_path / "skills" / "django").mkdir(parents=True)
+    (tmp_path / "skills" / "django" / "SKILL.md").write_text(
+        "---\n"
+        "name: django\n"
+        "description: Django development skill.\n"
+        "trigger: Use when Django models or migrations are mentioned.\n"
+        "---\n\n"
+        "# Django Skill\n\n"
+        "FULL DJANGO BODY SHOULD NOT BE IN STABLE PROMPT.\n",
+        encoding="utf-8",
+    )
+
+    stable = get_or_build_stable_prompt(base_prompt="Core Identity", repo_root=tmp_path, cache=PromptCache())
+    stable_text = stable.skill_index
+
+    assert "Django development skill." in stable_text
+    assert "Use when Django models or migrations are mentioned." in stable_text
+    assert "FULL DJANGO BODY SHOULD NOT BE IN STABLE PROMPT." not in stable_text
 
 
 def test_tool_registry_change_invalidates_stable_cache(tmp_path: Path) -> None:

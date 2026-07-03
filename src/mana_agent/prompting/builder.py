@@ -25,7 +25,7 @@ from mana_agent.prompting.memory_snapshot import render_memory_snapshot
 from mana_agent.prompting.mode_rules import render_mode_rules
 from mana_agent.prompting.output_contract import render_output_contract
 from mana_agent.prompting.repo_rules import render_repo_rules
-from mana_agent.prompting.skills_index import render_compact_skills_index, render_stable_skills_index
+from mana_agent.prompting.skills_index import render_matched_skill_context, render_stable_skills_index
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +82,7 @@ def _behavior_rules(*, full_auto_mode: bool = False) -> str:
         "Agent Behavior Rules\n"
         "- Keep continuity through compact summaries and durable memory, not by appending old turns to the system prompt.\n"
         "- Inspect before editing, use repository-scoped tools, and preserve unrelated user changes.\n"
+        "- Prefer batch tools: repo_batch_read for multiple files, repo_batch_search for multiple queries, run_script_once for grouped commands, and apply_patch_batch for related multi-file patches.\n"
         "- Keep per-turn task details, retrieved files, tool outputs, and temporary plans out of the stable prompt.\n"
         "- Summarize oversized context before continuing.",
         CODING_AGENT_RECOGNITION_PROMPT,
@@ -333,7 +334,10 @@ def build_coding_system_prompt(
     ephemeral = build_ephemeral_context(
         render_task_context(flow.context),
         mode=flow.context.mode,
-        retrieved_files=[render_compact_skills_index(request, repo_root=repo_root), render_memory_snapshot(repo_root=repo_root)],
+        retrieved_files=[
+            render_matched_skill_context(request, repo_root=repo_root),
+            render_memory_snapshot(repo_root=repo_root),
+        ],
         recent_summary=flow_context,
         temporary_constraints=temporary_constraints,
     )

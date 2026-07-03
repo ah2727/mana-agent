@@ -14,8 +14,11 @@ from mana_agent.llm.tools_manager import (
     _mutation_fallback_tool_allowed,
     _required_file_satisfied,
     _resolve_required_deliverables,
+    resolve_target_state,
+    resolve_target_paths,
 )
 from mana_agent.services.coding_memory_service import CodingMemoryService
+from mana_agent.llm.tool_worker_process import ToolRunRequest, ToolWorkerProcessError, _validate_direct_tool_request
 
 
 class _NoopWorker:
@@ -94,9 +97,9 @@ def test_discovery_pass_does_not_run_under_mutation_required(tmp_path: Path) -> 
     assert worker.policies[0].get("mutation_required") is None
 
 
-def test_edit_pass_can_read_and_search_to_ground_content(tmp_path: Path) -> None:
-    # The edit/forced pass is agentic: its policy must expose read/search tools so
-    # the worker can analyze the project before authoring (not just mutation tools).
+def test_edit_pass_uses_mutation_only_policy(tmp_path: Path) -> None:
+    # Discovery/read work happens before the edit item. The edit/forced pass
+    # itself must expose only mutation tools so it cannot finish with prose/search.
     (tmp_path / "docs").mkdir()
     (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
     body = "# Overview\n\n" + ("Grounded overview content for the demo project. " * 6) + "\n"
@@ -133,8 +136,7 @@ def test_edit_pass_can_read_and_search_to_ground_content(tmp_path: Path) -> None
 
     assert worker.edit_policies, "expected at least one mutation-required edit pass"
     allowed = set(worker.edit_policies[0].get("allowed_tools") or [])
-    assert {"read_file", "repo_search"}.issubset(allowed)
-    assert {"edit_file", "multi_edit_file", "create_file", "write_file", "apply_patch", "delete_file"}.issubset(allowed)
+    assert allowed == {"edit_file", "multi_edit_file", "create_file", "write_file", "apply_patch", "delete_file"}
 
 
 def test_mutation_fallback_allowlist_blocks_discovery_tools() -> None:
@@ -143,6 +145,22 @@ def test_mutation_fallback_allowlist_blocks_discovery_tools() -> None:
     for tool in ("edit_file", "multi_edit_file", "create_file", "write_file", "apply_patch", "delete_file"):
         assert _mutation_fallback_tool_allowed(tool, target_exists=False, prior_target_evidence=True) is True
     assert _mutation_fallback_tool_allowed("read_file", target_exists=True, prior_target_evidence=False) is True
+
+
+def test_write_file_rejected_without_approved_mutation_plan(tmp_path: Path) -> None:
+    req = ToolRunRequest(
+        question="write",
+        index_dir=str(tmp_path),
+        tool_name="write_file",
+        tool_args={"path": "docs/08-architecture.md", "content": "# Architecture\n"},
+    )
+
+    try:
+        _validate_direct_tool_request(req, repo_root=str(tmp_path))
+    except ToolWorkerProcessError as exc:
+        assert exc.code == "mutation_plan_required"
+    else:  # pragma: no cover
+        raise AssertionError("write_file without MutationPlan should be rejected")
 
 
 def test_run_state_model_docs_queue_prioritizes_relevant_files(tmp_path: Path) -> None:
@@ -743,6 +761,25 @@ def test_resolve_required_deliverables_handles_and_and_ampersand(tmp_path: Path)
     ]
 
 
+def test_bare_architecture_filename_resolves_to_docs_file() -> None:
+    assert resolve_target_paths(
+        "analyze src architecture and update 08-architecture.md",
+        discovered_files=["docs/08-architecture.md"],
+        repo_files=["docs/08-architecture.md"],
+    ) == ["docs/08-architecture.md"]
+
+
+def test_typo_target_resolution_promotes_resolved_file(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "08-architecture.md").write_text("# Architecture\n", encoding="utf-8")
+
+    state = resolve_target_state("update the architectue.md with new architecture.", tmp_path)
+
+    assert state["raw_target_files"] == ["architectue.md"]
+    assert state["resolved_target_files"] == ["docs/08-architecture.md"]
+    assert state["unresolved_target_files"] == []
+
+
 def test_two_files_authored_under_docs_complete_the_run(tmp_path: Path) -> None:
     # Agentic success: a worker that authors substantive, correctly-placed content
     # for every deliverable completes the run. No templates involved.
@@ -861,6 +898,19 @@ def test_forced_mutation_prompt_drives_agentic_authoring() -> None:
     assert "Do NOT write placeholders" in prompt
     assert "Target file: docs/01-overview.md" in prompt
     assert "User request: create docs/01-overview.md" in prompt
+
+
+def test_forced_mutation_prompt_updates_existing_target() -> None:
+    prompt = _forced_mutation_prompt(
+        "update the architectue.md with new architecture.",
+        "docs/08-architecture.md",
+        target_exists=True,
+    )
+
+    assert "update the existing file docs/08-architecture.md" in prompt
+    assert "You must create the requested file" not in prompt
+    finish_line = prompt.split("3. Finish", maxsplit=1)[1].split("\n", maxsplit=1)[0]
+    assert "create_file" not in finish_line
 
 
 class _WrongPathStubWorker:

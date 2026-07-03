@@ -5,6 +5,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Container, Literal, Sequence, TypeVar
 
@@ -165,8 +166,8 @@ class RunStateStore:
         "verify_changes",
         "final_report",
     ]
-    mutation_tools = {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"}
-    verification_tools = {"run_command", "verify_project"}
+    mutation_tools = {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}
+    verification_tools = {"run_command", "run_script_once", "verify_project"}
     # Internal placeholder recorded when a worker request does not resolve to a
     # concrete enumerated tool (the agentic ask path). It is never a real tool.
     toolsmanager_request_sentinel = "toolsmanager_request"
@@ -363,15 +364,15 @@ class RunStateStore:
                 match = re.search(r"\bread(?:_file)?\s+([^\s`'\";]+)", str(question or ""), flags=re.IGNORECASE)
                 path = cls._normalize_action_text(match.group(1)) if match else ""
             return f"read_file:{path}" if path else "read_file"
-        if tool in {"repo_search", "semantic_search"}:
+        if tool in {"repo_search", "repo_batch_search", "semantic_search"}:
             query = cls._extract_arg_text(payload, ("query", "q", "pattern"), question)
             glob = cls._extract_arg_text(payload, ("glob", "path_glob", "include"), question)
             if not query:
                 text = cls._normalize_action_text(question)
-                text = re.sub(r"\b(repo_search|semantic_search|search|find|locate|grep)\b", " ", text)
+                text = re.sub(r"\b(repo_search|repo_batch_search|semantic_search|search|find|locate|grep)\b", " ", text)
                 text = re.sub(r"\b(k|max_steps|timeout_seconds)\s*[:=]\s*\d+\b", " ", text)
                 query = re.sub(r"\s+", " ", text).strip()
-            prefix = "repo_search" if tool == "repo_search" else "semantic_search"
+            prefix = "repo_search" if tool in {"repo_search", "repo_batch_search"} else "semantic_search"
             return f"{prefix}:{query}:{glob}"
         if tool == "run_command":
             command = cls._extract_arg_text(payload, ("cmd", "command", "shell_command"), question)
@@ -823,7 +824,7 @@ class RunStateStore:
             if row.get("status") != "ok":
                 continue
             tool = str(row.get("tool_name", "") or "").strip().lower()
-            if tool in {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"} and any(
+            if tool in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"} and any(
                 str(path).strip()
                 for path in (row.get("files_changed") if isinstance(row.get("files_changed"), list) else [])
             ):
@@ -1173,9 +1174,9 @@ class RunStateStore:
         successful_patches = 0
         for row in self.read_jsonl("tool_calls.jsonl"):
             tool = str(row.get("tool_name", "") or "").strip().lower()
-            if row.get("status") == "ok" and tool in {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"}:
+            if row.get("status") == "ok" and tool in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}:
                 successful_patches += 1
-            if row.get("status") == "ok" and tool in {"run_command", "verify_project"}:
+            if row.get("status") == "ok" and tool in {"run_command", "run_script_once", "verify_project"}:
                 verification_commands += 1
         return {
             "passes": len(list(pass_logs)),
@@ -1219,7 +1220,7 @@ class RunStateStore:
         completed_searches = [
             row
             for row in self.read_jsonl("tool_calls.jsonl")
-            if row.get("status") == "ok" and str(row.get("tool_name", "")).strip().lower() in {"repo_search", "semantic_search", "list_files"}
+            if row.get("status") == "ok" and str(row.get("tool_name", "")).strip().lower() in {"repo_search", "repo_batch_search", "semantic_search", "list_files"}
         ]
         todo = self.read_json("todo.json", {})
         state = self.read_json("state.json", self._default_state(goal="", flow_id=""))
@@ -1249,13 +1250,13 @@ class RunStateStore:
             "applied_patches": [
                 row
                 for row in self.read_jsonl("tool_calls.jsonl")
-                if row.get("status") == "ok" and str(row.get("tool_name", "")).strip().lower() in {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"}
+                if row.get("status") == "ok" and str(row.get("tool_name", "")).strip().lower() in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}
                 and any(str(path).strip() for path in (row.get("files_changed") if isinstance(row.get("files_changed"), list) else []))
             ],
             "verification_commands": [
                 row
                 for row in self.read_jsonl("tool_calls.jsonl")
-                if row.get("status") == "ok" and str(row.get("tool_name", "")).strip().lower() in {"run_command", "verify_project"}
+                if row.get("status") == "ok" and str(row.get("tool_name", "")).strip().lower() in {"run_command", "run_script_once", "verify_project"}
             ],
             "next_exact_action": next_action,
             "next_action": next_action,
@@ -1316,15 +1317,15 @@ class RunStateStore:
                     "id": "discover_models_sources",
                     "title": "Discover model source files",
                     "kind": "discover",
-                    "allowed_tools": ["repo_search", "semantic_search", "list_files", "run_command"],
+                    "allowed_tools": ["repo_batch_search", "repo_search", "semantic_search", "list_files", "run_script_once", "run_command"],
                     "done_condition": "candidate model source files are located or no candidates remain",
                 },
                 "read_candidates": {
                     "id": "read_model_sources",
                     "title": "Read model source files",
                     "kind": "read",
-                    "allowed_tools": ["read_file"],
-                    "required_tool": "read_file",
+                    "allowed_tools": ["repo_batch_read", "read_file"],
+                    "required_tool": "repo_batch_read|read_file",
                     "dependencies": ["discover_models_sources"],
                     "done_condition": "pending_files == 0",
                 },
@@ -1332,7 +1333,7 @@ class RunStateStore:
                     "id": "classify_model_evidence",
                     "title": "Classify model evidence",
                     "kind": "summarize",
-                    "allowed_tools": ["run_command"],
+                    "allowed_tools": ["run_script_once", "run_command"],
                     "dependencies": ["read_model_sources"],
                     "done_condition": "model evidence is sufficient for docs update",
                 },
@@ -1340,7 +1341,7 @@ class RunStateStore:
                     "id": "plan_docs_models_update",
                     "title": "Plan docs/models.md update",
                     "kind": "summarize",
-                    "allowed_tools": ["run_command"],
+                    "allowed_tools": ["run_script_once", "run_command"],
                     "dependencies": ["classify_model_evidence"],
                     "done_condition": "mutation payload or edit target is prepared",
                 },
@@ -1349,8 +1350,8 @@ class RunStateStore:
                     "title": "Update docs/models.md",
                     "kind": "edit",
                     "target_files": ["docs/models.md"],
-                    "allowed_tools": ["edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"],
-                    "required_tool": "edit_file|multi_edit_file|apply_patch|write_file|create_file|delete_file",
+                    "allowed_tools": ["edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"],
+                    "required_tool": "edit_file|multi_edit_file|apply_patch|apply_patch_batch|write_file|create_file|delete_file",
                     "dependencies": ["plan_docs_models_update"],
                     "done_condition": "docs/models.md is modified by a mutation tool",
                 },
@@ -1359,8 +1360,8 @@ class RunStateStore:
                     "title": "Verify docs/models.md",
                     "kind": "verify",
                     "target_files": ["docs/models.md"],
-                    "allowed_tools": ["run_command", "verify_project"],
-                    "required_tool": "run_command|verify_project",
+                    "allowed_tools": ["run_script_once", "run_command", "verify_project"],
+                    "required_tool": "run_script_once|run_command|verify_project",
                     "dependencies": ["update_docs_models_md"],
                     "done_condition": "verification command succeeds after mutation",
                 },
@@ -1377,25 +1378,25 @@ class RunStateStore:
         generic_mapping: dict[str, dict[str, Any]] = {
             "locate_candidates": {
                 "kind": "discover",
-                "allowed_tools": ["repo_search", "semantic_search", "list_files", "run_command"],
+                "allowed_tools": ["repo_batch_search", "repo_search", "semantic_search", "list_files", "run_script_once", "run_command"],
                 "done_condition": "candidate files are located",
             },
             "read_candidates": {
                 "kind": "read",
-                "allowed_tools": ["read_file"],
-                "required_tool": "read_file",
+                "allowed_tools": ["repo_batch_read", "read_file"],
+                "required_tool": "repo_batch_read|read_file",
                 "done_condition": "target files are read",
             },
             "apply_changes": {
                 "kind": "edit",
-                "allowed_tools": ["edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"],
-                "required_tool": "edit_file|multi_edit_file|apply_patch|write_file|create_file|delete_file",
+                "allowed_tools": ["edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"],
+                "required_tool": "edit_file|multi_edit_file|apply_patch|apply_patch_batch|write_file|create_file|delete_file",
                 "done_condition": "target file is modified by a mutation tool",
             },
             "verify_changes": {
                 "kind": "verify",
-                "allowed_tools": ["run_command", "verify_project"],
-                "required_tool": "run_command|verify_project",
+                "allowed_tools": ["run_script_once", "run_command", "verify_project"],
+                "required_tool": "run_script_once|run_command|verify_project",
                 "done_condition": "verification command succeeds",
             },
             "final_report": {
@@ -1659,12 +1660,12 @@ class RunStateStore:
         searched_queries = [
             row.get("normalized_args", {})
             for row in tool_history
-            if str(row.get("tool_name", "")).strip().lower() in {"repo_search", "semantic_search", "list_files", "run_command"}
+            if str(row.get("tool_name", "")).strip().lower() in {"repo_batch_search", "repo_search", "semantic_search", "list_files", "run_script_once", "run_command"}
         ]
         verification_commands = [
             row.get("normalized_args", {})
             for row in tool_history
-            if str(row.get("tool_name", "")).strip().lower() in {"run_command", "verify_project"}
+            if str(row.get("tool_name", "")).strip().lower() in {"run_script_once", "run_command", "verify_project"}
         ]
         last_success = next((row for row in reversed(tool_history) if row.get("status") == "ok"), {})
         phase = self._public_phase_name(str(state.get("current_phase", checkpoint.get("current_phase", "DISCOVERY"))))
@@ -1708,7 +1709,7 @@ class RunStateStore:
         self.write_json("work_ledger.json", ledger)
 
 
-_MUTATION_TOOLS = {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"}
+_MUTATION_TOOLS = {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}
 _NON_PROGRESS_STATUSES = {
     "blocked",
     "skipped",
@@ -1767,13 +1768,15 @@ _CREATE_FILE_IN_DIR_RE = re.compile(
     re.IGNORECASE,
 )
 _MUTATION_FALLBACK_ALLOWED_TOOLS = frozenset(
-    {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file", "git_status", "git_diff", "verify_project"}
+    {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file", "git_status", "git_diff", "verify_project", "run_script_once"}
 )
 _MUTATION_FALLBACK_BLOCKED_TOOLS = frozenset(
     {
         "repo_search",
+        "repo_batch_search",
         "semantic_search",
         "read_file",
+        "repo_batch_read",
         "list_files",
         "ls",
         "chunk_file",
@@ -1924,11 +1927,110 @@ def resolve_target_paths(
     return resolved
 
 
+def _target_match_keys(path: str) -> set[str]:
+    rel = str(path or "").strip().replace("\\", "/").lstrip("./")
+    name = Path(rel).name.lower()
+    stem = Path(name).stem
+    stripped_stem = re.sub(r"^\d+[-_.\s]+", "", stem)
+    keys = {name, stem, stripped_stem}
+    keys.update(re.sub(r"[^a-z0-9]+", "", key) for key in list(keys))
+    return {key for key in keys if key}
+
+
+def _target_similarity(raw: str, candidate: str) -> float:
+    raw_keys = _target_match_keys(raw)
+    candidate_keys = _target_match_keys(candidate)
+    if not raw_keys or not candidate_keys:
+        return 0.0
+    if raw_keys & candidate_keys:
+        return 1.0
+    return max(
+        SequenceMatcher(None, raw_key, candidate_key).ratio()
+        for raw_key in raw_keys
+        for candidate_key in candidate_keys
+    )
+
+
+def resolve_target_state(
+    user_request: str,
+    repo_root: Path,
+    *,
+    target_files: Sequence[str] = (),
+    discovered_files: Sequence[str] = (),
+) -> dict[str, list[str]]:
+    """Return raw, resolved, and unresolved target files for planner memory."""
+    raw_targets: list[str] = []
+    for match in _EXPLICIT_FILE_RE.finditer(str(user_request or "")):
+        raw = match.group("path").strip().replace("\\", "/").lstrip("./")
+        raw = re.sub(r"[,.):;\]]+$", "", raw)
+        if raw and raw not in raw_targets:
+            raw_targets.append(raw)
+    for item in target_files:
+        raw = str(item or "").strip().replace("\\", "/").lstrip("./")
+        raw = re.sub(r"[,.):;\]]+$", "", raw)
+        if any(Path(existing).name == Path(raw).name for existing in raw_targets):
+            continue
+        if raw and raw not in raw_targets:
+            raw_targets.append(raw)
+
+    repo_files = _repo_files_for_target_resolution(repo_root)
+    discovered = [
+        str(path or "").strip().replace("\\", "/").lstrip("./")
+        for path in discovered_files
+        if str(path or "").strip()
+    ]
+    resolved: list[str] = []
+    unresolved: list[str] = []
+
+    for raw in raw_targets:
+        exact = resolve_target_paths(raw, discovered, repo_files)
+        if exact:
+            exact = [path for path in exact if path in discovered or path in repo_files]
+        if exact:
+            for path in exact:
+                if path not in resolved:
+                    resolved.append(path)
+            continue
+
+        best_score = 0.0
+        best_matches: list[str] = []
+        for candidates in (discovered, repo_files):
+            for candidate in candidates:
+                if _is_ignored_target_path(candidate):
+                    continue
+                score = _target_similarity(raw, candidate)
+                if score < 0.86:
+                    continue
+                if score > best_score:
+                    best_score = score
+                    best_matches = [candidate]
+                elif score == best_score and candidate not in best_matches:
+                    best_matches.append(candidate)
+            if len(best_matches) == 1:
+                break
+
+        if len(best_matches) == 1:
+            chosen = best_matches[0]
+            if chosen not in resolved:
+                resolved.append(chosen)
+        elif raw not in unresolved:
+            unresolved.append(raw)
+
+    return {
+        "raw_target_files": raw_targets,
+        "resolved_target_files": resolved,
+        "unresolved_target_files": unresolved,
+    }
+
+
 def _resolve_mutation_target_path(task: str, repo_root: Path, target_files: Sequence[str] = ()) -> str:
     repo_files = _repo_files_for_target_resolution(repo_root)
     resolved_targets = resolve_target_paths(task, (), repo_files)
     if resolved_targets:
         return resolved_targets[0]
+    resolved_state = resolve_target_state(task, repo_root, target_files=target_files)
+    if resolved_state["resolved_target_files"]:
+        return resolved_state["resolved_target_files"][0]
 
     for item in target_files:
         rel = _safe_relative_path(repo_root, item)
@@ -2000,6 +2102,9 @@ def _resolve_required_deliverables(
     resolved_targets = resolve_target_paths(request, (), repo_files)
     if resolved_targets:
         return resolved_targets
+    resolved_state = resolve_target_state(request, repo_root, target_files=target_files)
+    if resolved_state["resolved_target_files"]:
+        return resolved_state["resolved_target_files"]
 
     explicit: list[str] = []
     for item in target_files:
@@ -2088,9 +2193,9 @@ def _mutation_tool_stats(trace: Sequence[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(row, dict):
             continue
         tool = _trace_tool_name(row)
-        if tool in {"read_file", "chunk_file"}:
+        if tool in {"read_file", "repo_batch_read", "chunk_file"}:
             read_tools.append(tool)
-        if tool in {"repo_search", "semantic_search", "list_files", "ls", "find_symbols", "call_graph"}:
+        if tool in {"repo_search", "repo_batch_search", "semantic_search", "list_files", "ls", "find_symbols", "call_graph"}:
             search_tools.append(tool)
         if tool not in _MUTATION_TOOLS:
             continue
@@ -2115,17 +2220,32 @@ def _mutation_tool_stats(trace: Sequence[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _forced_mutation_prompt(request: str, target_file: str) -> str:
-    """The MUTATION_REQUIRED prompt: analyze the project, then author the file.
+def _forced_mutation_prompt(request: str, target_file: str, *, target_exists: bool | None = None) -> str:
+    """The MUTATION_REQUIRED prompt: analyze the project, then mutate the file.
 
     This drives an agentic pass, not a one-shot write. The worker is expected to
     inspect the repository (README, packaging metadata, source layout) so the
-    file it produces is specific to *this* project, then finish with a single
+    edit it produces is specific to *this* project, then finish with a single
     mutation tool call. Placeholder/stub content is explicitly forbidden — there
     is no template fallback behind this, so a stub is a failed deliverable.
     """
+    if target_exists is None:
+        target_exists = not bool(re.search(r"\b(create|generate)\b", str(request or ""), re.IGNORECASE))
+    target_exists = bool(target_file) and bool(target_exists)
+    action = (
+        f"You must update the existing file {target_file} by ANALYZING THIS PROJECT, then patching it."
+        if target_exists
+        else "You must create the requested file by ANALYZING THIS PROJECT, then writing it."
+    )
+    finish_rule = (
+        "3. Finish by updating the existing target with exactly one mutation tool "
+        "(edit_file, multi_edit_file, apply_patch, apply_patch_batch, write_file, or delete_file)."
+        if target_exists
+        else "3. Finish by writing real, project-specific content with exactly one mutation tool "
+        "(edit_file, multi_edit_file, apply_patch, apply_patch_batch, create_file, write_file, or delete_file)."
+    )
     lines = [
-        "You must create the requested file by ANALYZING THIS PROJECT, then writing it.",
+        action,
         "",
         "Work like an agent:",
         "1. Inspect the repository to understand it — read the README, packaging "
@@ -2134,14 +2254,13 @@ def _forced_mutation_prompt(request: str, target_file: str) -> str:
         "2. Decide what THIS specific file should contain from its name/path "
         "(e.g. an overview summarizes the project; an installation guide gives the "
         "real setup and install commands; usage/commands document the actual CLI).",
-        "3. Finish by writing real, project-specific content with exactly one "
-        "mutation tool (edit_file, multi_edit_file, apply_patch, create_file, write_file, or delete_file).",
+        finish_rule,
         "",
         "Hard requirements:",
         "- Ground every claim in what you actually found in the repository.",
         "- Do NOT write placeholders, 'TBD', 'TODO', or generic filler. If you do "
         "not know something, inspect the repo to find it.",
-        "- The run is not complete until the target file exists with substantive content.",
+        "- The run is not complete until the target file contains substantive updated content.",
     ]
     if target_file:
         lines.append(f"Target file: {target_file}")
@@ -2400,6 +2519,7 @@ def _verification_summary_from_trace(trace: Sequence[dict[str, Any]]) -> dict[st
     failed = False
     passed_any = False
     failing: list[dict[str, str]] = []
+    commands: list[str] = []
     for row in trace:
         if not isinstance(row, dict):
             continue
@@ -2407,6 +2527,9 @@ def _verification_summary_from_trace(trace: Sequence[dict[str, Any]]) -> dict[st
         if tool not in _VERIFICATION_TOOLS:
             continue
         ran = True
+        command = str(row.get("command") or "").strip()
+        if command:
+            commands.append(command)
         status = _trace_status(row)
         if status == "verify_project_blocked_until_mutation":
             # The verify never actually ran; do not treat it as executed.
@@ -2446,6 +2569,7 @@ def _verification_summary_from_trace(trace: Sequence[dict[str, Any]]) -> dict[st
         "failed": failed,
         "passed": bool(ran and passed_any and not failed),
         "failing": failing,
+        "commands": commands,
     }
 
 
@@ -2478,6 +2602,7 @@ def _compose_final_answer(
     worker_answer: str,
     fallback: str,
     missing_required_files: Sequence[str] = (),
+    mutation_tools_used: Sequence[str] = (),
 ) -> str:
     """Rebuild the final answer from authoritative execution state.
 
@@ -2489,6 +2614,7 @@ def _compose_final_answer(
     mutated = bool(mutation_state.get("mutation_succeeded")) or bool(changed)
     no_op_reason = str(mutation_state.get("no_op_reason") or "").strip()
     worker_answer = str(worker_answer or "").strip()
+    mutation_tools = [str(tool).strip() for tool in (mutation_tools_used or []) if str(tool).strip()]
 
     if run_status == "blocked":
         reason = str(terminal_reason or "").strip() or "blocked"
@@ -2523,6 +2649,8 @@ def _compose_final_answer(
             lines.extend(f"- {path}" for path in changed)
         else:
             lines.append("Applied changes.")
+        if mutation_tools:
+            lines.append(f"Mutation tool: {mutation_tools[-1]}")
         if verification.get("ran"):
             if verification.get("failed"):
                 lines.append("")
@@ -2533,7 +2661,11 @@ def _compose_final_answer(
                     lines.append(f"- {name}: {detail}" if detail else f"- {name}")
             else:
                 lines.append("")
-                lines.append("Verification: passed")
+                commands = [str(cmd).strip() for cmd in verification.get("commands", []) if str(cmd).strip()]
+                if commands:
+                    lines.append(f"Verification: {commands[-1]} passed")
+                else:
+                    lines.append("Verification: passed")
         else:
             lines.append("")
             lines.append("Verification: not run")
