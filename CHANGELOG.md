@@ -78,9 +78,11 @@ All notable repository changes should be recorded here.
 ## 2026-07-04 (edit target resolution)
 
 - Resolved bare existing filenames in edit requests to their unique repository path before forced mutation retries, so requests like `Project Diagram(07-diagram.md)` target `docs/07-diagram.md` when that is the only matching file.
+- Restored missing target-resolution exports and sniffer architecture helper imports so the CLI starts instead of failing during `QueueManager` import.
+- Removed a stale undefined `plan` reference from work-queue finalization so discovery can emit read/edit/verify follow-up jobs again.
 - Routed queue-authored edit and forced-retry work as agentic mutation-required turns instead of incomplete direct `write_file` / `create_file` tool requests, preserving target instructions in the prompt.
 - Included failed edit tool details in blocked no-change answers instead of only returning the generic corrected-payload message.
-- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent/llm/tools_manager.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py` passed; `git diff --check` passed.
+- Verification: `PYTHONPATH=src .venv/bin/mana-agent --help` passed; `PYTHONPATH=src .venv/bin/python - <<'PY' ... from mana_agent.commands.cli import app ... PY` passed; targeted target-resolution regressions passed; `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent/llm/tools_manager.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py src/mana_agent/commands/cli.py src/mana_agent/commands/cli_internal.py` passed; `git diff --check` passed. Full `tests/test_agent_work_queue.py tests/test_tools_manager.py` was not green on this branch due existing MutationCommand queue behavior outside this startup fix.
 
 >>>>>>> ac61abe (Fix no-op edit error)
 ## 2026-07-04 (executor-backed agent sessions)
