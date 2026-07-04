@@ -1955,7 +1955,7 @@ def resolve_target_state(
         rel = _safe_relative_path(repo_root, raw)
         if rel:
             rel = _resolve_existing_unique_bare_path(repo_root, rel)
-            if rel and rel not in resolved:
+            if rel and ("/" in rel or (Path(repo_root) / rel).exists()) and rel not in resolved:
                 resolved.append(rel)
                 continue
         if raw not in unresolved:
