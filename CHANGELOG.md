@@ -2,8 +2,7 @@
 
 All notable repository changes should be recorded here.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
+
 ## 2026-07-03 (mutation command execution wiring)
 
 - Added `MutationCommand` compilation and validation so approved `MutationPlan` work produces an executable registered mutation-tool payload before edit execution.
