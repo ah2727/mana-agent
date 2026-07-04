@@ -209,7 +209,7 @@ def _render_auto_execute_pass_status(
     )
 
 
-@app.command()
+
 def chat(
     prompt: str | None = typer.Argument(None, help="Optional first chat prompt."),
     model: str | None = typer.Option(None, "--model"),

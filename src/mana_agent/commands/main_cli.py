@@ -1,32 +1,12 @@
 from __future__ import annotations
 
-import logging
-import sys
 import warnings
-from pathlib import Path
 
-import typer
-
-from .cli_internal import *  # keep compatibility exports for tests/imports
-from . import cli_internal as _cli_internal
-from .chat_cli import chat as chat_command
+from .cli_internal import *
 from .output import build_output_sink
 from mana_agent.ui.banner import render_banner, render_repository
 
-# Rebuild the public app explicitly so public help sees real leaf commands.
-app = typer.Typer(
-    help="mana-agent CLI",
-    invoke_without_command=True,
-    no_args_is_help=False,
-)
 
-app.command("chat")(chat_command)
-app.command("analyze")(_cli_internal.analyze_command)
-app.command("plan")(_cli_internal.plan_command)
-app.command("continue")(_cli_internal.continue_command)
-app.add_typer(_cli_internal.skills_app, name="skills")
-
-@app.callback()
 def main(
     ctx: typer.Context,
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logs (console + file)."),
