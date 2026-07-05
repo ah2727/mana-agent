@@ -54,6 +54,10 @@ class MainAgent:
         self.memory.remember_repo_fact(f"Repository root: {self.root}")
         title = request[:80] or entrypoint
         main_node = self.registry.find_by_role(AgentRole.MAIN)
+        self.memory.remember_agent(
+            main_node.agent_id,
+            f"Main agent received request via {entrypoint}: {request[:500]}",
+        )
         task = self.taskboard.create_task(
             title=title,
             user_request=request,
@@ -72,13 +76,26 @@ class MainAgent:
             node = self._node_by_role_name(role_name)
             if node is not None:
                 self.taskboard.assign(task.task_id, node.agent_id)
+                self.memory.remember_agent(
+                    node.agent_id,
+                    f"Assigned to task {task.task_id} for route {route.route_name}",
+                )
                 if node.model_level:
                     self.taskboard.add_evidence(task.task_id, f"{node.agent_id} uses {node.model_level}.")
         subagent_ids = self._create_required_subagents(task.task_id, route.required_subagents)
         head = self._agent(AgentRole.HEAD_DECISION, HeadDecisionAgent)
         head.decide(task.task_id, route, self.decision_room)
+        self.memory.remember_agent(
+            head.agent_id,
+            f"Decided route {route.route_name} for task {task.task_id}: {route.reason_summary}",
+        )
         planner = self._agent(AgentRole.PLANNER, PlannerAgent)
         plan = planner.plan(task.task_id, request, route.route_name)
+        self.memory.remember_agent(
+            planner.agent_id,
+            f"Created plan for task {task.task_id}; verification commands: "
+            f"{', '.join(getattr(plan, 'verification_commands', []) or [])}",
+        )
         self.memory.remember_task(
             f"Plan created for task {task.task_id}; verification commands: "
             f"{', '.join(getattr(plan, 'verification_commands', []) or [])}"
@@ -92,9 +109,14 @@ class MainAgent:
             self._agent(AgentRole.REVIEWER, ReviewerAgent).review(task.task_id, f"Risk level is {route.risk_level.value}; route requires {len(route.required_agents)} agents.")
         if route.requires_verification:
             self.taskboard.update_status(task.task_id, TaskStatus.VERIFYING, reason="VerifierAgent records verification plan.")
-            verification = self._agent(AgentRole.VERIFIER, VerifierAgent).verify_no_mutation(task.task_id, plan.verification_commands)
+            verifier = self._agent(AgentRole.VERIFIER, VerifierAgent)
+            verification = verifier.verify_no_mutation(task.task_id, plan.verification_commands)
+            self.memory.remember_agent(
+                verifier.agent_id,
+                f"Recorded verification for task {task.task_id}: passed={verification.passed}; {verification.summary}",
+            )
             self.memory.remember_task(
-            f"Verification recorded: passed={verification.passed}; summary={verification.summary}"
+                f"Verification recorded: passed={verification.passed}; summary={verification.summary}"
             )
             if not verification.passed:
                 self._agent(AgentRole.REVIEWER, ReviewerAgent).reject_weak_evidence(task.task_id, verification.summary)

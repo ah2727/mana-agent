@@ -43,7 +43,7 @@ class AgentMemoryBundle:
 
     def remember_repo_fact(self, fact: str) -> None:
         text = _clean(fact)
-        if text:
+        if text and text not in self.repo_context.facts:
             self.repo_context.facts.append(text)
 
     def snapshot(
@@ -68,18 +68,21 @@ class AgentMemoryBundle:
             lines.append("- none")
 
         lines.append("Agent memory:")
+        agent_lines: list[str] = []
+
         if agent_id:
             agent_items = self.for_agent(agent_id).summaries[-max_items:]
-            lines.extend(f"- {item}" for item in agent_items)
-            if not agent_items:
-                lines.append("- none")
+            agent_lines.extend(f"- {item}" for item in agent_items)
         else:
             for aid, memory in sorted(self.agent_memories.items()):
                 for item in memory.summaries[-max_items:]:
-                    lines.append(f"- {aid}: {item}")
-            if len(lines) == 1:
-                lines.append("- none")
+                    agent_lines.append(f"- {aid}: {item}")
 
+        if not agent_lines:
+            agent_lines.append("- none")
+
+        lines.extend(agent_lines)
+        
         text = "\n".join(lines).strip()
         return text[:max_chars]
 

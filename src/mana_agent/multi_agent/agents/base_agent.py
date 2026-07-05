@@ -86,11 +86,13 @@ class BaseAgent:
     def record_evidence(self, task_id: str, evidence: str) -> None:
         self.taskboard.add_evidence(task_id, evidence)
         self._remember_only(f"Evidence by {self.agent_id}: {evidence}", scope="task")
+        self._remember_only(f"Evidence recorded for task {task_id}: {evidence}", scope="agent")
         
     def record_decision(self, task_id: str, decision) -> None:
         self.taskboard.add_decision(task_id, decision)
         summary = getattr(decision, "summary", None) or str(decision)
         self._remember_only(f"Decision by {self.agent_id}: {summary}", scope="task")
+        self._remember_only(f"Decision recorded for task {task_id}: {summary}", scope="agent")
 
     def memory_snapshot(self, max_chars: int = 2000) -> str:
         if self.memory is None:
