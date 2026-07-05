@@ -14,8 +14,12 @@ All notable repository changes should be recorded here.
 
 - Added read-only tool result reuse metadata for the lightweight multi-agent queue so repeated same-argument reads return `cache_hit=true` instead of omitting the cache contract.
 - Added regression coverage for same-argument tool result reuse in `tests/test_multi_agent_core.py`.
+<<<<<<< HEAD
 - Verification: Pending.
 >>>>>>> f504359 (Fix cache_hit KeyError)
+=======
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py::test_tool_result_reused_when_args_same -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py -q` passed with 22 tests; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/multi_agent/tools/tool_manager.py tests/test_multi_agent_core.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/multi_agent/tools/tool_manager.py tests/test_multi_agent_core.py --select F,E9` passed; `git diff --check -- CHANGELOG.md src/mana_agent/multi_agent/tools/tool_manager.py tests/test_multi_agent_core.py` passed.
+>>>>>>> 44e2990 (Fix cache_hit KeyError)
 
 ## 2026-07-05 (multi-agent routing hardening)
 
