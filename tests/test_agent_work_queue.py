@@ -1660,7 +1660,7 @@ def test_sniffer_uses_planner_target_file_for_edit_job(tmp_path: Path):
 
 
 def test_edit_with_evidence_uses_agentic_policy_without_duplicate_reads(tmp_path: Path):
-    from mana_agent.multi_agent.runtime.evidence_memory import EvidenceMemory
+    from mana_agent.services.memory_service import EvidenceMemory
     from mana_agent.multi_agent.runtime.mutation_plan import build_mutation_plan
 
     (tmp_path / "src").mkdir()

@@ -419,26 +419,25 @@ def test_ask_agent_read_file_full_mode_oversized_returns_structured_error(tmp_pa
     assert payload["max_lines"] == AskAgent.READ_FULL_FILE_MAX_LINES
 
 
-def test_ask_agent_read_file_full_mode_hits_persistent_flow_cache_on_repeat(tmp_path: Path) -> None:
+def test_ask_agent_read_file_does_not_write_duplicate_flow_cache(tmp_path: Path) -> None:
     source_file = tmp_path / "cached.py"
     source_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
     service = CodingMemoryService(project_root=tmp_path)
 
-    first = _build_agent(tmp_path)
-    first.coding_memory_service = service
-    tools1, _traces1, _, _ = first._build_tools(k_default=4, timeout_seconds=1, flow_id="flow-cache-1")
-    read_file1 = [item for item in tools1 if item.name == "read_file"][0]
-    first_payload = json.loads(read_file1.invoke({"path": str(source_file), "mode": "full"}))
+    agent = _build_agent(tmp_path)
+    agent.coding_memory_service = service
+    tools, _traces, _, _ = agent._build_tools(k_default=4, timeout_seconds=1, flow_id="flow-cache-1")
+    read_file = [item for item in tools if item.name == "read_file"][0]
+    first_payload = json.loads(read_file.invoke({"path": str(source_file), "mode": "full"}))
+    second_payload = json.loads(read_file.invoke({"path": str(source_file), "mode": "full"}))
 
-    second = _build_agent(tmp_path)
-    second.coding_memory_service = service
-    tools2, _traces2, _, _ = second._build_tools(k_default=4, timeout_seconds=1, flow_id="flow-cache-1")
-    read_file2 = [item for item in tools2 if item.name == "read_file"][0]
-    second_payload = json.loads(read_file2.invoke({"path": str(source_file), "mode": "full"}))
+    with service._connect() as conn:
+        row_count = conn.execute("SELECT COUNT(*) FROM coding_flow_read_cache").fetchone()[0]
 
     assert first_payload["cache_hit"] is False
-    assert second_payload["cache_hit"] is True
-    assert second_payload["cache_source"] == "flow_full"
+    assert second_payload["cache_hit"] is False
+    assert second_payload["cache_source"] == "disk"
+    assert row_count == 0
 
 
 def test_ask_agent_read_file_hits_run_evidence_memory_on_repeat(tmp_path: Path) -> None:

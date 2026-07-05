@@ -21,12 +21,12 @@ from pydantic import BaseModel, Field
 from langchain_core.callbacks.base import BaseCallbackHandler
 from mana_agent.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_agent.multi_agent.runtime.prompts import ASK_AGENT_SYSTEM_PROMPT
-from mana_agent.multi_agent.runtime.evidence_memory import EvidenceMemory
 from mana_agent.analysis.chunker import CodeChunker
 from mana_agent.services.structure_service import StructureService
 from mana_agent.multi_agent.runtime.run_logger import LlmRunLogger
 from mana_agent.config.settings import default_index_dir
 from mana_agent.services.coding_memory_service import CodingMemoryService
+from mana_agent.services.memory_service import EvidenceMemory
 from mana_agent.services.search_service import SearchService
 from mana_agent.tools import coding_tool_contracts_payload, extract_patch_touched_files
 from mana_agent.utils.tool_policy import resolve_allowed_tools
@@ -724,6 +724,7 @@ class AskAgent:
         flow_id: str | None,
         row: dict[str, Any],
         ephemeral_read_cache: dict[str, list[dict[str, Any]]] | None,
+        persist_flow_cache: bool = False,
     ) -> None:
         file_path = str(row.get("file_path", "")).strip()
         if not file_path:
@@ -736,22 +737,21 @@ class AskAgent:
             ephemeral_read_cache[file_path] = existing[:20]
         resolved_flow = str(flow_id or "").strip()
         service = getattr(self, "coding_memory_service", None)
-        if resolved_flow and service is not None:
+        if persist_flow_cache and resolved_flow and service is not None:
             try:
                 service.upsert_read_cache_row(
                     flow_id=resolved_flow,
                     file_path=file_path,
-                    mode=str(row.get("mode", "line")),
-                    start_line=int(row.get("start_line", 1) or 1),
+                    mode=str(row.get("mode", "")),
+                    start_line=int(row.get("start_line", 0) or 0),
                     end_line=int(row.get("end_line", 0) or 0),
                     line_count=int(row.get("line_count", 0) or 0),
                     content_text=str(row.get("content_text", "")),
                     file_size_bytes=int(row.get("file_size_bytes", 0) or 0),
                     file_mtime_ns=int(row.get("file_mtime_ns", 0) or 0),
                 )
-                service.prune_read_cache(resolved_flow, keep_per_file=20)
             except Exception:
-                logger.debug("Failed to persist read cache row", exc_info=True)
+                logger.debug("Failed to store persistent read cache row", exc_info=True)
 
     def _build_cached_read_payload(
         self,
@@ -1062,6 +1062,7 @@ class AskAgent:
                         flow_id=flow_id,
                         row=cache_row,
                         ephemeral_read_cache=ephemeral_read_cache,
+                        persist_flow_cache=read_telemetry is not None or ephemeral_read_cache is not None,
                     )
                     evidence_memory.store(
                         original_path=path,
@@ -1110,6 +1111,7 @@ class AskAgent:
                     flow_id=flow_id,
                     row=cache_row,
                     ephemeral_read_cache=ephemeral_read_cache,
+                    persist_flow_cache=read_telemetry is not None or ephemeral_read_cache is not None,
                 )
                 segment_text = "\n".join(segment)
                 evidence_memory.store(

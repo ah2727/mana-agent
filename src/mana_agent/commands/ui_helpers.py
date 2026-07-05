@@ -29,10 +29,14 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from mana_agent.cli.chat_ui import ChatUIState, git_branch, render_status
+from mana_agent.cli.events import ChatEvent, make_event
+from mana_agent.cli.renderers import EventRenderer, format_token_usage
 from mana_agent.config.settings import default_diagrams_dir
 from mana_agent.multi_agent.runtime.ask_agent import AskAgent
 from mana_agent.multi_agent.runtime.run_logger import LlmRunLogger
 from mana_agent.services.coding_memory_service import CodingMemoryService
+from mana_agent.telemetry.tokens import TokenUsage
 
 logger = logging.getLogger('mana_agent.commands.cli')
 UNLIMITED_AGENT_MAX_STEPS = 1_000_000_000
@@ -356,6 +360,7 @@ class LiveToolActivity:
         self._log_lines: deque[str] = deque(maxlen=14)
         self._ok = 0
         self._failed = 0
+        self.events: list[ChatEvent] = []
 
     # -- event ingestion --------------------------------------------------
     def handle(
@@ -375,6 +380,16 @@ class LiveToolActivity:
             self._started_at[key] = time.time()
             self._running_meta[key] = {"tool": tool, "args": args}
             self.log.start_tool(tool, tool_args=args, tool_call_id=event_id or "")
+            self.events.append(
+                make_event(
+                    "tool.started",
+                    title=tool,
+                    message="Tool started.",
+                    status="running",
+                    step_id="07",
+                    metadata={"tool_name": tool, "args_summary": _compact_display_text(args, 160)},
+                )
+            )
         elif kind == "end":
             key = self._matching_running_key(key, tool, args, event_id)
             self._finish(key, tool, duration=duration, ok=True, event_id=event_id)
@@ -421,9 +436,29 @@ class LiveToolActivity:
         if ok:
             self._ok += 1
             self.log.finish_tool(tool, duration=duration, tool_call_id=event_id or key, tool_args=args)
+            status = "success"
+            message = "Tool finished."
+            event_type = "tool.finished"
         else:
             self._failed += 1
             self.log.fail_tool(tool, error=error, duration=duration, tool_call_id=event_id or key, tool_args=args)
+            status = "failed"
+            message = error or "Tool failed."
+            event_type = "tool.failed"
+        event = make_event(
+            event_type,
+            title=tool,
+            message=message,
+            status=status,
+            step_id="07",
+            metadata={
+                "tool_name": tool,
+                "args_summary": _compact_display_text(args, 160),
+                "result_summary": _compact_display_text(message, 160),
+            },
+        ).finish(status=status, message=message)
+        event.duration_ms = max(0.0, float(duration or 0.0) * 1000)
+        self.events.append(event)
 
     def add_log_line(self, line: str) -> None:
         text = str(line or "").strip()
@@ -437,6 +472,7 @@ class LiveToolActivity:
 
 # Currently-active activity panel, set while a tool run is in progress.
 _ACTIVE_TOOL_ACTIVITY: LiveToolActivity | None = None
+_ACTIVE_CHAT_UI_STATE: ChatUIState | None = None
 
 
 def _env_flag(name: str) -> bool | None:
@@ -474,6 +510,18 @@ def set_active_tool_activity(activity: LiveToolActivity | None) -> None:
     _ACTIVE_TOOL_ACTIVITY = activity
 
 
+def set_active_chat_ui_state(state: ChatUIState | None) -> None:
+    global _ACTIVE_CHAT_UI_STATE
+    _ACTIVE_CHAT_UI_STATE = state
+
+
+def emit_chat_event(event: ChatEvent) -> ChatEvent:
+    state = _ACTIVE_CHAT_UI_STATE
+    if state is not None:
+        return state.record_event(event)
+    return event
+
+
 def emit_tool_event(
     kind: str,
     tool: str,
@@ -487,7 +535,23 @@ def emit_tool_event(
     activity = _ACTIVE_TOOL_ACTIVITY
     if activity is None:
         return
+    before = len(activity.events)
     activity.handle(kind, tool, args=args, duration=duration, error=error, event_id=event_id)
+    state = _ACTIVE_CHAT_UI_STATE
+    if state is None:
+        return
+    for event in activity.events[before:]:
+        event.session_id = state.session_id
+        event.turn_id = state.tracker.current_turn_id
+        if event.type in {"tool.finished", "tool.failed"}:
+            usage = state.tracker.record_tool_result(
+                event.event_id,
+                event.metadata.get("result_summary") or event.message,
+                step_id=event.step_id,
+                turn_id=event.turn_id,
+            )
+            event.token_usage = usage
+        state.record_event(event)
 
 
 # -----------------------------------------
@@ -645,7 +709,23 @@ def _looks_like_edit_request(question: str) -> bool:
 
 
 # Simple health/chat commands answered directly, without FAISS / RAG / CodingAgent.
-_DIRECT_COMMANDS: frozenset[str] = frozenset({"ping", "hello", "hi", "status", "help"})
+_DIRECT_COMMANDS: frozenset[str] = frozenset(
+    {
+        "ping",
+        "hello",
+        "hi",
+        "status",
+        "help",
+        "/help",
+        "/status",
+        "/model",
+        "/tokens",
+        "/tools",
+        "/agents",
+        "/trace",
+        "/ui",
+    }
+)
 
 # Explicit "exact search" requests routed straight to ripgrep/static search.
 _EXACT_SEARCH_PATTERN = re.compile(
@@ -682,6 +762,8 @@ def _classify_direct_command(question: str) -> str | None:
     that real questions like "help me fix the parser" are not intercepted.
     """
     text = str(question or "").strip().lower().rstrip("!.?")
+    if text.startswith("/trace ") or text.startswith("/ui ") or text.startswith("/status "):
+        return text.split(None, 1)[0]
     if text in _DIRECT_COMMANDS:
         return text
     return None
@@ -693,7 +775,7 @@ def _classify_direct_command(question: str) -> str | None:
 
 # ANSI sequence for a colored readline prompt. The \001/\002 guards tell
 # readline these bytes are non-printing so line-wrapping math stays correct.
-CHAT_PROMPT = "\001\033[1;96m\002💬 ❯ \001\033[0m\002"
+CHAT_PROMPT = "\001\033[1;96m\002mana ❯ \001\033[0m\002"
 
 
 def _render_chat_banner(console: Console, *, subtitle: str = "") -> None:
@@ -767,27 +849,42 @@ def _render_direct_command(
     index_available: bool,
     coding_agent_active: bool,
     tool_worker_active: bool,
+    ui_state: ChatUIState | None = None,
+    raw_question: str = "",
 ) -> str:
     """Answer a direct command without any search/index dependency.
 
     Returns the plain-text answer (also printed to ``console``).
     """
-    if command == "ping":
+    normalized = str(command or "").strip().lower()
+    if normalized.startswith("/") and normalized not in {"/trace", "/ui"}:
+        normalized = normalized[1:]
+    if normalized == "ping":
         answer = "pong"
-    elif command in {"hello", "hi"}:
+    elif normalized in {"hello", "hi"}:
         answer = "Hello! Ask me about this project, or request an edit/fix and I'll dig in."
-    elif command == "help":
+    elif normalized == "help":
         answer = (
             "mana-agent chat commands:\n"
             "- ping / hello / hi — quick health check\n"
-            "- status — show index, project root, coding-agent and tool-worker status\n"
-            "- help — show this message\n"
-            "- exit / quit — leave chat\n"
+            "- /status — model, mode, repo, tools, memory, approvals, agents, tokens\n"
+            "- /model — show provider/model\n"
+            "- /tokens — detailed token accounting\n"
+            "- /tools — enabled tools plus recent tool runs/failures\n"
+            "- /agents — active/completed subagent activity\n"
+            "- /trace off|compact|full — control trace detail\n"
+            "- /ui rich|compact|plain|json — switch renderer mode\n"
+            "- /clear — clear visible history\n"
+            "- /exit / /quit — leave chat\n"
             "\n"
             "Otherwise just ask: I search the project (semantic index when available,\n"
             "ripgrep/static search otherwise), read files, and can edit/fix code."
         )
-    elif command == "status":
+    elif normalized == "status":
+        if ui_state is not None:
+            full = str(raw_question or "").strip().lower() in {"/status full", "status full"}
+            console.print(render_status(ui_state, full=full))
+            return "Displayed full status." if full else "Displayed status."
         index_line = (
             "available (semantic search enabled)"
             if index_available
@@ -800,12 +897,56 @@ def _render_direct_command(
             f"- coding agent: {'active' if coding_agent_active else 'inactive'}\n"
             f"- tool worker: {'active' if tool_worker_active else 'inactive'}"
         )
+    elif normalized == "model":
+        if ui_state is not None:
+            answer = f"provider: {ui_state.provider}\nmodel: {ui_state.model}"
+        else:
+            answer = "provider/model unavailable"
+    elif normalized == "tokens" and ui_state is not None:
+        console.print(ui_state.renderer.render_tokens(ui_state.tracker))
+        return "Displayed token usage."
+    elif normalized == "tools" and ui_state is not None:
+        console.print(ui_state.renderer.render_tool_activity(ui_state.tool_runs))
+        return "Displayed tool activity."
+    elif normalized == "agents" and ui_state is not None:
+        console.print(ui_state.renderer.render_subagents(ui_state.subagent_events))
+        return "Displayed subagent activity."
+    elif normalized == "/trace" and ui_state is not None:
+        requested = str(raw_question or "").strip().split(maxsplit=1)
+        if len(requested) == 2:
+            ui_state.trace_mode = EventRenderer.normalize_trace_mode(requested[1])
+            if ui_state.trace is not None:
+                ui_state.trace.trace_mode = ui_state.trace_mode
+        if len(requested) == 2 and requested[1].strip().lower() == "logs":
+            console.print(ui_state.renderer.render_log_lines(_tail_file(ui_state.log_path, limit=40)))
+            return "Displayed trace logs."
+        if ui_state.trace_mode == "full":
+            console.print(ui_state.renderer.render_events(ui_state.events[-40:], title="Trace events"))
+            return "Displayed full trace."
+        answer = f"trace mode: {ui_state.trace_mode}\ntrace path: {ui_state.trace_path}"
+    elif normalized == "/ui" and ui_state is not None:
+        requested = str(raw_question or "").strip().split(maxsplit=1)
+        if len(requested) == 2:
+            ui_state.ui_mode = EventRenderer.normalize_mode(requested[1])
+        answer = f"ui mode: {ui_state.ui_mode}"
     else:  # pragma: no cover - defensive
         answer = "Unknown command."
 
     _render_answer_header(console)
     console.print(answer)
     return answer
+
+
+def _tail_file(path: Path | str | None, *, limit: int = 40) -> list[str]:
+    if path is None:
+        return []
+    target = Path(path)
+    if not target.exists():
+        return []
+    try:
+        return target.read_text(encoding="utf-8", errors="replace").splitlines()[-max(1, int(limit)) :]
+    except Exception:
+        return []
 
 
 def _run_with_live_buffer(
@@ -1751,7 +1892,8 @@ def _read_chat_input(
         except Exception as exc:  # pragma: no cover - defensive fallback
             logger.debug("prompt_toolkit input unavailable; using plain input", extra={"error": str(exc)})
 
-    first_line = input(prompt)
+    fallback_prompt = re.sub(r"\001|\002|\x1b\[[0-9;]*m", "", str(prompt or "mana ❯ "))
+    first_line = input(fallback_prompt)
     normalized_first_line = first_line.strip()
     force_multiline = bool(multiline_enabled and normalized_first_line == "/paste")
     try:

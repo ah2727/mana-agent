@@ -5,7 +5,7 @@ from typing import Any
 
 from mana_agent.multi_agent.core.ids import new_queue_job_id
 from mana_agent.multi_agent.core.types import QueueJob, QueueJobStatus, QueueJobType, utc_now
-from mana_agent.multi_agent.memory.service import MultiAgentMemoryService, normalize_file_path, stable_hash
+from mana_agent.services.memory_service import MultiAgentMemoryService, normalize_file_path, stable_hash
 from mana_agent.multi_agent.queue.locks import LockTable
 from mana_agent.multi_agent.queue.scheduler import next_job
 from mana_agent.multi_agent.taskboard.taskboard import TaskBoard

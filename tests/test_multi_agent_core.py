@@ -32,13 +32,13 @@ from mana_agent.multi_agent.core.types import (
     QueueJobType,
     TaskStatus,
 )
-from mana_agent.multi_agent.memory.service import MultiAgentMemoryService
 from mana_agent.multi_agent.runtime.model_levels import MODEL_LEVEL_2_CODING, model_level_for_role
 from mana_agent.multi_agent.queue.queue_manager import QueueManager
 from mana_agent.multi_agent.registry.agent_registry import AgentRegistry
 from mana_agent.multi_agent.routing.router import Router
 from mana_agent.multi_agent.taskboard.taskboard import TaskBoard
 from mana_agent.multi_agent.tools.permissions import assert_shell_allowed
+from mana_agent.services.memory_service import MultiAgentMemoryService
 
 
 def test_id_generation_is_readable_and_unique():
@@ -122,7 +122,7 @@ def test_queue_rejects_duplicate_fingerprint(tmp_path):
     assert second.duplicate_of == first.job_id
 
 
-def test_file_read_cache_hit_when_unchanged(tmp_path):
+def test_multi_agent_file_read_is_direct_without_duplicate_cache(tmp_path):
     (tmp_path / "README.md").write_text("# One\n", encoding="utf-8")
     memory = MultiAgentMemoryService(root=tmp_path)
 
@@ -139,11 +139,11 @@ def test_file_read_cache_hit_when_unchanged(tmp_path):
 
     assert first_content == second_content == "# One\n"
     assert first_hit is False
-    assert second_hit is True
+    assert second_hit is False
     assert first_record.content_hash == second_record.content_hash
 
 
-def test_file_read_cache_miss_when_hash_changed(tmp_path):
+def test_multi_agent_file_read_reflects_hash_changed_without_storing_cache(tmp_path):
     target = tmp_path / "README.md"
     target.write_text("# One\n", encoding="utf-8")
     memory = MultiAgentMemoryService(root=tmp_path)
@@ -158,7 +158,7 @@ def test_file_read_cache_miss_when_hash_changed(tmp_path):
 
     assert content == "# Two\n"
     assert cache_hit is False
-    assert record.changed_since_last_read is True
+    assert record.changed_since_last_read is False
 
 
 def test_agent_receives_scoped_memory_bundle(tmp_path):
@@ -199,7 +199,7 @@ def test_lower_agent_cannot_access_upper_memory(tmp_path):
     assert lower_bundle.relevant_project_memory == []
     assert lower_bundle.relevant_file_cache == []
     assert upper_bundle.relevant_project_memory == [{"fact": "full project architecture"}]
-    assert upper_bundle.relevant_file_cache[0]["file_path"] == "secret.md"
+    assert upper_bundle.relevant_file_cache == []
 
 
 def test_tool_result_reused_when_args_same(tmp_path):

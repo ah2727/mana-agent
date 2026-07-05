@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-06 (memory service consolidation)
+
+- Added `mana_agent.services.memory_service` as the canonical memory service module for multi-agent task/tool memory and run-scoped read evidence.
+- Converted the old multi-agent memory and runtime evidence modules into compatibility shims, retargeted live imports to the services module, and stopped `AskAgent.read_file` from writing duplicate persistent SQLite read-cache rows.
+- Updated regressions so multi-agent memory no longer stores file-content cache entries and repeated read-file cache behavior is owned by run-scoped `EvidenceMemory`.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py tests/test_ask_agent.py::test_ask_agent_read_file_hits_run_evidence_memory_on_repeat tests/test_ask_agent.py::test_ask_agent_read_file_relative_and_absolute_share_run_memory_entry tests/test_agent_work_queue.py::test_edit_with_evidence_uses_agentic_policy_without_duplicate_reads -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_ask_agent.py::test_ask_agent_read_file_does_not_write_duplicate_flow_cache tests/test_ask_agent.py::test_ask_agent_read_file_line_mode_uses_full_cache_slice -q` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/services/memory_service.py src/mana_agent/multi_agent tests/test_multi_agent_core.py --select F,E9` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/services/memory_service.py src/mana_agent/multi_agent/memory/service.py src/mana_agent/multi_agent/runtime/evidence_memory.py src/mana_agent/multi_agent/runtime/ask_agent.py tests/test_multi_agent_core.py tests/test_ask_agent.py` passed; `git diff --check` passed.
+
 ## 2026-07-05 (memory-first multi-agent cache integration)
 
 - Added a shared multi-agent memory service with normalized task fingerprints, task/file/tool/decision/verification records, scoped memory bundles, and hierarchy-based privilege filtering.
@@ -328,6 +335,13 @@ All notable repository changes should be recorded here.
 - Removed keyword-based ToolsManager planner intent recovery so unstructured markdown/list planner output now goes through planner repair instead of deriving `search`, `edit`, `verify`, or `answer` from words like `find` or `update`.
 - Prevented edit-shaped `find ... update <file>` chat prompts from taking the exact-search fast path before the coding agent can handle them.
 - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_chat_direct_commands.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/commands/ui_helpers.py src/mana_agent/llm/tools_manager.py src/mana_agent/llm/coding_agent_tools_provider.py tests/test_chat_direct_commands.py tests/test_tools_manager.py` passed.
+
+## 2026-07-06
+
+- Added structured chat UI events, render modes, session trace recording, and central token accounting for chat startup, turn timelines, tool activity, subagents, and slash-command status panels.
+- Replaced the default chat startup panels/config dump with a compact Mana-Agent header, clean `mana ❯` prompt, `/status full`, `/trace logs`, `/welcome full`, and mode-aware rich/compact/plain/json rendering.
+- Preserved `/clear` session history while clearing the visible screen, routed normal chat logs to trace/log files, and fixed flow read-cache persistence so stale cached reads invalidate correctly under telemetry-enabled tool runs.
+- Verification: `.venv/bin/python -m py_compile src/mana_agent/telemetry/tokens.py src/mana_agent/telemetry/session_trace.py src/mana_agent/cli/events.py src/mana_agent/cli/renderers.py src/mana_agent/cli/chat_ui.py src/mana_agent/multi_agent/events.py src/mana_agent/commands/chat_input.py src/mana_agent/commands/ui_helpers.py src/mana_agent/commands/chat_cli.py tests/test_chat_ui_events_tokens.py tests/test_cli_smoke.py` passed; `.venv/bin/python -m pytest tests/test_chat_ui_events_tokens.py tests/test_chat_console_logging.py -q` passed; `.venv/bin/python -m pytest tests/test_cli_ux_helpers.py tests/test_chat_direct_commands.py tests/test_cli_smoke.py -q` passed; `printf 'quit\n' | PYTHONPATH=src .venv/bin/mana-agent chat --no-auto-index-missing` passed; `printf '/status full\n/tokens\n/trace logs\nquit\n' | PYTHONPATH=src .venv/bin/mana-agent chat --no-auto-index-missing` passed; `.venv/bin/python -m pytest -q` passed with 587 passed and 16 warnings.
 
 ## 2026-06-21
 

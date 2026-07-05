@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import uuid
 
 from .cli_internal import *
 from .cli_internal import _build_project_llm_analyzer, _record_multi_agent_request
@@ -22,6 +23,14 @@ from mana_agent.multi_agent.runtime.auto_chat import (
 from mana_agent.multi_agent.runtime.agent_session import route_for_turn
 from mana_agent.multi_agent.runtime.small_direct_edit import handle_small_direct_edit
 from mana_agent.multi_agent.runtime.tools_executor import build_tools_executor_with_fallback
+from mana_agent.cli.chat_ui import (
+    ChatUIState,
+    default_ui_mode,
+    detect_skills_status,
+    render_startup_header,
+    render_status,
+)
+from mana_agent.cli.events import make_event
 from mana_agent.ui.banner import render_mode_header
 
 
@@ -410,6 +419,11 @@ def chat(
         help="Timeout in seconds for Mermaid artifact rendering.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
+    welcome: str = typer.Option(
+        "compact",
+        "--welcome",
+        help="Startup welcome detail: compact or full.",
+    ),
 ) -> None:
     output_file = _resolve_output_file()
     # Keep noisy indexing/parsing logs off the interactive console (the file log
@@ -468,7 +482,6 @@ def chat(
             "ephemeral_index": ephemeral_index,
         },
     )
-    as_json = False
     if full_auto:
         execution_profile = "full-auto"
     execution_profile = str(execution_profile or "balanced").strip().lower()
@@ -543,7 +556,6 @@ def chat(
     root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
     if root.is_file():
         root = root.parent
-    render_mode_header("Chat", "Ask about your repository or request edits", console)
     _record_multi_agent_request(root, "chat command", entrypoint="chat", command_scope=True)
 
     recorded_initial_prompt = False
@@ -599,6 +611,31 @@ def chat(
     effective_model = model or settings.openai_chat_model
     effective_tool_worker_model = settings.openai_tool_worker_model or effective_model
     effective_base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
+    chat_log_path = default_logs_dir(root) / f"mana_agent_{datetime.now().strftime('%Y%m%d')}.log"
+    chat_ui_state = ChatUIState(
+        repo_root=root,
+        provider="openai-compatible",
+        model=effective_model,
+        mode="chat",
+        tools_enabled=bool(agent_tools),
+        approvals="auto",
+        memory_enabled=bool(coding_memory and coding_agent),
+        skills_status=detect_skills_status(root),
+        ui_mode=default_ui_mode(console, as_json=as_json),
+        index_path=str(index_dir or default_index_dir(root)),
+        k_value=resolved_k,
+        ephemeral_index=bool(ephemeral_index),
+        coding_agent=bool(coding_agent),
+        coding_memory=bool(coding_memory),
+        flow_memory=bool(coding_memory),
+        auto_execute=bool(auto_execute_plan),
+        max_passes=int(auto_execute_max_passes),
+        auto_continue=bool(chat_auto_continue),
+        execution_profile=execution_profile,
+        diagram_rendering=f"{'on' if diagram_render_images else 'off'} ({diagram_format})",
+        tool_worker_backend=resolved_tool_exec_backend,
+        log_path=chat_log_path,
+    )
 
     def _build_tools_executor(worker_client: ToolWorkerClient):
         helper = _public_symbol("build_tools_executor_with_fallback", build_tools_executor_with_fallback)
@@ -683,6 +720,7 @@ def chat(
     dir_mode_index_dirs: list[Path] = []
     background_index_state: dict[str, Any] = {"status": "idle", "announced": False, "error": ""}
     try:
+        set_active_chat_ui_state(chat_ui_state)
         # -----------------------------
         # Resolve indexes (dir-mode vs classic)
         # -----------------------------
@@ -796,18 +834,7 @@ def chat(
 
             chat_service.set_index_dirs(selected_indexes)
             dir_mode_index_dirs = selected_indexes
-            
-            _emit_text(
-                "mana-agent chat (dir-mode)\n"
-                f"- root: {root}\n"
-                f"- indexes: {len(selected_indexes)}\n"
-                f"- auto-indexed: {auto_indexed_count}\n"
-                f"- skipped: {skipped_missing_count}\n"
-                f"- ephemeral-index: {ephemeral_index}\n"
-                f"- coding-agent: {coding_agent}\n"
-                f"- coding-memory: {coding_memory and coding_agent}",
-                output_file=output_file,
-            )
+            chat_ui_state.index_path = f"{len(selected_indexes)} dir-mode index(es)"
             if warnings:
                 _emit_text("Warnings:\n" + "\n".join(f"- {w}" for w in warnings), output_file=output_file)
 
@@ -848,15 +875,7 @@ def chat(
                 index_state = "ready"
             else:
                 index_state = "missing (run `mana-agent index`; using direct project search fallback)"
-            _emit_text(
-                "mana-agent chat\n"
-                f"- index: {resolved_index_dir} ({index_state})\n"
-                f"- k: {resolved_k}\n"
-                f"- ephemeral-index: {ephemeral_index}\n"
-                f"- coding-agent: {coding_agent}\n"
-                f"- coding-memory: {coding_memory and coding_agent}",
-                output_file=output_file,
-            )
+            chat_ui_state.index_path = f"{resolved_index_dir} ({index_state})"
 
         # -----------------------------
         # Tool-first retry logic
@@ -901,13 +920,7 @@ def chat(
         max_attempts = 3
         min_sources = 2
 
-        _render_chat_banner(
-            console,
-            subtitle=(
-                f"Automatic mode: plan-like requests ask up to {planning_question_limit} "
-                "clarification question(s); clear edit requests auto-execute when tools are available."
-            ),
-        )
+        render_startup_header(console, chat_ui_state)
 
         # Collect the per-session configuration so it renders as one tidy panel
         # instead of a scattered list of single-line prints.
@@ -954,7 +967,8 @@ def chat(
                 coding_agent_instance = None
                 tools_manager_orchestrator = None
 
-        _render_chat_status(console, status_rows)
+        if str(welcome or "compact").strip().lower() == "full":
+            console.print(render_status(chat_ui_state, full=True))
 
         planning_request: str | None = None
         planning_answers: list[str] = []
@@ -979,6 +993,18 @@ def chat(
         full_auto_latest_checklist_counts: dict[str, int] | None = None
         full_auto_passes_total: int = 0
         full_auto_pass_checkpoints_emitted: int = 0
+
+        def _finish_ui_turn(turn_id: str, message: str = "Final response rendered.") -> None:
+            chat_ui_state.finish_turn(turn_id, message=message)
+            if chat_ui_state.trace_mode == "off":
+                return
+            turn_events = [
+                event
+                for event in chat_ui_state.events
+                if event.turn_id == turn_id and not event.type.startswith("tool.")
+            ]
+            if turn_events:
+                console.print(chat_ui_state.renderer.render_events(turn_events, title="Step timeline"))
 
         def _start_new_topic() -> str | None:
             nonlocal active_flow_id, pending_conflict_question
@@ -1494,6 +1520,22 @@ def chat(
                 console.print(Panel(warning_lines, title="Warnings", border_style="yellow"))
             if _cli_verbose_enabled() and debug_tail:
                 console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
+            chat_ui_state.record_event(
+                make_event(
+                    "agent.decision",
+                    title="Agent decision",
+                    message="Auto-execute completed and rendered the final answer.",
+                    status="success",
+                    session_id=chat_ui_state.session_id,
+                    turn_id=current_turn_id,
+                    step_id="05",
+                    metadata={
+                        "next_action": "final response",
+                        "verification_target": str(payload.get("terminal_reason", "") or ""),
+                    },
+                ).finish(status="success")
+            )
+            _finish_ui_turn(current_turn_id)
             _log_chat_turn(
                 run_logger,
                 turn=turn_record,
@@ -1612,9 +1654,8 @@ def chat(
                 logger.info("Chat session ended by user command", extra={"command": question.lower()})
                 break
             if question.lower() == "/clear":
-                session_turns.clear()
                 console.clear()
-                console.print("[green]Chat history cleared.[/green]")
+                console.print("[green]Chat history cleared. Session preserved.[/green]")
                 continue
             if pending_conflict_question is None and _is_new_topic_command(question):
                 reset_id = _start_new_topic()
@@ -1623,6 +1664,8 @@ def chat(
                 else:
                     console.print("[green]Started new chat topic.[/green]")
                 continue
+            current_turn_id = f"turn-{len(session_turns) + 1}-{uuid.uuid4().hex[:8]}"
+            chat_ui_state.start_turn(current_turn_id)
             if question.lower() == "/help":
                 question = "help"
             if question.strip().startswith("/plan"):
@@ -1686,6 +1729,18 @@ def chat(
                     multiline_input=multiline_input,
                     multiline_terminator=multiline_terminator,
                 )
+                chat_ui_state.record_event(
+                    make_event(
+                        "verification.finished",
+                        title="Analyze",
+                        message=outcome.message,
+                        status="failed" if outcome.status == "error" else "success",
+                        session_id=chat_ui_state.session_id,
+                        turn_id=current_turn_id,
+                        step_id="09",
+                    ).finish(status="failed" if outcome.status == "error" else "success")
+                )
+                _finish_ui_turn(current_turn_id)
                 continue
 
             # -----------------------------
@@ -1715,7 +1770,25 @@ def chat(
                     index_available=index_available,
                     coding_agent_active=coding_agent_instance is not None,
                     tool_worker_active=tool_worker_active,
+                    ui_state=chat_ui_state,
+                    raw_question=question,
                 )
+                chat_ui_state.record_event(
+                    make_event(
+                        "agent.decision",
+                        title="Agent decision",
+                        message="Handled by direct chat command without repository tool routing.",
+                        status="success",
+                        session_id=chat_ui_state.session_id,
+                        turn_id=current_turn_id,
+                        step_id="05",
+                        metadata={
+                            "next_action": "render direct command response",
+                            "verification_target": "command output generated",
+                        },
+                    ).finish(status="success")
+                )
+                _finish_ui_turn(current_turn_id)
                 turn_record = ChatTurnTelemetry(
                     turn_index=len(session_turns) + 1,
                     timestamp=_now_iso(),
@@ -1789,6 +1862,18 @@ def chat(
                     changed_files=small_direct_edit_result.changed_files,
                     verification="Verification skipped: docs-only one-line edit.",
                 )
+                chat_ui_state.record_event(
+                    make_event(
+                        "verification.finished",
+                        title="Verification",
+                        message="Skipped docs-only one-line edit." if small_direct_edit_result.ok else "Minimal edit check failed.",
+                        status="success" if small_direct_edit_result.ok else "failed",
+                        session_id=chat_ui_state.session_id,
+                        turn_id=current_turn_id,
+                        step_id="09",
+                    ).finish(status="success" if small_direct_edit_result.ok else "failed")
+                )
+                _finish_ui_turn(current_turn_id)
                 continue
 
             # -----------------------------
@@ -1809,6 +1894,29 @@ def chat(
                     answer_text = f"No matches for '{exact_search_query}' in {root}."
                 console.print("\n[bold]Search results[/bold]")
                 console.print(answer_text)
+                chat_ui_state.record_event(
+                    make_event(
+                        "tool.finished",
+                        title="project_search",
+                        message=f"Exact search completed via {search_result.backend}.",
+                        status="success",
+                        session_id=chat_ui_state.session_id,
+                        turn_id=current_turn_id,
+                        step_id="08",
+                        token_usage=chat_ui_state.tracker.record_tool_result(
+                            f"{current_turn_id}-exact-search",
+                            answer_text,
+                            step_id="08",
+                            turn_id=current_turn_id,
+                        ),
+                        metadata={
+                            "tool_name": "project_search",
+                            "args_summary": exact_search_query,
+                            "result_summary": f"{len(search_result.matches)} match(es)",
+                        },
+                    ).finish(status="success")
+                )
+                _finish_ui_turn(current_turn_id)
                 turn_record = ChatTurnTelemetry(
                     turn_index=len(session_turns) + 1,
                     timestamp=_now_iso(),
@@ -2268,6 +2376,22 @@ def chat(
                     sources=sources,
                     changed_files=[],
                 )
+                chat_ui_state.record_event(
+                    make_event(
+                        "agent.decision",
+                        title="Agent decision",
+                        message="Answered through the standard chat service path.",
+                        status="success",
+                        session_id=chat_ui_state.session_id,
+                        turn_id=current_turn_id,
+                        step_id="05",
+                        metadata={
+                            "next_action": "final response",
+                            "verification_target": "answer rendered with transparency sections",
+                        },
+                    ).finish(status="success")
+                )
+                _finish_ui_turn(current_turn_id)
                 continue
 
             # ==========================================================
@@ -2728,8 +2852,25 @@ def chat(
                 # Optional: if you want quick diff visibility without full diff spam:
                 # console.print("\n[dim]Tip: run with your own :diff command if you add history later.[/dim]")
 
+                chat_ui_state.record_event(
+                    make_event(
+                        "agent.decision",
+                        title="Agent decision",
+                        message="Coding-agent turn completed and rendered the final response.",
+                        status="success",
+                        session_id=chat_ui_state.session_id,
+                        turn_id=current_turn_id,
+                        step_id="05",
+                        metadata={
+                            "next_action": "final response",
+                            "verification_target": str((result or {}).get("auto_execute_terminal_reason", "") or ""),
+                        },
+                    ).finish(status="success")
+                )
+                _finish_ui_turn(current_turn_id)
                 continue
     finally:
+        set_active_chat_ui_state(None)
         if tool_worker_client is not None:
             stop = getattr(tool_worker_client, "stop", None)
             if callable(stop):

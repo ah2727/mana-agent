@@ -86,7 +86,7 @@ from mana_agent.multi_agent.runtime.mutation_plan import (
     validate_mutation_plan,
 )
 from mana_agent.services.coding_memory_service import CodingMemoryService
-from mana_agent.multi_agent.memory.service import MultiAgentMemoryService
+from mana_agent.services.memory_service import MultiAgentMemoryService
 from mana_agent.services.coding_todo_service import TodoService
 from mana_agent.tools.apply_patch import safe_apply_patch
 from mana_agent.tools.repository import apply_patch_batch

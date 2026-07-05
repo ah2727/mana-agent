@@ -21,8 +21,8 @@ from mana_agent.multi_agent.routing.router import Router
 from mana_agent.multi_agent.taskboard.taskboard import TaskBoard
 from mana_agent.multi_agent.memory.memory_bundle import AgentMemoryBundle
 from mana_agent.multi_agent.memory.repo_context import RepoContext
-from mana_agent.multi_agent.memory.service import MultiAgentMemoryService
 from mana_agent.multi_agent.memory.task_memory import TaskMemory
+from mana_agent.services.memory_service import MultiAgentMemoryService
 
 @dataclass
 class MainAgentResult:

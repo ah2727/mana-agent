@@ -2599,8 +2599,9 @@ def test_chat_full_auto_profile_forces_auto_execute_for_edit_requests(monkeypatc
     assert result.exit_code == 0
     assert _FakeCodingAgent.auto_calls
     assert int(_FakeCodingAgent.auto_calls[0].get("pass_cap", 0) or 0) == 10
-    assert "execution profile" in result.stdout
-    assert "full-auto" in result.stdout
+    assert "Mana-Agent" in result.stdout
+    assert "mode chat" in result.stdout
+    assert "execution profile" not in result.stdout
 
 
 def test_chat_full_auto_conflict_is_auto_continued(monkeypatch, tmp_path: Path) -> None:
@@ -2934,7 +2935,7 @@ def test_chat_clear_still_clears_visible_history(monkeypatch, tmp_path: Path) ->
 
     assert result.exit_code == 0
     assert "Chat history cleared." in result.stdout
-    assert rendered_history_lengths == [1, 1]
+    assert rendered_history_lengths == [1, 2]
 
 
 def test_chat_full_auto_pass_cap_auto_resumes_until_completion(monkeypatch, tmp_path: Path) -> None:
