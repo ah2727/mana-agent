@@ -1,0 +1,1075 @@
+{
+  "agent_workflow": {
+    "Where are external integrations?": "`src/mana_agent/__init__.py`, `src/mana_agent/models.py`, `src/mana_agent/agent/__init__.py`, `src/mana_agent/agent/evaluation_gate.py`, `src/mana_agent/agent/evidence_queue.py`",
+    "Where are the tests?": "`tests/commands/test_analyze_slash_command.py`, `tests/conftest.py`, `tests/fixtures/sample_project/bad_module.py`, `tests/fixtures/sample_project/good_module.py`, `tests/fixtures/sample_project/no_doc.py`",
+    "Where does the core application logic live?": "`src/mana_agent/services/__init__.py`, `src/mana_agent/services/ask_service.py`, `src/mana_agent/services/chat_service.py`, `src/mana_agent/services/coding_memory_service.py`, `src/mana_agent/services/coding_todo_service.py`",
+    "Where is configuration loaded?": "`src/mana_agent/config/__init__.py`, `src/mana_agent/config/settings.py`",
+    "Where is data modeled / persisted?": "`src/mana_agent/vector_store/__init__.py`, `src/mana_agent/vector_store/embeddings.py`, `src/mana_agent/vector_store/faiss_store.py`",
+    "Where is the command / CLI layer?": "`src/mana_agent/commands/__init__.py`, `src/mana_agent/commands/analyze_formats.py`, `src/mana_agent/commands/chat_analyze_command.py`, `src/mana_agent/commands/chat_cli.py`, `src/mana_agent/commands/chat_input.py`"
+  },
+  "architecture_areas": [
+    {
+      "area": "tests",
+      "related_files": [
+        "tests/commands/test_analyze_slash_command.py",
+        "tests/conftest.py",
+        "tests/fixtures/sample_project/bad_module.py",
+        "tests/fixtures/sample_project/good_module.py",
+        "tests/fixtures/sample_project/no_doc.py",
+        "tests/integration/test_chat_analyze_command.py",
+        "tests/parsers/test_parser_adapters.py",
+        "tests/test_agent_orchestrator.py"
+      ],
+      "responsibility": "Sample module docstring.",
+      "risk_notes": [
+        "Area spans many files; keep contracts documented and tested."
+      ]
+    },
+    {
+      "area": "src/mana_agent/services",
+      "related_files": [
+        "src/mana_agent/services/__init__.py",
+        "src/mana_agent/services/ask_service.py",
+        "src/mana_agent/services/chat_service.py",
+        "src/mana_agent/services/coding_memory_service.py",
+        "src/mana_agent/services/coding_todo_service.py",
+        "src/mana_agent/services/dependency_service.py",
+        "src/mana_agent/services/describe_service.py",
+        "src/mana_agent/services/index_service.py"
+      ],
+      "responsibility": "mana_agent.services.ask_service",
+      "risk_notes": [
+        "Area spans many files; keep contracts documented and tested."
+      ]
+    },
+    {
+      "area": "src/mana_agent/llm",
+      "related_files": [
+        "src/mana_agent/llm/__init__.py",
+        "src/mana_agent/llm/agent_session.py",
+        "src/mana_agent/llm/agent_work_queue.py",
+        "src/mana_agent/llm/agent_work_queue_adapters.py",
+        "src/mana_agent/llm/ask_agent.py",
+        "src/mana_agent/llm/auto_chat.py",
+        "src/mana_agent/llm/coding_agent.py",
+        "src/mana_agent/llm/coding_agent_models.py"
+      ],
+      "responsibility": "Live Agent Work Queue.",
+      "risk_notes": [
+        "Area spans many files; keep contracts documented and tested."
+      ]
+    },
+    {
+      "area": "src/mana_agent/agent",
+      "related_files": [
+        "src/mana_agent/agent/__init__.py",
+        "src/mana_agent/agent/evaluation_gate.py",
+        "src/mana_agent/agent/evidence_queue.py",
+        "src/mana_agent/agent/flow.py",
+        "src/mana_agent/agent/orchestrator.py",
+        "src/mana_agent/agent/selection.py",
+        "src/mana_agent/agent/task_classifier.py",
+        "src/mana_agent/agent/task_context.py"
+      ],
+      "responsibility": "Agent flow primitives shared by ManaAgent orchestration paths.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/commands",
+      "related_files": [
+        "src/mana_agent/commands/__init__.py",
+        "src/mana_agent/commands/analyze_formats.py",
+        "src/mana_agent/commands/chat_analyze_command.py",
+        "src/mana_agent/commands/chat_cli.py",
+        "src/mana_agent/commands/chat_input.py",
+        "src/mana_agent/commands/cli.py",
+        "src/mana_agent/commands/cli_internal.py",
+        "src/mana_agent/commands/main_cli.py"
+      ],
+      "responsibility": "Command package for mana-agent.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/utils",
+      "related_files": [
+        "src/mana_agent/utils/__init__.py",
+        "src/mana_agent/utils/guards.py",
+        "src/mana_agent/utils/index_discovery.py",
+        "src/mana_agent/utils/io.py",
+        "src/mana_agent/utils/logging.py",
+        "src/mana_agent/utils/project_discovery.py",
+        "src/mana_agent/utils/project_search.py",
+        "src/mana_agent/utils/redaction.py"
+      ],
+      "responsibility": "mana_agent.utils.project_search",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/prompting",
+      "related_files": [
+        "src/mana_agent/prompting/__init__.py",
+        "src/mana_agent/prompting/builder.py",
+        "src/mana_agent/prompting/layers.py",
+        "src/mana_agent/prompting/memory_snapshot.py",
+        "src/mana_agent/prompting/mode_rules.py",
+        "src/mana_agent/prompting/output_contract.py",
+        "src/mana_agent/prompting/repo_rules.py",
+        "src/mana_agent/prompting/skills_index.py"
+      ],
+      "responsibility": "Layered prompt construction for ManaAgent.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/tools",
+      "related_files": [
+        "src/mana_agent/tools/__init__.py",
+        "src/mana_agent/tools/apply_patch.py",
+        "src/mana_agent/tools/contracts.py",
+        "src/mana_agent/tools/edit_file.py",
+        "src/mana_agent/tools/repository.py",
+        "src/mana_agent/tools/write_file.py"
+      ],
+      "responsibility": "mana_agent.tools",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/analysis",
+      "related_files": [
+        "src/mana_agent/analysis/__init__.py",
+        "src/mana_agent/analysis/checks.py",
+        "src/mana_agent/analysis/chunker.py",
+        "src/mana_agent/analysis/models.py"
+      ],
+      "responsibility": "Static analysis and checks.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/parsers",
+      "related_files": [
+        "src/mana_agent/parsers/__init__.py",
+        "src/mana_agent/parsers/multi_parser.py",
+        "src/mana_agent/parsers/python_parser.py"
+      ],
+      "responsibility": "Parsing logic.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/vector_store",
+      "related_files": [
+        "src/mana_agent/vector_store/__init__.py",
+        "src/mana_agent/vector_store/embeddings.py",
+        "src/mana_agent/vector_store/faiss_store.py"
+      ],
+      "responsibility": "Embedding-client construction.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent",
+      "related_files": [
+        "src/mana_agent/__init__.py",
+        "src/mana_agent/models.py"
+      ],
+      "responsibility": "mana_agent package.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/config",
+      "related_files": [
+        "src/mana_agent/config/__init__.py",
+        "src/mana_agent/config/settings.py"
+      ],
+      "responsibility": "Configuration loading.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/dependencies",
+      "related_files": [
+        "src/mana_agent/dependencies/__init__.py",
+        "src/mana_agent/dependencies/dependency_service.py"
+      ],
+      "responsibility": "Dependency parsing / analysis.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/renderers",
+      "related_files": [
+        "src/mana_agent/renderers/__init__.py",
+        "src/mana_agent/renderers/html_report.py"
+      ],
+      "responsibility": "Rendering / output formatting.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/skills",
+      "related_files": [
+        "src/mana_agent/skills/__init__.py",
+        "src/mana_agent/skills/manager.py"
+      ],
+      "responsibility": "Modules under `src/mana_agent/skills`.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/ui",
+      "related_files": [
+        "src/mana_agent/ui/__init__.py",
+        "src/mana_agent/ui/banner.py"
+      ],
+      "responsibility": "Terminal UI helpers for Mana Agent.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/default_skills",
+      "related_files": [
+        "src/mana_agent/default_skills/__init__.py"
+      ],
+      "responsibility": "Built-in fallback skill templates.",
+      "risk_notes": []
+    },
+    {
+      "area": "src/mana_agent/describe",
+      "related_files": [
+        "src/mana_agent/describe/describe_service.py"
+      ],
+      "responsibility": "Description / summarization flows.",
+      "risk_notes": []
+    }
+  ],
+  "dependencies": {
+    "dev": [
+      "pytest"
+    ],
+    "framework_packages": [
+      "LangChain",
+      "Typer"
+    ],
+    "llm_agent_tooling_packages": [
+      "faiss-cpu",
+      "langchain",
+      "langchain-community",
+      "langchain-openai",
+      "openai"
+    ],
+    "lock_files": [],
+    "runtime": [
+      "faiss-cpu",
+      "langchain",
+      "langchain-community",
+      "langchain-openai",
+      "openai",
+      "prompt_toolkit",
+      "pydantic",
+      "pydantic-settings",
+      "python-dotenv",
+      "redis",
+      "rich",
+      "rq",
+      "safety",
+      "tenacity",
+      "typer"
+    ],
+    "testing_packages": [
+      "pytest"
+    ],
+    "warnings": [
+      "Python dependency manifest detected without poetry.lock; pip may still use requirements pinning."
+    ]
+  },
+  "depth": "normal",
+  "docs_folders": [
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+    "docs",
+    "src"
+  ],
+  "entrypoints": [
+    {
+      "command": "mana_agent.commands.cli:app",
+      "description": "Python project script",
+      "file": "pyproject.toml",
+      "line": 6,
+      "name": "mana-agent",
+      "type": "cli"
+    }
+  ],
+  "file_counts": {
+    "config": 4,
+    "documentation": 38,
+    "source": 113,
+    "test": 60,
+    "total": 219
+  },
+  "frameworks": [
+    "LangChain",
+    "Typer"
+  ],
+  "important_config_files": [
+    ".env.example",
+    ".github/workflows/ci.yml",
+    "pyproject.toml",
+    "requirements.txt"
+  ],
+  "important_symbols": [
+    {
+      "docstring": "",
+      "file": "tests/test_agent_orchestrator.py",
+      "kind": "class",
+      "line": 84,
+      "name": "_FakeWorkerClient",
+      "signature": "class _FakeWorkerClient:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_orchestrator.py",
+      "kind": "class",
+      "line": 107,
+      "name": "_Local",
+      "signature": "class _Local:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_orchestrator.py",
+      "kind": "class",
+      "line": 111,
+      "name": "_Redis",
+      "signature": "class _Redis:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "tool",
+      "line": 31,
+      "name": "_AGENTIC_EDIT_TOOLS",
+      "signature": "_AGENTIC_EDIT_TOOLS = ["
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "tool",
+      "line": 1059,
+      "name": "test_approved_mutation_plan_compiles_to_registered_tool",
+      "signature": "def test_approved_mutation_plan_compiles_to_registered_tool(tmp_path: Path):"
+    },
+    {
+      "docstring": "A worker that wrongly says 'no edit tool was available' must not win when the trace proves apply_patch executed and changed a file.",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "tool",
+      "line": 1564,
+      "name": "test_apply_patch_run_never_claims_no_edit_tool",
+      "signature": "def test_apply_patch_run_never_claims_no_edit_tool(tmp_path: Path):"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 224,
+      "name": "_FakeExecutor",
+      "signature": "class _FakeExecutor:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 286,
+      "name": "_FakeExecutor",
+      "signature": "class _FakeExecutor:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 411,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 467,
+      "name": "_NoDirectWorker",
+      "signature": "class _NoDirectWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 471,
+      "name": "_FakeExecutor",
+      "signature": "class _FakeExecutor:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 540,
+      "name": "_NoDirectWorker",
+      "signature": "class _NoDirectWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 544,
+      "name": "_FakeExecutor",
+      "signature": "class _FakeExecutor:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 612,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 690,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 749,
+      "name": "_TypoResolutionWorker",
+      "signature": "class _TypoResolutionWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 818,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 872,
+      "name": "_ReadOnlyWorker",
+      "signature": "class _ReadOnlyWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 926,
+      "name": "_ProseOnlyWorker",
+      "signature": "class _ProseOnlyWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 979,
+      "name": "_ArchitectureWorker",
+      "signature": "class _ArchitectureWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1096,
+      "name": "_ShouldNotRunWorker",
+      "signature": "class _ShouldNotRunWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1133,
+      "name": "_ShouldNotRunWorker",
+      "signature": "class _ShouldNotRunWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1163,
+      "name": "_StructuredCommandWorker",
+      "signature": "class _StructuredCommandWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1213,
+      "name": "_ProseWorker",
+      "signature": "class _ProseWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1259,
+      "name": "_ReadOnlyWorker",
+      "signature": "class _ReadOnlyWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1325,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1350,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1388,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1424,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1499,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1569,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1606,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1635,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1697,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "kind": "class",
+      "line": 1747,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_ask_agent.py",
+      "kind": "class",
+      "line": 14,
+      "name": "_FakeSearchService",
+      "signature": "class _FakeSearchService:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_ask_agent.py",
+      "kind": "class",
+      "line": 31,
+      "name": "_FakeAIMessage",
+      "signature": "class _FakeAIMessage:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_ask_agent.py",
+      "kind": "class",
+      "line": 37,
+      "name": "_FakeBoundModel",
+      "signature": "class _FakeBoundModel:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_ask_agent.py",
+      "kind": "class",
+      "line": 48,
+      "name": "_FakeLLM",
+      "signature": "class _FakeLLM:"
+    },
+    {
+      "docstring": "Records every invocation so tests can assert dedup behavior.",
+      "file": "tests/test_ask_agent.py",
+      "kind": "class",
+      "line": 88,
+      "name": "_CountingTool",
+      "signature": "class _CountingTool:"
+    }
+  ],
+  "languages": [
+    "json",
+    "markdown",
+    "python",
+    "toml",
+    "yaml"
+  ],
+  "package_managers": [
+    "pip"
+  ],
+  "project_name": "mana-agent",
+  "recommendations": [
+    {
+      "acceptance_criteria": [
+        "Document the intended package manager and lock workflow.",
+        "CI verifies dependency installation from the chosen files."
+      ],
+      "files": [
+        "pyproject.toml",
+        "requirements.txt"
+      ],
+      "priority": "medium",
+      "reason": "Dependency manifests have lock-file warnings.",
+      "title": "Clarify dependency lock policy",
+      "verification": "python -m compileall src"
+    },
+    {
+      "acceptance_criteria": [
+        "All command execution helpers accept and enforce a timeout.",
+        "Timeout behavior has a focused test."
+      ],
+      "files": [
+        "src/mana_agent/commands/chat_cli.py",
+        "src/mana_agent/commands/cli_internal.py",
+        "src/mana_agent/commands/ui_helpers.py",
+        "src/mana_agent/llm/agent_work_queue.py",
+        "src/mana_agent/llm/agent_work_queue_adapters.py",
+        "src/mana_agent/llm/ask_agent.py"
+      ],
+      "priority": "high",
+      "reason": "Subprocess usage without nearby timeout evidence can stall agent runs.",
+      "title": "Add timeout around long-running verification commands",
+      "verification": "pytest tests -q"
+    },
+    {
+      "acceptance_criteria": [
+        "Chat startup checks for .mana/analyze/agent_context.json.",
+        "Loaded context is bounded and never includes secrets."
+      ],
+      "files": [
+        ".mana/analyze/agent_context.json"
+      ],
+      "priority": "medium",
+      "reason": "The compact context artifact is designed to make later coding-agent turns faster and better grounded.",
+      "title": "Load agent_context.json into future chat context",
+      "verification": "pytest tests/commands tests/integration -q"
+    }
+  ],
+  "risks": [
+    {
+      "evidence": "- Restored `rm -rf` blocking in `AskAgent.run_command` and kept `/flow show` visibly reporting active flow memory.",
+      "file": "CHANGELOG.md",
+      "line": 17,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "- Verification: `PYTHONPATH=src .venv/bin/python -m compileall src` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_chat_planning_mode.py tests/test_cli_modes_skills.",
+      "file": "CHANGELOG.md",
+      "line": 154,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "OPENAI_<redacted>\"",
+      "file": "README.md",
+      "line": 116,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "output = run_command.invoke({\"cmd\": \"rm -rf /tmp/foo\"})",
+      "file": "tests/test_ask_agent.py",
+      "line": 295,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_ask_agent_recovery.py",
+      "line": 35,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "openai_<redacted>\"",
+      "file": "tests/test_chat_planning_mode.py",
+      "line": 14,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "openai_<redacted>\"",
+      "file": "tests/test_cli_flow.py",
+      "line": 11,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "openai_<redacted>\"",
+      "file": "tests/test_cli_smoke.py",
+      "line": 174,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "openai_<redacted>\"",
+      "file": "tests/test_cli_ux_helpers.py",
+      "line": 27,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_coding_agent.py",
+      "line": 231,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_coding_agent.py",
+      "line": 258,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "final <redacted>';",
+      "file": "tests/test_multi_parser.py",
+      "line": 35,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "(root / \".env\").write_text(\"OPENAI_<redacted>\", encoding=\"utf-8\")",
+      "file": "tests/test_project_analyze_service.py",
+      "line": 41,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "(root / \".env\").write_text(\"OPENAI_<redacted>\", encoding=\"utf-8\")",
+      "file": "tests/test_project_llm_analyze_service.py",
+      "line": 29,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "assert build_llm_analyzer(ModelConfig(<redacted>\", model=\"x\")) is not None",
+      "file": "tests/test_project_llm_analyze_service.py",
+      "line": 131,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 153,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 206,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 269,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 325,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 729,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 749,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 816,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "client = twp.ToolWorkerClient(<redacted>\", model=\"fake\", repo_root=tmp_path, project_root=tmp_path)",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 970,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 1013,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "assert exc.value.<redacted> \"pdf\"",
+      "file": "tests/commands/test_analyze_slash_command.py",
+      "line": 55,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "OPENAI_<redacted>\"",
+      "file": "docs/03-quick-start.md",
+      "line": 36,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "\"rm -rf\",",
+      "file": "src/mana_agent/tools/repository.py",
+      "line": 239,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "\"git reset --hard\",",
+      "file": "src/mana_agent/tools/repository.py",
+      "line": 240,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "<redacted> = \"\",",
+      "file": "src/mana_agent/llm/agent_work_queue.py",
+      "line": 793,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "\"git reset --hard\",",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "line": 149,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "\"rm -rf\",",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "line": 151,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "line": 165,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/coding_agent.py",
+      "line": 376,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "self.<redacted>",
+      "file": "src/mana_agent/llm/coding_agent.py",
+      "line": 392,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "def __init__(self, <redacted> model: str, base_url: str | None = None) -> None:",
+      "file": "src/mana_agent/llm/qna_chain.py",
+      "line": 16,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "def __init__(self, <redacted> model: str, base_url: str | None = None) -> None:",
+      "file": "src/mana_agent/llm/repo_chain.py",
+      "line": 73,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "self.<redacted>",
+      "file": "src/mana_agent/llm/repo_chain.py",
+      "line": 74,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 805,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 905,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 915,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    }
+  ],
+  "root_path": "/Users/ah/Documents/mana-agent",
+  "script_folders": [],
+  "secret_bearing_config": [
+    ".env.example"
+  ],
+  "source_folders": [
+    "src"
+  ],
+  "static_analysis_summary": {
+    "deep-nesting": 313,
+    "missing-docstring": 1618,
+    "unused-imports": 205,
+    "wildcard-import": 8
+  },
+  "test_folders": [
+    "tests"
+  ],
+  "verification_commands": [
+    "python -m compileall .",
+    "pytest"
+  ]
+}

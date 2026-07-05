@@ -1,0 +1,1918 @@
+{
+  "binary_skipped_files": [
+    {
+      "path": "src/mana_agent/__init__.pyc",
+      "size_bytes": 217
+    },
+    {
+      "path": "src/mana_agent/renderers/__init__.pyc",
+      "size_bytes": 308
+    },
+    {
+      "path": "src/mana_agent/parsers/__init__.pyc",
+      "size_bytes": 121
+    },
+    {
+      "path": "src/mana_agent/tools/__init__.pyc",
+      "size_bytes": 1387
+    },
+    {
+      "path": "src/mana_agent/llm/__init__.pyc",
+      "size_bytes": 151
+    },
+    {
+      "path": "src/mana_agent/llm/coding_agent_prompt.pyc",
+      "size_bytes": 1553
+    },
+    {
+      "path": "src/mana_agent/llm/prompts.pyc",
+      "size_bytes": 18455
+    },
+    {
+      "path": "src/mana_agent/analysis/__init__.pyc",
+      "size_bytes": 122
+    },
+    {
+      "path": "src/mana_agent/config/__init__.pyc",
+      "size_bytes": 120
+    },
+    {
+      "path": "src/mana_agent/dependencies/__init__.pyc",
+      "size_bytes": 230
+    },
+    {
+      "path": "src/mana_agent/utils/__init__.pyc",
+      "size_bytes": 119
+    },
+    {
+      "path": "src/mana_agent/vector_store/__init__.pyc",
+      "size_bytes": 126
+    },
+    {
+      "path": "src/mana_agent/commands/__init__.pyc",
+      "size_bytes": 176
+    },
+    {
+      "path": "src/mana_agent/services/__init__.pyc",
+      "size_bytes": 122
+    },
+    {
+      "path": "src/mana_agent/services/parsers/__init__.pyc",
+      "size_bytes": 993
+    }
+  ],
+  "config_files_count": 4,
+  "detected_frameworks": [
+    "LangChain",
+    "Typer"
+  ],
+  "detected_languages": [
+    "json",
+    "markdown",
+    "python",
+    "toml",
+    "yaml"
+  ],
+  "docs_folders": [
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+    "docs",
+    "src"
+  ],
+  "documentation_files_count": 38,
+  "entrypoints": [],
+  "files": [
+    {
+      "category": "config",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": ".env.example",
+      "size_bytes": 320
+    },
+    {
+      "category": "unknown",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": ".gitignore",
+      "size_bytes": 242
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "AGENTS.md",
+      "size_bytes": 628
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "CHANGELOG.md",
+      "size_bytes": 81147
+    },
+    {
+      "category": "unknown",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": "LICENSE",
+      "size_bytes": 1067
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "README.md",
+      "size_bytes": 10946
+    },
+    {
+      "category": "config",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "toml",
+      "path": "pyproject.toml",
+      "size_bytes": 1169
+    },
+    {
+      "category": "config",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": "requirements.txt",
+      "size_bytes": 530
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/conftest.py",
+      "size_bytes": 312
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_agent_orchestrator.py",
+      "size_bytes": 5516
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_agent_work_queue.py",
+      "size_bytes": 73172
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_apply_patch_json_only.py",
+      "size_bytes": 2158
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_ask_agent.py",
+      "size_bytes": 34198
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_ask_agent_recovery.py",
+      "size_bytes": 4057
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_ask_service.py",
+      "size_bytes": 4330
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_ask_service_fallback.py",
+      "size_bytes": 6192
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_auto_chat.py",
+      "size_bytes": 4799
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_chat_background_index.py",
+      "size_bytes": 2771
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_chat_console_logging.py",
+      "size_bytes": 2914
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_chat_direct_commands.py",
+      "size_bytes": 2297
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_chat_planning_mode.py",
+      "size_bytes": 7702
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_checks.py",
+      "size_bytes": 821
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_chunker.py",
+      "size_bytes": 600
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_cli_answer_extract.py",
+      "size_bytes": 422
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_cli_flow.py",
+      "size_bytes": 1580
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_cli_modes_skills.py",
+      "size_bytes": 4534
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_cli_smoke.py",
+      "size_bytes": 141719
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_cli_ux_helpers.py",
+      "size_bytes": 14313
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_coding_agent.py",
+      "size_bytes": 49885
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_coding_memory_service.py",
+      "size_bytes": 6344
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_coding_todo_service.py",
+      "size_bytes": 3957
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_coding_tool_system.py",
+      "size_bytes": 4546
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_dependency_service.py",
+      "size_bytes": 3706
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_describe_service.py",
+      "size_bytes": 3531
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_edit_file_tools.py",
+      "size_bytes": 4400
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_gate_command.py",
+      "size_bytes": 9202
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_html_output.py",
+      "size_bytes": 3605
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_index_discovery.py",
+      "size_bytes": 775
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_index_incremental.py",
+      "size_bytes": 2119
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_llm_logging.py",
+      "size_bytes": 3006
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_logging_setup.py",
+      "size_bytes": 1188
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_multi_parser.py",
+      "size_bytes": 1156
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_parser.py",
+      "size_bytes": 647
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_project_analyze_service.py",
+      "size_bytes": 4738
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_project_discovery.py",
+      "size_bytes": 1416
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_project_llm_analyze_service.py",
+      "size_bytes": 7505
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_project_search.py",
+      "size_bytes": 2500
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_prompting_builder.py",
+      "size_bytes": 10034
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_prompts_contract.py",
+      "size_bytes": 2462
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_redaction.py",
+      "size_bytes": 1980
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_repo_chain.py",
+      "size_bytes": 1916
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_repository_inspect.py",
+      "size_bytes": 2359
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_repository_tools.py",
+      "size_bytes": 3734
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_search_service.py",
+      "size_bytes": 1265
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_small_direct_edit.py",
+      "size_bytes": 3325
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_structure_service.py",
+      "size_bytes": 3709
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_tool_input_aliases.py",
+      "size_bytes": 6993
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_tool_policy.py",
+      "size_bytes": 2147
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_tool_worker_process.py",
+      "size_bytes": 37448
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_tools_executor_redis.py",
+      "size_bytes": 6574
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_tools_manager.py",
+      "size_bytes": 48191
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/test_write_file_chunking.py",
+      "size_bytes": 4393
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/parsers/test_parser_adapters.py",
+      "size_bytes": 1731
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/integration/test_chat_analyze_command.py",
+      "size_bytes": 3134
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/fixtures/sample_project/bad_module.py",
+      "size_bytes": 347
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/fixtures/sample_project/good_module.py",
+      "size_bytes": 350
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/fixtures/sample_project/no_doc.py",
+      "size_bytes": 47
+    },
+    {
+      "category": "test",
+      "is_entrypoint": false,
+      "is_test": true,
+      "language": "python",
+      "path": "tests/commands/test_analyze_slash_command.py",
+      "size_bytes": 8665
+    },
+    {
+      "category": "unknown",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "json",
+      "path": ".claude/settings.local.json",
+      "size_bytes": 581
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/01-overview.md",
+      "size_bytes": 811
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/02-installation.md",
+      "size_bytes": 530
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/03-quick-start.md",
+      "size_bytes": 4859
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/04-commands.md",
+      "size_bytes": 6584
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/05-configuration.md",
+      "size_bytes": 3298
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/06-workflows.md",
+      "size_bytes": 4840
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/07-diagram.md",
+      "size_bytes": 1616
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/08-architecture.md",
+      "size_bytes": 8870
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/09-agent-behavior.md",
+      "size_bytes": 5260
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/10-error-handling.md",
+      "size_bytes": 1085
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/11-logging.md",
+      "size_bytes": 1048
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/12-testing.md",
+      "size_bytes": 930
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/13-tool-system.md",
+      "size_bytes": 2517
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/14-release.md",
+      "size_bytes": 1204
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "docs/15-development.md",
+      "size_bytes": 1754
+    },
+    {
+      "category": "config",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "yaml",
+      "path": ".github/workflows/ci.yml",
+      "size_bytes": 481
+    },
+    {
+      "category": "unknown",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": "src/mana_agent.egg-info/PKG-INFO",
+      "size_bytes": 11819
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": "src/mana_agent.egg-info/SOURCES.txt",
+      "size_bytes": 6829
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": "src/mana_agent.egg-info/dependency_links.txt",
+      "size_bytes": 1
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": "src/mana_agent.egg-info/entry_points.txt",
+      "size_bytes": 59
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": "src/mana_agent.egg-info/requires.txt",
+      "size_bytes": 373
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "unknown",
+      "path": "src/mana_agent.egg-info/top_level.txt",
+      "size_bytes": 11
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/__init__.py",
+      "size_bytes": 75
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/models.py",
+      "size_bytes": 9164
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/ui/__init__.py",
+      "size_bytes": 43
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/ui/banner.py",
+      "size_bytes": 2265
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/renderers/__init__.py",
+      "size_bytes": 168
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/renderers/html_report.py",
+      "size_bytes": 29425
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/parsers/__init__.py",
+      "size_bytes": 0
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/parsers/multi_parser.py",
+      "size_bytes": 4876
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/parsers/python_parser.py",
+      "size_bytes": 3531
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/tools/__init__.py",
+      "size_bytes": 1718
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/tools/apply_patch.py",
+      "size_bytes": 18460
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/tools/contracts.py",
+      "size_bytes": 18423
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/tools/edit_file.py",
+      "size_bytes": 9372
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/tools/repository.py",
+      "size_bytes": 22923
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/tools/write_file.py",
+      "size_bytes": 21739
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/__init__.py",
+      "size_bytes": 0
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/agent_session.py",
+      "size_bytes": 2555
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/agent_work_queue.py",
+      "size_bytes": 94983
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/agent_work_queue_adapters.py",
+      "size_bytes": 27929
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/ask_agent.py",
+      "size_bytes": 93925
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/auto_chat.py",
+      "size_bytes": 9845
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/coding_agent.py",
+      "size_bytes": 93770
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/coding_agent_models.py",
+      "size_bytes": 3297
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/coding_agent_prompt.py",
+      "size_bytes": 8038
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/evidence_memory.py",
+      "size_bytes": 8725
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/gate_command.py",
+      "size_bytes": 19064
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/goal_profiles.py",
+      "size_bytes": 6326
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/mutation_plan.py",
+      "size_bytes": 13577
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/prompts.py",
+      "size_bytes": 28561
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/qna_chain.py",
+      "size_bytes": 1979
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/redis_tool_tasks.py",
+      "size_bytes": 3372
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/repo_chain.py",
+      "size_bytes": 12050
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/run_logger.py",
+      "size_bytes": 1870
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/small_direct_edit.py",
+      "size_bytes": 10535
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/tool_worker_process.py",
+      "size_bytes": 75868
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/tools_executor.py",
+      "size_bytes": 17613
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/llm/tools_manager.py",
+      "size_bytes": 114086
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/analysis/__init__.py",
+      "size_bytes": 0
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/analysis/checks.py",
+      "size_bytes": 5867
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/analysis/chunker.py",
+      "size_bytes": 2169
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/analysis/models.py",
+      "size_bytes": 10363
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/prompting/__init__.py",
+      "size_bytes": 50
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/prompting/builder.py",
+      "size_bytes": 13393
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/prompting/layers.py",
+      "size_bytes": 1379
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/prompting/memory_snapshot.py",
+      "size_bytes": 1098
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/prompting/mode_rules.py",
+      "size_bytes": 1007
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/prompting/output_contract.py",
+      "size_bytes": 1558
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/prompting/repo_rules.py",
+      "size_bytes": 1232
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/prompting/skills_index.py",
+      "size_bytes": 2292
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/config/__init__.py",
+      "size_bytes": 0
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/config/settings.py",
+      "size_bytes": 3579
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/dependencies/__init__.py",
+      "size_bytes": 83
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/dependencies/dependency_service.py",
+      "size_bytes": 13073
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/__init__.py",
+      "size_bytes": 0
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/guards.py",
+      "size_bytes": 1087
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/index_discovery.py",
+      "size_bytes": 1234
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/io.py",
+      "size_bytes": 5405
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/logging.py",
+      "size_bytes": 1300
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/project_discovery.py",
+      "size_bytes": 4117
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/project_search.py",
+      "size_bytes": 7283
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/redaction.py",
+      "size_bytes": 3134
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/tool_policy.py",
+      "size_bytes": 4545
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/utils/tools_run.py",
+      "size_bytes": 1944
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/__init__.py",
+      "size_bytes": 427
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/evaluation_gate.py",
+      "size_bytes": 6752
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/evidence_queue.py",
+      "size_bytes": 2432
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/flow.py",
+      "size_bytes": 3638
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/orchestrator.py",
+      "size_bytes": 6717
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/selection.py",
+      "size_bytes": 1652
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/task_classifier.py",
+      "size_bytes": 6397
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/task_context.py",
+      "size_bytes": 2912
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/verification.py",
+      "size_bytes": 1540
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/agent/verification_planner.py",
+      "size_bytes": 1755
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/describe/describe_service.py",
+      "size_bytes": 13103
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/vector_store/__init__.py",
+      "size_bytes": 0
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/vector_store/embeddings.py",
+      "size_bytes": 3170
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/vector_store/faiss_store.py",
+      "size_bytes": 6286
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/__init__.py",
+      "size_bytes": 38
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/analyze_formats.py",
+      "size_bytes": 5250
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/chat_analyze_command.py",
+      "size_bytes": 19750
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/chat_cli.py",
+      "size_bytes": 131656
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/chat_input.py",
+      "size_bytes": 4664
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/cli.py",
+      "size_bytes": 1319
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/cli_internal.py",
+      "size_bytes": 43055
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/main_cli.py",
+      "size_bytes": 4543
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/output.py",
+      "size_bytes": 4810
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/commands/ui_helpers.py",
+      "size_bytes": 83477
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/skills/__init__.py",
+      "size_bytes": 121
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/skills/manager.py",
+      "size_bytes": 16931
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/__init__.py",
+      "size_bytes": 0
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/ask_service.py",
+      "size_bytes": 15851
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/chat_service.py",
+      "size_bytes": 7093
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/coding_memory_service.py",
+      "size_bytes": 44908
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/coding_todo_service.py",
+      "size_bytes": 5908
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/dependency_service.py",
+      "size_bytes": 112
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/describe_service.py",
+      "size_bytes": 106
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/index_service.py",
+      "size_bytes": 7381
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/project_analyze_service.py",
+      "size_bytes": 73370
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/project_llm_analyze_service.py",
+      "size_bytes": 17864
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/report_service.py",
+      "size_bytes": 30872
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/search_service.py",
+      "size_bytes": 7753
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/structure_service.py",
+      "size_bytes": 18620
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/vulnerability_service.py",
+      "size_bytes": 6979
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/parsers/__init__.py",
+      "size_bytes": 791
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/parsers/base.py",
+      "size_bytes": 702
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/parsers/dart_parser.py",
+      "size_bytes": 1711
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/parsers/js_ts_parser.py",
+      "size_bytes": 2230
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/parsers/jvm_parser.py",
+      "size_bytes": 1577
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/parsers/markup_parser.py",
+      "size_bytes": 451
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/parsers/native_parser.py",
+      "size_bytes": 5859
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/parsers/python_parser.py",
+      "size_bytes": 4417
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/services/parsers/scripting_parser.py",
+      "size_bytes": 1135
+    },
+    {
+      "category": "source_code",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "python",
+      "path": "src/mana_agent/default_skills/__init__.py",
+      "size_bytes": 41
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/celery.md",
+      "size_bytes": 546
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/cli.md",
+      "size_bytes": 714
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/coding-agent.md",
+      "size_bytes": 551
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/django.md",
+      "size_bytes": 543
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/fastapi.md",
+      "size_bytes": 676
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/git.md",
+      "size_bytes": 466
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/laravel.md",
+      "size_bytes": 642
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/nestjs.md",
+      "size_bytes": 688
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/nextjs.md",
+      "size_bytes": 673
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/planning.md",
+      "size_bytes": 561
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/reactjs.md",
+      "size_bytes": 658
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/security.md",
+      "size_bytes": 494
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/telegram-bot.md",
+      "size_bytes": 563
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/testing.md",
+      "size_bytes": 508
+    },
+    {
+      "category": "documentation",
+      "is_entrypoint": false,
+      "is_test": false,
+      "language": "markdown",
+      "path": "src/mana_agent/default_skills/vue.md",
+      "size_bytes": 474
+    }
+  ],
+  "generated_folders": [],
+  "ignore_rules": [
+    ".git",
+    ".mana",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "env",
+    "node_modules",
+    "venv"
+  ],
+  "ignored_folders": [
+    ".git",
+    ".mana",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "build",
+    "logs",
+    "src/mana_agent/__pycache__",
+    "src/mana_agent/agent/__pycache__",
+    "src/mana_agent/analysis/__pycache__",
+    "src/mana_agent/commands/__pycache__",
+    "src/mana_agent/config/__pycache__",
+    "src/mana_agent/default_skills/__pycache__",
+    "src/mana_agent/dependencies/__pycache__",
+    "src/mana_agent/describe/__pycache__",
+    "src/mana_agent/llm/__pycache__",
+    "src/mana_agent/parsers/__pycache__",
+    "src/mana_agent/prompting/__pycache__",
+    "src/mana_agent/renderers/__pycache__",
+    "src/mana_agent/services/__pycache__",
+    "src/mana_agent/services/parsers/__pycache__",
+    "src/mana_agent/skills/__pycache__",
+    "src/mana_agent/tools/__pycache__",
+    "src/mana_agent/ui/__pycache__",
+    "src/mana_agent/utils/__pycache__",
+    "src/mana_agent/vector_store/__pycache__",
+    "tests/__pycache__",
+    "tests/commands/__pycache__",
+    "tests/integration/__pycache__",
+    "tests/parsers/__pycache__",
+    "venv"
+  ],
+  "important_config_files": [
+    ".env.example",
+    ".github/workflows/ci.yml",
+    "pyproject.toml",
+    "requirements.txt"
+  ],
+  "large_skipped_files": [
+    {
+      "path": "logo.png",
+      "reason": "max_file_size_exceeded",
+      "size_bytes": 681114
+    }
+  ],
+  "package_managers": [
+    "pip"
+  ],
+  "project_name": "mana-agent",
+  "root_path": "/Users/ah/Documents/mana-agent",
+  "script_folders": [],
+  "secret_bearing_config": [
+    ".env.example"
+  ],
+  "source_files_count": 113,
+  "source_folders": [
+    "src"
+  ],
+  "test_files_count": 60,
+  "test_folders": [
+    "tests"
+  ],
+  "total_files": 219
+}

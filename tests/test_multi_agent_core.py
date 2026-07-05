@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import pytest
+from typer.testing import CliRunner
+
+from mana_agent.commands.cli import app
+from mana_agent.commands.cli_internal import _record_multi_agent_request
+from mana_agent.multi_agent import MainAgent
+from mana_agent.multi_agent.agents.coding_agent import CodingAgent
+from mana_agent.multi_agent.agents.verifier_agent import VerifierAgent
+from mana_agent.multi_agent.communication.decision_room import DecisionRoom
+from mana_agent.multi_agent.communication.message_bus import MessageBus
+from mana_agent.multi_agent.core.errors import AgentRegistryError, InvalidTaskTransition, ToolPermissionError
+from mana_agent.multi_agent.core.ids import (
+    new_agent_id,
+    new_decision_id,
+    new_discussion_id,
+    new_message_id,
+    new_queue_job_id,
+    new_subagent_id,
+    new_task_id,
+    new_trace_id,
+)
+from mana_agent.multi_agent.core.types import (
+    AgentRole,
+    MessageType,
+    QueueJobType,
+    TaskStatus,
+)
+from mana_agent.multi_agent.queue.queue_manager import QueueManager
+from mana_agent.multi_agent.registry.agent_registry import AgentRegistry
+from mana_agent.multi_agent.routing.router import Router
+from mana_agent.multi_agent.taskboard.taskboard import TaskBoard
+from mana_agent.multi_agent.tools.permissions import assert_shell_allowed
+
+
+def test_id_generation_is_readable_and_unique():
+    values = [
+        new_agent_id("main"),
+        new_subagent_id("coding tests"),
+        new_task_id(),
+        new_queue_job_id(),
+        new_message_id(),
+        new_discussion_id(),
+        new_decision_id(),
+        new_trace_id(),
+    ]
+    assert len(values) == len(set(values))
+    assert values[0].startswith("agent_main_")
+    assert values[1].startswith("subagent_coding_tests_")
+    assert values[2].startswith("task_")
+
+
+def test_taskboard_create_update_save_load_and_invalid_transition(tmp_path):
+    board = TaskBoard(tmp_path)
+    task = board.create_task(title="Test", user_request="plan test")
+    board.update_status(task.task_id, TaskStatus.PLANNING)
+    board.add_assumption(task.task_id, "Assume compatibility.")
+    board.add_evidence(task.task_id, "Evidence row.")
+    board.add_files_to_inspect(task.task_id, ["src/example.py"])
+    reloaded = TaskBoard(tmp_path)
+    loaded = reloaded.get_task(task.task_id)
+    assert loaded.assumptions == ["Assume compatibility."]
+    assert loaded.evidence == ["Evidence row."]
+    with pytest.raises(InvalidTaskTransition):
+        reloaded.update_status(task.task_id, TaskStatus.DONE)
+
+
+def test_message_bus_send_broadcast_and_thread(tmp_path):
+    bus = MessageBus(tmp_path)
+    sent = bus.send(
+        task_id="task_1",
+        from_agent_id="agent_a",
+        to_agent_id="agent_b",
+        message_type=MessageType.QUESTION,
+        content="Need evidence.",
+        discussion_id="discussion_1",
+    )
+    bus.broadcast("task_1", "agent_a", MessageType.EVIDENCE, "Broadcast evidence.")
+    assert sent in bus.inbox("agent_b")
+    assert len(bus.thread("discussion_1")) == 1
+
+
+def test_decision_room_open_close_records_taskboard_decision(tmp_path):
+    board = TaskBoard(tmp_path)
+    task = board.create_task(title="Decision", user_request="edit file")
+    bus = MessageBus(tmp_path)
+    room = DecisionRoom(tmp_path, board, bus)
+    discussion = room.open_discussion(task.task_id, "Mutation decision", ["agent_head", "agent_planner"], created_by_agent_id="agent_head")
+    decision = room.close_with_decision(
+        task_id=task.task_id,
+        discussion_id=discussion.discussion_id,
+        made_by_agent_id="agent_head",
+        summary="Use coding route.",
+        rationale_summary="Mutation requires verification.",
+        selected_route="coding",
+        assigned_agent_ids=["agent_coding"],
+        required_verification=["pytest"],
+    )
+    assert decision.decision_id in board.get_task(task.task_id).decision_ids
+    assert room.discussions.discussions[discussion.discussion_id].final_decision_id == decision.decision_id
+
+
+def test_agent_registry_hierarchy_and_cycle_guard():
+    registry = AgentRegistry()
+    assert registry.find_by_role(AgentRole.MAIN).agent_id.startswith("agent_main_")
+    coding = registry.find_by_role(AgentRole.CODING)
+    subagent = registry.create_subagent(AgentRole.CODING, coding.agent_id, ["coding"])
+    assert subagent.parent_agent_id == coding.agent_id
+    with pytest.raises(AgentRegistryError):
+        registry.set_parent(coding.agent_id, subagent.agent_id)
+
+
+def test_router_selects_required_routes():
+    router = Router()
+    assert router.route(task_id="task_1", user_request="/plan update docs").route_name == "planning"
+    assert router.route(task_id="task_1", user_request="/analyze repo").route_name == "analyze"
+    assert router.route(task_id="task_1", user_request="edit README.md").route_name == "coding"
+    assert router.route(task_id="task_1", user_request="run pytest").route_name == "tool"
+
+
+def test_queue_manager_serializes_write_jobs_and_tracks_status(tmp_path):
+    board = TaskBoard(tmp_path)
+    task = board.create_task(title="Queue", user_request="run status")
+    queue = QueueManager(tmp_path, taskboard=board)
+    job = queue.enqueue(
+        task_id=task.task_id,
+        requested_by_agent_id="agent_tool",
+        job_type=QueueJobType.GIT_STATUS,
+        payload={},
+        priority=1,
+        lock_key="repo",
+        requires_write_lock=True,
+    )
+    ran = queue.run_until_idle()
+    assert ran == [job]
+    assert queue.get_job(job.job_id).status.value in {"done", "failed"}
+    assert job.job_id in board.get_task(task.task_id).queue_job_ids
+
+
+def test_tools_manager_blocks_dangerous_shell_commands():
+    with pytest.raises(ToolPermissionError):
+        assert_shell_allowed("git reset --hard")
+    with pytest.raises(ToolPermissionError):
+        assert_shell_allowed("cat .env")
+    assert_shell_allowed("python -m compileall src")
+
+
+def test_coding_agent_cannot_directly_execute_tools(tmp_path):
+    main = MainAgent(tmp_path)
+    agent = main.agents[AgentRole.CODING]
+    assert isinstance(agent, CodingAgent)
+    with pytest.raises(PermissionError):
+        agent.execute_tool_directly("git status")
+
+
+def test_verifier_agent_records_failed_verification(tmp_path):
+    main = MainAgent(tmp_path)
+    task = main.taskboard.create_task(title="Verify", user_request="verify")
+    verifier = main.agents[AgentRole.VERIFIER]
+    assert isinstance(verifier, VerifierAgent)
+    result = verifier.record_failed_verification(task.task_id, "pytest failed")
+    assert result in main.taskboard.get_task(task.task_id).verification_results
+
+
+def test_main_agent_routes_chat_analyze_and_plan(tmp_path):
+    assert MainAgent(tmp_path).run_user_request("hello", entrypoint="chat").route_name == "simple"
+    assert MainAgent(tmp_path).run_user_request("scan repo", entrypoint="analyze").route_name == "analyze"
+    assert MainAgent(tmp_path).run_user_request("update docs", entrypoint="plan").route_name == "planning"
+
+
+def test_cli_commands_exist_and_record_multi_agent_route(tmp_path):
+    runner = CliRunner()
+    help_result = runner.invoke(app, ["--help"])
+    assert help_result.exit_code == 0
+    assert "chat" in help_result.output
+    assert "analyze" in help_result.output
+    assert "plan" in help_result.output
+    task_id = _record_multi_agent_request(tmp_path, "plan a change", entrypoint="plan")
+    assert task_id.startswith("task_")
+
+
+def test_no_multi_agent_disable_flag_or_env_bypass():
+    runner = CliRunner()
+    help_result = runner.invoke(app, ["chat", "--help"])
+    assert help_result.exit_code == 0
+    assert "--no-multi-agent" not in help_result.output
+    bypass = "MANA_" + "MULTI_AGENT=0"
+    assert bypass not in help_result.output

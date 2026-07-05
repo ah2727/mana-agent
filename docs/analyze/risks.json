@@ -1,0 +1,2710 @@
+{
+  "items": [
+    {
+      "evidence": "- Restored `rm -rf` blocking in `AskAgent.run_command` and kept `/flow show` visibly reporting active flow memory.",
+      "file": "CHANGELOG.md",
+      "line": 17,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "- Verification: `PYTHONPATH=src .venv/bin/python -m compileall src` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_chat_planning_mode.py tests/test_cli_modes_skills.",
+      "file": "CHANGELOG.md",
+      "line": 154,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "OPENAI_<redacted>\"",
+      "file": "README.md",
+      "line": 116,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 4,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "subprocess.run([\"git\", \"init\"], cwd=tmp_path, check=True, capture_output=True, text=True)",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 860,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "subprocess.run(",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 864,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "subprocess.run([\"git\", \"init\"], cwd=tmp_path, check=True, capture_output=True, text=True)",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1245,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "subprocess.run(",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1251,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "tests/test_ask_agent.py",
+      "line": 4,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "output = run_command.invoke({\"cmd\": \"rm -rf /tmp/foo\"})",
+      "file": "tests/test_ask_agent.py",
+      "line": 295,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "return subprocess.CompletedProcess(cmd, 0, \"ok\", \"\")",
+      "file": "tests/test_ask_agent.py",
+      "line": 336,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "monkeypatch.setattr(\"mana_agent.llm.ask_agent.subprocess.run\", _fake_run)",
+      "file": "tests/test_ask_agent.py",
+      "line": 338,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "return subprocess.CompletedProcess(cmd, 0, \"ok\", \"\")",
+      "file": "tests/test_ask_agent.py",
+      "line": 357,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "monkeypatch.setattr(\"mana_agent.llm.ask_agent.subprocess.run\", _fake_run)",
+      "file": "tests/test_ask_agent.py",
+      "line": 359,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_ask_agent_recovery.py",
+      "line": 35,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "openai_<redacted>\"",
+      "file": "tests/test_chat_planning_mode.py",
+      "line": 14,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "openai_<redacted>\"",
+      "file": "tests/test_cli_flow.py",
+      "line": 11,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "openai_<redacted>\"",
+      "file": "tests/test_cli_smoke.py",
+      "line": 174,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "\"objective\": \"Do TODO.md section 1 and 2\",",
+      "file": "tests/test_cli_smoke.py",
+      "line": 793,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "\"objective\": \"Do TODO.md section 1 and 2\",",
+      "file": "tests/test_cli_smoke.py",
+      "line": 795,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "\"objective\": \"Implement TODO sections\",",
+      "file": "tests/test_cli_smoke.py",
+      "line": 853,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "{\"id\": \"s1\", \"status\": \"in_progress\", \"title\": \"Inspect TODO.md section 1\"},",
+      "file": "tests/test_cli_smoke.py",
+      "line": 856,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "{\"id\": \"s2\", \"status\": \"pending\", \"title\": \"Apply TODO.md section 2 updates\"},",
+      "file": "tests/test_cli_smoke.py",
+      "line": 857,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "\"plan\": {\"objective\": \"Implement TODO sections\", \"steps\": []},",
+      "file": "tests/test_cli_smoke.py",
+      "line": 871,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "assert \"Inspect TODO.md section 1\" not in result.stdout",
+      "file": "tests/test_cli_smoke.py",
+      "line": 899,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "assert \"Apply TODO.md section 2 updates\" not in result.stdout",
+      "file": "tests/test_cli_smoke.py",
+      "line": 900,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "openai_<redacted>\"",
+      "file": "tests/test_cli_ux_helpers.py",
+      "line": 27,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_coding_agent.py",
+      "line": 231,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_coding_agent.py",
+      "line": 258,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "\"Update docs and type hints in TODO.md\",",
+      "file": "tests/test_coding_agent.py",
+      "line": 626,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "final <redacted>';",
+      "file": "tests/test_multi_parser.py",
+      "line": 35,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "(root / \".env\").write_text(\"OPENAI_<redacted>\", encoding=\"utf-8\")",
+      "file": "tests/test_project_analyze_service.py",
+      "line": 41,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "(root / \".env\").write_text(\"OPENAI_<redacted>\", encoding=\"utf-8\")",
+      "file": "tests/test_project_llm_analyze_service.py",
+      "line": 29,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "assert build_llm_analyzer(ModelConfig(<redacted>\", model=\"x\")) is not None",
+      "file": "tests/test_project_llm_analyze_service.py",
+      "line": 131,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 6,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "result = subprocess.run(",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 27,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "monkeypatch.setattr(twp.subprocess, \"Popen\", _make_proc)",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 151,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 153,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "monkeypatch.setattr(twp.subprocess, \"Popen\", _make_proc)",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 204,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 206,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "monkeypatch.setattr(twp.subprocess, \"Popen\", _make_proc)",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 267,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 269,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "monkeypatch.setattr(twp.subprocess, \"Popen\", _make_proc)",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 323,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 325,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 729,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 749,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "monkeypatch.setattr(twp.subprocess, \"Popen\", _make_proc)",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 814,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 816,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "client = twp.ToolWorkerClient(<redacted>\", model=\"fake\", repo_root=tmp_path, project_root=tmp_path)",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 970,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\",",
+      "file": "tests/test_tool_worker_process.py",
+      "line": 1013,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "filenames and ``TODO:`` placeholder content.",
+      "file": "tests/test_tools_manager.py",
+      "line": 944,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "target.write_text(f\"# {name}\\n\\nTODO: add content\\n\", encoding=\"utf-8\")",
+      "file": "tests/test_tools_manager.py",
+      "line": 960,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "assert exc.value.<redacted> \"pdf\"",
+      "file": "tests/commands/test_analyze_slash_command.py",
+      "line": 55,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "OPENAI_<redacted>\"",
+      "file": "docs/03-quick-start.md",
+      "line": 36,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "while True:",
+      "file": "src/mana_agent/tools/edit_file.py",
+      "line": 57,
+      "recommended_fix": "Add explicit limits, timeout, or break conditions.",
+      "severity": "medium",
+      "title": "Unbounded loop candidate",
+      "why_it_matters": "Loops without an obvious exit can hang the program."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "src/mana_agent/tools/repository.py",
+      "line": 10,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "\"rm -rf\",",
+      "file": "src/mana_agent/tools/repository.py",
+      "line": 239,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "\"git reset --hard\",",
+      "file": "src/mana_agent/tools/repository.py",
+      "line": 240,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "completed = subprocess.run(",
+      "file": "src/mana_agent/tools/repository.py",
+      "line": 265,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "completed = subprocess.run([\"git\", \"status\", \"--short\"], cwd=repo_root, capture_output=True, text=True, check=False)",
+      "file": "src/mana_agent/tools/repository.py",
+      "line": 430,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "completed = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True, check=False)",
+      "file": "src/mana_agent/tools/repository.py",
+      "line": 448,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "Similar content to src/mana_agent/parsers/__init__.py",
+      "file": "src/mana_agent/llm/__init__.py",
+      "line": 1,
+      "recommended_fix": "Remove or document duplicate ownership.",
+      "severity": "low",
+      "title": "Duplicate file candidate",
+      "why_it_matters": "Can confuse future code search and maintenance."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "src/mana_agent/llm/agent_work_queue.py",
+      "line": 38,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted> = \"\",",
+      "file": "src/mana_agent/llm/agent_work_queue.py",
+      "line": 793,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "proc = subprocess.run(",
+      "file": "src/mana_agent/llm/agent_work_queue.py",
+      "line": 935,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "proc = subprocess.run(",
+      "file": "src/mana_agent/llm/agent_work_queue.py",
+      "line": 951,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "proc = subprocess.run(",
+      "file": "src/mana_agent/llm/agent_work_queue.py",
+      "line": 1035,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "2144 lines",
+      "file": "src/mana_agent/llm/agent_work_queue.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "dependency-light and unit-testable without a worker subprocess:",
+      "file": "src/mana_agent/llm/agent_work_queue_adapters.py",
+      "line": 4,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "line": 9,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "\"git reset --hard\",",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "line": 149,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "\"rm -rf\",",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "line": 151,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "line": 165,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "completed = subprocess.run(",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "line": 1174,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "2108 lines",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "src/mana_agent/llm/coding_agent.py",
+      "line": 18,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/coding_agent.py",
+      "line": 376,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "self.<redacted>",
+      "file": "src/mana_agent/llm/coding_agent.py",
+      "line": 392,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "proc = subprocess.run(",
+      "file": "src/mana_agent/llm/coding_agent.py",
+      "line": 2127,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "proc = subprocess.run(",
+      "file": "src/mana_agent/llm/coding_agent.py",
+      "line": 2150,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "2245 lines",
+      "file": "src/mana_agent/llm/coding_agent.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "779 lines",
+      "file": "src/mana_agent/llm/prompts.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "def __init__(self, <redacted> model: str, base_url: str | None = None) -> None:",
+      "file": "src/mana_agent/llm/qna_chain.py",
+      "line": 16,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "def __init__(self, <redacted> model: str, base_url: str | None = None) -> None:",
+      "file": "src/mana_agent/llm/repo_chain.py",
+      "line": 73,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "self.<redacted>",
+      "file": "src/mana_agent/llm/repo_chain.py",
+      "line": 74,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 7,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 805,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 905,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 915,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "self._proc: subprocess.Popen[str] | None = None",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 923,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "self._proc = subprocess.Popen(",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 967,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "stdin=subprocess.PIPE,",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 969,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "stdout=subprocess.PIPE,",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 970,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "stderr=subprocess.PIPE,",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 971,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "while True:",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 1088,
+      "recommended_fix": "Add explicit limits, timeout, or break conditions.",
+      "severity": "medium",
+      "title": "Unbounded loop candidate",
+      "why_it_matters": "Loops without an obvious exit can hang the program."
+    },
+    {
+      "evidence": "proc: subprocess.Popen[str],",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 1231,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "while True:",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 1266,
+      "recommended_fix": "Add explicit limits, timeout, or break conditions.",
+      "severity": "medium",
+      "title": "Unbounded loop candidate",
+      "why_it_matters": "Loops without an obvious exit can hang the program."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 1328,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 1334,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "1922 lines",
+      "file": "src/mana_agent/llm/tool_worker_process.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "\"- Do NOT write placeholders, 'TBD', 'TODO', or generic filler. If you do \"",
+      "file": "src/mana_agent/llm/tools_manager.py",
+      "line": 2207,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "\"\"\"True if ``content`` is a placeholder the agent left behind (TODO/empty).\"\"\"",
+      "file": "src/mana_agent/llm/tools_manager.py",
+      "line": 2229,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "2660 lines",
+      "file": "src/mana_agent/llm/tools_manager.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "Similar content to src/mana_agent/parsers/__init__.py",
+      "file": "src/mana_agent/analysis/__init__.py",
+      "line": 1,
+      "recommended_fix": "Remove or document duplicate ownership.",
+      "severity": "low",
+      "title": "Duplicate file candidate",
+      "why_it_matters": "Can confuse future code search and maintenance."
+    },
+    {
+      "evidence": "Similar content to src/mana_agent/parsers/__init__.py",
+      "file": "src/mana_agent/config/__init__.py",
+      "line": 1,
+      "recommended_fix": "Remove or document duplicate ownership.",
+      "severity": "low",
+      "title": "Duplicate file candidate",
+      "why_it_matters": "Can confuse future code search and maintenance."
+    },
+    {
+      "evidence": "openai_<redacted> = Field(alias=\"OPENAI_API_KEY\")",
+      "file": "src/mana_agent/config/settings.py",
+      "line": 34,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "Similar content to src/mana_agent/parsers/__init__.py",
+      "file": "src/mana_agent/utils/__init__.py",
+      "line": 1,
+      "recommended_fix": "Remove or document duplicate ownership.",
+      "severity": "low",
+      "title": "Duplicate file candidate",
+      "why_it_matters": "Can confuse future code search and maintenance."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "src/mana_agent/utils/project_search.py",
+      "line": 17,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "completed = subprocess.run(",
+      "file": "src/mana_agent/utils/project_search.py",
+      "line": 109,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "Similar content to src/mana_agent/parsers/__init__.py",
+      "file": "src/mana_agent/vector_store/__init__.py",
+      "line": 1,
+      "recommended_fix": "Remove or document duplicate ownership.",
+      "severity": "low",
+      "title": "Duplicate file candidate",
+      "why_it_matters": "Can confuse future code search and maintenance."
+    },
+    {
+      "evidence": "<redacted> | None,",
+      "file": "src/mana_agent/vector_store/embeddings.py",
+      "line": 67,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/vector_store/embeddings.py",
+      "line": 79,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/vector_store/embeddings.py",
+      "line": 85,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "def __init__(self, <redacted> -> None:",
+      "file": "src/mana_agent/commands/analyze_formats.py",
+      "line": 80,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "self.<redacted>",
+      "file": "src/mana_agent/commands/analyze_formats.py",
+      "line": 81,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted> or \"\").strip().lower()",
+      "file": "src/mana_agent/commands/analyze_formats.py",
+      "line": 112,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "if <redacted> \"all\":",
+      "file": "src/mana_agent/commands/analyze_formats.py",
+      "line": 115,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "help=\"Run coding-agent tool execution in a persistent worker subprocess.\",",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 256,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 625,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 636,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 656,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 1019,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 1037,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "while True:",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 1359,
+      "recommended_fix": "Add explicit limits, timeout, or break conditions.",
+      "severity": "medium",
+      "title": "Unbounded loop candidate",
+      "why_it_matters": "Loops without an obvious exit can hang the program."
+    },
+    {
+      "evidence": "while True:",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 1559,
+      "recommended_fix": "Add explicit limits, timeout, or break conditions.",
+      "severity": "medium",
+      "title": "Unbounded loop candidate",
+      "why_it_matters": "Loops without an obvious exit can hang the program."
+    },
+    {
+      "evidence": "while True:",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 2343,
+      "recommended_fix": "Add explicit limits, timeout, or break conditions.",
+      "severity": "medium",
+      "title": "Unbounded loop candidate",
+      "why_it_matters": "Loops without an obvious exit can hang the program."
+    },
+    {
+      "evidence": "2699 lines",
+      "file": "src/mana_agent/commands/chat_cli.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "from asyncio.subprocess import PIPE",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 16,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted> \"openai_api_key\", \"\") or \"\").strip()",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 133,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 138,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 584,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 600,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "while True:",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 615,
+      "recommended_fix": "Add explicit limits, timeout, or break conditions.",
+      "severity": "medium",
+      "title": "Unbounded loop candidate",
+      "why_it_matters": "Loops without an obvious exit can hang the program."
+    },
+    {
+      "evidence": "# subprocess helper",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 800,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "Spawn a subprocess, capture stdout/stderr, return (returncode, stdout, stderr).",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 805,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "proc = await asyncio.create_subprocess_exec(",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 807,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 971,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 1007,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 1013,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 1020,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "1068 lines",
+      "file": "src/mana_agent/commands/cli_internal.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "import subprocess",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 11,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "proc = subprocess.run(",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1521,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "subprocess.Popen([\"open\", str(resolved)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1553,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "subprocess.Popen([opener, str(resolved)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1560,
+      "recommended_fix": "Pass and enforce a timeout around subprocess calls.",
+      "severity": "medium",
+      "title": "Subprocess without local timeout evidence",
+      "why_it_matters": "Long-running commands can stall execution."
+    },
+    {
+      "evidence": "<redacted> or \"\").strip().lower()",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1680,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\"\\s+\", \" \", token)",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1681,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>\"[^a-z0-9 _-]\", \"\", token)",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1682,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1699,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "if token and (<redacted> option_id or <redacted> label):",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1705,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "while True:",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1778,
+      "recommended_fix": "Add explicit limits, timeout, or break conditions.",
+      "severity": "medium",
+      "title": "Unbounded loop candidate",
+      "why_it_matters": "Loops without an obvious exit can hang the program."
+    },
+    {
+      "evidence": "2253 lines",
+      "file": "src/mana_agent/commands/ui_helpers.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "Similar content to src/mana_agent/parsers/__init__.py",
+      "file": "src/mana_agent/services/__init__.py",
+      "line": 1,
+      "recommended_fix": "Remove or document duplicate ownership.",
+      "severity": "low",
+      "title": "Duplicate file candidate",
+      "why_it_matters": "Can confuse future code search and maintenance."
+    },
+    {
+      "evidence": "1100 lines",
+      "file": "src/mana_agent/services/coding_memory_service.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "if any(tag in stripped for tag in (\"TODO\", \"FIXME\", \"HACK\")):",
+      "file": "src/mana_agent/services/project_analyze_service.py",
+      "line": 781,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "risks.append(self._risk(\"TODO/FIXME/HACK comment\", \"low\", record[\"path\"], idx, stripped[:180], \"Marks known incomplete or fragile work.\", \"Triage or convert into tracked tasks.\"))",
+      "file": "src/mana_agent/services/project_analyze_service.py",
+      "line": 782,
+      "recommended_fix": "Triage or convert into tracked tasks.",
+      "severity": "low",
+      "title": "TODO/FIXME/HACK comment",
+      "why_it_matters": "Marks known incomplete or fragile work."
+    },
+    {
+      "evidence": "if \"while true\" in low or re.search(r\"\\bwhile\\s+1\\s*:\", low):",
+      "file": "src/mana_agent/services/project_analyze_service.py",
+      "line": 783,
+      "recommended_fix": "Add explicit limits, timeout, or break conditions.",
+      "severity": "medium",
+      "title": "Unbounded loop candidate",
+      "why_it_matters": "Loops without an obvious exit can hang the program."
+    },
+    {
+      "evidence": "if \"except exception\" in low and (\"pass\" in low or \"continue\" in low):",
+      "file": "src/mana_agent/services/project_analyze_service.py",
+      "line": 787,
+      "recommended_fix": "Log or return structured warnings.",
+      "severity": "medium",
+      "title": "Broad exception swallowing",
+      "why_it_matters": "Failures can be hidden from report and callers."
+    },
+    {
+      "evidence": "if \"rm -rf\" in low or \"git reset --hard\" in low:",
+      "file": "src/mana_agent/services/project_analyze_service.py",
+      "line": 789,
+      "recommended_fix": "Require explicit confirmation and safer targeted operations.",
+      "severity": "high",
+      "title": "Unsafe shell command",
+      "why_it_matters": "Destructive commands can remove user work."
+    },
+    {
+      "evidence": "1515 lines",
+      "file": "src/mana_agent/services/project_analyze_service.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/services/project_llm_analyze_service.py",
+      "line": 58,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "743 lines",
+      "file": "src/mana_agent/services/report_service.py",
+      "line": 1,
+      "recommended_fix": "Split by responsibility once behavior is covered by tests.",
+      "severity": "medium",
+      "title": "Large module",
+      "why_it_matters": "Large modules are harder for humans and agents to reason about."
+    },
+    {
+      "evidence": "if kind_<redacted> \"struct\":",
+      "file": "src/mana_agent/services/parsers/native_parser.py",
+      "line": 52,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/services/parsers/native_parser.py",
+      "line": 90,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "<redacted>",
+      "file": "src/mana_agent/services/parsers/native_parser.py",
+      "line": 103,
+      "recommended_fix": "Move secret values to ignored environment storage and rotate exposed credentials.",
+      "severity": "high",
+      "title": "Secrets exposure risk",
+      "why_it_matters": "Secrets in tracked files can leak credentials."
+    },
+    {
+      "evidence": "Imported name 'annotations' is unused.",
+      "file": "tests/conftest.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "high",
+      "title": "unused imports",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "Module is missing a docstring.",
+      "file": "tests/conftest.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "Imported name 'annotations' is unused.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "high",
+      "title": "unused imports",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "Module is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_readme_project_layout_task_classifies_as_single_file_section' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 18,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_enough_evidence_gate_skips_unrelated_docs_reads' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 37,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_docs_only_verification_selects_task_profile' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 68,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_core_agent_change_selects_project_verification' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 76,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_fake_worker_implements_lifecycle_protocol' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 83,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_redis_fallback_warning_is_deduped' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 106,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'execute' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 53,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'start' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 85,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'stop' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 88,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_orchestrator.py",
+      "line": 91,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "Imported name 'annotations' is unused.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "high",
+      "title": "unused imports",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "Module is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_same_read_path_collapses_to_one_fingerprint' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 56,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_queue_rejects_duplicate_idempotent_jobs' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 67,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_board_not_complete_with_failed_edit_step' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 75,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_duplicate_mutation_work_items_same_target_collapse' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 90,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_dependencies_gate_readiness_and_block_on_failure' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 113,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_child_runs_after_parent_done' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 129,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_read_success_does_not_require_path_in_prose' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 144,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_read_failure_when_worker_errors' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 153,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_mutation_result_requires_changed_files' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 160,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_delete_result_reports_deleted_file_as_changed' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 170,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_runner_executes_each_read_once_not_twice' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 186,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_runner_retries_transient_failure_then_succeeds' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 205,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_batch_executor_classifies_success_and_preserves_request_context' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 219,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_batch_executor_maps_failed_result_to_work_error' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 285,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_build_tool_run_request_preserves_index_dirs_and_edit_policy' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 310,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_sniffer_emits_reads_from_discovery' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 333,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_end_to_end_search_then_sniffed_reads' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 348,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_sniffer_emits_edit_and_verify_after_discovery' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 369,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_sniffer_without_edit_signal_does_not_finalize' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 395,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_queue_manager_prefers_injected_tools_executor' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 462,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_queue_manager_forced_mutation_retry_uses_tools_executor' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 537,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_queue_manager_targets_default_skill_registry_without_framework_search_loops' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 598,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_queue_manager_blocks_edit_when_no_mutation_tool_attempted' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 684,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_bare_docs_filename_resolves_existing_docs_file' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 724,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_typo_target_resolution_clears_missing_required_files' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 741,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_edit_intent_forces_mutation_tool_attempt' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 812,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_docs_edit_without_approved_fallback_blocks_when_worker_writes_nothing' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 857,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_explicit_fallback_decision_can_mutate_existing_update_notes_section' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 914,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_source_architecture_update_reads_src_evidence_before_mutation' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 964,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_source_architecture_update_rejects_tests_changelog_only_evidence' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1040,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_approved_mutation_plan_compiles_to_registered_tool' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1059,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_work_item_tool_name_is_not_ignored' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1083,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_write_file_without_content_is_incomplete' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1121,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_architecture_update_does_not_depend_on_model_tool_selection' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1156,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_mutation_only_worker_prose_is_rejected' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1207,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_simple_docs_edit_does_not_read_all_docs' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1242,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_deterministic_preview_uses_project_level_edit_checklist' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1297,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_queue_manager_blocks_edit_when_mutation_has_no_changed_files' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1322,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_queue_manager_reports_failed_mutation_details' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1347,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_queue_manager_resolves_bare_existing_filename_before_forced_retry' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1379,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_queue_manager_uses_latest_useful_answer_only_for_edit_success' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1421,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_sniffer_uses_planner_target_file_for_edit_job' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1459,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_edit_with_evidence_uses_agentic_policy_without_duplicate_reads' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1480,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_sniffer_skips_edit_for_non_mutating_request' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1535,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_eventbus_broadcasts_transitions' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1547,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_non_empty_changed_files_never_claims_no_changes' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1603,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_failed_verify_project_is_surfaced_in_final_answer' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1629,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_passed_verify_reports_changed_files_and_checks_passed' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1691,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'execute' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 193,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'execute' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 210,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'execute' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 355,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_batch' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 225,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_batch' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 287,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 415,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 468,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_batch' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 475,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 541,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_batch' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 548,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 616,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 694,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 753,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 822,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 876,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 930,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 983,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1097,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1134,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1167,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1217,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1263,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1326,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1351,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1389,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1425,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1500,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1570,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1607,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1636,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1698,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'run_tools' is missing a docstring.",
+      "file": "tests/test_agent_work_queue.py",
+      "line": 1748,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "Imported name 'annotations' is unused.",
+      "file": "tests/test_apply_patch_json_only.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "high",
+      "title": "unused imports",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "Module is missing a docstring.",
+      "file": "tests/test_apply_patch_json_only.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_apply_patch_accepts_codex_patch_without_line_numbers' is missing a docstring.",
+      "file": "tests/test_apply_patch_json_only.py",
+      "line": 8,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_apply_patch_rejects_non_codex_patch_text' is missing a docstring.",
+      "file": "tests/test_apply_patch_json_only.py",
+      "line": 26,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_apply_patch_rejects_json_hunks_with_old_start' is missing a docstring.",
+      "file": "tests/test_apply_patch_json_only.py",
+      "line": 35,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_extract_patch_touched_files_accepts_codex_payload' is missing a docstring.",
+      "file": "tests/test_apply_patch_json_only.py",
+      "line": 61,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "Imported name 'annotations' is unused.",
+      "file": "tests/test_ask_agent.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "high",
+      "title": "unused imports",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "Module is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 1,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_enforces_max_steps' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 64,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_blocks_exact_duplicate_tool_call' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 108,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_deduplicates_similar_repo_searches' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 127,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_stops_on_no_progress' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 146,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_forces_final_answer_when_budget_low' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 166,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_synthesis_uses_llm_when_available' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 197,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_synthesis_falls_back_to_digest_when_llm_unavailable' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 211,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_repeated_errors_trigger_no_progress' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 224,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_does_not_merge_searches_with_different_glob' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 247,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_successful_result_is_not_treated_as_stagnation' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 275,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_blocks_dangerous_command' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 290,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_registers_call_graph_tool' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 300,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_records_timeout' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 307,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_run_command_rewrites_python_to_local_venv_python3' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 321,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_run_command_rewrites_python_to_python3_without_local_venv' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 347,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_uses_policy_line_window' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 368,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_line_window_is_safely_clamped' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 380,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_full_mode_returns_entire_small_file' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 392,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_full_mode_oversized_returns_structured_error' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 408,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_full_mode_hits_persistent_flow_cache_on_repeat' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 422,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_hits_run_evidence_memory_on_repeat' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 444,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_relative_and_absolute_share_run_memory_entry' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 468,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_line_mode_uses_full_cache_slice' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 487,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_run_evidence_full_cache_serves_later_line_range' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 522,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_cache_invalidates_when_file_changes' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 541,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_run_evidence_invalidates_when_file_stat_changes' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 573,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_read_file_without_flow_id_uses_only_ephemeral_cache' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 603,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_collects_trace_and_sources' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 624,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_extracts_text_from_list_content_blocks' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 641,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_run_multi_uses_all_indexes' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 659,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    },
+    {
+      "evidence": "FunctionDef 'test_ask_agent_run_multi_continues_when_presearch_has_no_hits' is missing a docstring.",
+      "file": "tests/test_ask_agent.py",
+      "line": 669,
+      "recommended_fix": "Review and resolve the reported static-analysis issue.",
+      "severity": "medium",
+      "title": "missing docstring",
+      "why_it_matters": "Detected by static analysis of this file."
+    }
+  ],
+  "static_analysis": {
+    "deep-nesting": 313,
+    "missing-docstring": 1618,
+    "unused-imports": 205,
+    "wildcard-import": 8
+  }
+}

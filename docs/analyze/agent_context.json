@@ -1,0 +1,902 @@
+{
+  "agent_workflow": "User requests are handled through the CLI/command layer (src/mana_agent/commands/*), which routes into the services layer (src/mana_agent/services/*) and then into the LLM/work-queue layer (src/mana_agent/llm/*). The work-queue/agent execution then invokes the tools layer (src/mana_agent/tools/*) for repository and file changes, with tests asserting safety properties around apply_patch and mutation-plan compilation (tests/test_agent_work_queue.py). A later coding-agent would patch the repository by following the tool contracts and ensuring test-gated behaviors continue to pass, then verify by running compilation and pytest.",
+  "architecture_summary": "High-level flow is split into layers that match the folder areas detected. The CLI/command layer (src/mana_agent/commands/*) defines the user-facing commands and routes them into the core services layer (src/mana_agent/services/*). The services layer coordinates the “what to do” logic and likely prepares context, including memory and repository-related information, before handing off to the LLM layer (src/mana_agent/llm/*).\n\nThe LLM layer appears to implement a “Live Agent Work Queue” via src/mana_agent/llm/agent_work_queue.py and related adapters/session/agent modules (agent_session.py, agent_work_queue_adapters.py, ask_agent.py, coding_agent.py, etc.). This layer connects to the tools layer (src/mana_agent/tools/*), which includes explicit repository and file edit primitives such as apply_patch.py, edit_file.py, write_file.py, and repository.py. The tools layer is what enables controlled mutations; tests reference specific “apply_patch” behaviors and mutation-plan/tool compilation (see tests/test_agent_work_queue.py).\n\nFinally, the src/mana_agent/agent/* area provides orchestration/flow primitives (orchestrator.py, flow.py, evaluation_gate.py, task_classifier.py, selection.py, etc.), representing the shared “agent flow” machinery used by orchestration paths. Configuration is loaded via src/mana_agent/config/settings.py, while prompting is assembled via src/mana_agent/prompting/* and supported by utils and vector_store for retrieval/search behaviors. This layering supports safer testing because unit tests can validate queue/workflow logic and tool gating independently of the CLI.",
+  "detected_stack": [
+    "LangChain",
+    "Typer",
+    "json",
+    "markdown",
+    "pip",
+    "python",
+    "toml",
+    "yaml"
+  ],
+  "entrypoints": [
+    {
+      "command": "mana_agent.commands.cli:app",
+      "description": "Python project script",
+      "file": "pyproject.toml",
+      "line": 6,
+      "name": "mana-agent",
+      "type": "cli"
+    }
+  ],
+  "generated_artifacts": [
+    ".mana/analyze/report.md",
+    ".mana/analyze/report.json",
+    ".mana/analyze/agent_context.json",
+    ".mana/analyze/evidence.json",
+    ".mana/analyze/llm_summary.md",
+    ".mana/analyze/inventory.json",
+    ".mana/analyze/symbols.json",
+    ".mana/analyze/dependencies.json",
+    ".mana/analyze/architecture.md",
+    ".mana/analyze/risks.json",
+    ".mana/analyze/recommendations.md"
+  ],
+  "ignore_rules": [
+    ".git",
+    ".mana",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "env",
+    "node_modules",
+    "venv"
+  ],
+  "important_files": [
+    {
+      "evidence": "Entrypoints evidence: name \"mana-agent\", type \"cli\", file \"pyproject.toml\" line 6, command \"mana_agent.commands.cli:app\".",
+      "file": "pyproject.toml",
+      "why": "Defines the CLI entrypoint that launches the Typer app."
+    },
+    {
+      "evidence": "Architecture areas lists src/mana_agent/commands/cli.py under src/mana_agent/commands.",
+      "file": "src/mana_agent/commands/cli.py",
+      "why": "CLI surface likely containing the Typer app referenced by pyproject.toml."
+    },
+    {
+      "evidence": "Architecture areas lists src/mana_agent/services/ask_service.py as mana_agent.services.ask_service.",
+      "file": "src/mana_agent/services/ask_service.py",
+      "why": "Core logic for handling “ask” behaviors; central to chat/ask flows."
+    },
+    {
+      "evidence": "Architecture areas lists src/mana_agent/llm/agent_work_queue.py under src/mana_agent/llm with responsibility \"Live Agent Work Queue.\"; risks evidence references src/mana_agent/llm/agent_work_queue.py line 793.",
+      "file": "src/mana_agent/llm/agent_work_queue.py",
+      "why": "Implements the Live Agent Work Queue which drives agent execution scheduling/adapters."
+    },
+    {
+      "evidence": "Architecture areas lists src/mana_agent/llm/ask_agent.py; risks evidence references unsafe shell commands in src/mana_agent/llm/ask_agent.py lines 149, 151.",
+      "file": "src/mana_agent/llm/ask_agent.py",
+      "why": "Implements the AskAgent behavior used by ask/chat workflows."
+    },
+    {
+      "evidence": "Risks evidence: src/mana_agent/tools/repository.py line 239 includes \"rm -rf\" and line 240 includes \"git reset --hard\".",
+      "file": "src/mana_agent/tools/repository.py",
+      "why": "Repository mutation operations; contains destructive command strings that must be guarded."
+    },
+    {
+      "evidence": "Architecture areas lists src/mana_agent/tools/apply_patch.py; tests evidence includes test_apply_patch_run_never_claims_no_edit_tool in tests/test_agent_work_queue.py line 1564.",
+      "file": "src/mana_agent/tools/apply_patch.py",
+      "why": "Patch application tool; critical to the tool-gating/mutation safety logic validated by tests."
+    },
+    {
+      "evidence": "Important symbols evidence includes classes _FakeWorkerClient (line 84) and _Local/_Redis (lines 107/111) in tests/test_agent_orchestrator.py.",
+      "file": "tests/test_agent_orchestrator.py",
+      "why": "Tests orchestrator behavior and uses fake clients to validate flow correctness."
+    },
+    {
+      "evidence": "Important symbols evidence includes _AGENTIC_EDIT_TOOLS (line 31) and tool-related tests such as test_approved_mutation_plan_compiles_to_registered_tool (line 1059) and test_apply_patch_run_never_claims_no_edit_tool (line 1564).",
+      "file": "tests/test_agent_work_queue.py",
+      "why": "Tests work-queue/tool selection and applies strong assertions about mutation-plan/tool compilation and apply_patch behavior."
+    },
+    {
+      "evidence": "Secret-bearing config evidence lists \".env.example\"; dependencies evidence includes python-dotenv and pydantic-settings.",
+      "file": ".env.example",
+      "why": "Indicates configuration keys expected from environment; must not contain real secrets."
+    }
+  ],
+  "important_symbols": [
+    {
+      "docstring": null,
+      "file": "tests/test_agent_orchestrator.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 84,
+      "name": "_FakeWorkerClient",
+      "signature": "class _FakeWorkerClient:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_orchestrator.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 107,
+      "name": "_Local",
+      "signature": "class _Local:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_orchestrator.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 111,
+      "name": "_Redis",
+      "signature": "class _Redis:"
+    },
+    {
+      "docstring": "",
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "tool",
+      "line": 31,
+      "name": "_AGENTIC_EDIT_TOOLS",
+      "signature": "_AGENTIC_EDIT_TOOLS = ["
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "tool",
+      "line": 1059,
+      "name": "test_approved_mutation_plan_compiles_to_registered_tool",
+      "signature": "def test_approved_mutation_plan_compiles_to_registered_tool(tmp_path: Path):"
+    },
+    {
+      "docstring": "A worker that wrongly says 'no edit tool was available' must not win when\nthe trace proves apply_patch executed and changed a file.",
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "tool",
+      "line": 1564,
+      "name": "test_apply_patch_run_never_claims_no_edit_tool",
+      "signature": "def test_apply_patch_run_never_claims_no_edit_tool(tmp_path: Path):"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 224,
+      "name": "_FakeExecutor",
+      "signature": "class _FakeExecutor:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 286,
+      "name": "_FakeExecutor",
+      "signature": "class _FakeExecutor:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 411,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 467,
+      "name": "_NoDirectWorker",
+      "signature": "class _NoDirectWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 471,
+      "name": "_FakeExecutor",
+      "signature": "class _FakeExecutor:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 540,
+      "name": "_NoDirectWorker",
+      "signature": "class _NoDirectWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 544,
+      "name": "_FakeExecutor",
+      "signature": "class _FakeExecutor:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 612,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 690,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 749,
+      "name": "_TypoResolutionWorker",
+      "signature": "class _TypoResolutionWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 818,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 872,
+      "name": "_ReadOnlyWorker",
+      "signature": "class _ReadOnlyWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 926,
+      "name": "_ProseOnlyWorker",
+      "signature": "class _ProseOnlyWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 979,
+      "name": "_ArchitectureWorker",
+      "signature": "class _ArchitectureWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1096,
+      "name": "_ShouldNotRunWorker",
+      "signature": "class _ShouldNotRunWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1133,
+      "name": "_ShouldNotRunWorker",
+      "signature": "class _ShouldNotRunWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1163,
+      "name": "_StructuredCommandWorker",
+      "signature": "class _StructuredCommandWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1213,
+      "name": "_ProseWorker",
+      "signature": "class _ProseWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1259,
+      "name": "_ReadOnlyWorker",
+      "signature": "class _ReadOnlyWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1325,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1350,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1388,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1424,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1499,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1569,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1606,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1635,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1697,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_agent_work_queue.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 1747,
+      "name": "_FakeWorker",
+      "signature": "class _FakeWorker:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 14,
+      "name": "_FakeSearchService",
+      "signature": "class _FakeSearchService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 31,
+      "name": "_FakeAIMessage",
+      "signature": "class _FakeAIMessage:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 37,
+      "name": "_FakeBoundModel",
+      "signature": "class _FakeBoundModel:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 48,
+      "name": "_FakeLLM",
+      "signature": "class _FakeLLM:"
+    },
+    {
+      "docstring": "Records every invocation so tests can assert dedup behavior.",
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 88,
+      "name": "_CountingTool",
+      "signature": "class _CountingTool:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "tool",
+      "line": 102,
+      "name": "_register_tool",
+      "signature": "def _register_tool(agent: AskAgent, name: str, func) -> None:  # noqa: ANN001"
+    },
+    {
+      "docstring": "Fake LLM that drives the tool loop and also answers the synthesis pass.",
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 181,
+      "name": "_SynthesizingLLM",
+      "signature": "class _SynthesizingLLM:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "tool",
+      "line": 300,
+      "name": "test_ask_agent_registers_call_graph_tool",
+      "signature": "def test_ask_agent_registers_call_graph_tool(tmp_path: Path) -> None:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "tool",
+      "line": 711,
+      "name": "test_ask_agent_invokes_externally_registered_tool",
+      "signature": "def test_ask_agent_invokes_externally_registered_tool(tmp_path: Path) -> None:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_agent.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 670,
+      "name": "_NoHitSearchService",
+      "signature": "class _NoHitSearchService:"
+    },
+    {
+      "docstring": "LLM stub that replays a scripted list of AI messages, then stops.",
+      "file": "tests/test_ask_agent_recovery.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 10,
+      "name": "_FakeBoundLLM",
+      "signature": "class _FakeBoundLLM:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_agent_recovery.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 25,
+      "name": "_CapturingLogger",
+      "signature": "class _CapturingLogger:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_service.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 7,
+      "name": "FakeStore",
+      "signature": "class FakeStore:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_service.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 17,
+      "name": "FakeQnA",
+      "signature": "class FakeQnA:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_service.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 24,
+      "name": "FakeSearchService",
+      "signature": "class FakeSearchService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_service.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 52,
+      "name": "FakeAskAgent",
+      "signature": "class FakeAskAgent:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_service.py",
+      "importance": "high",
+      "kind": "function",
+      "line": 18,
+      "name": "run",
+      "signature": "def run(self, question: str, context: str) -> str:"
+    },
+    {
+      "docstring": "Store that finds nothing (simulates missing/empty FAISS index).",
+      "file": "tests/test_ask_service_fallback.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 14,
+      "name": "_EmptyStore",
+      "signature": "class _EmptyStore:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_service_fallback.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 21,
+      "name": "_HitStore",
+      "signature": "class _HitStore:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_service_fallback.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 29,
+      "name": "_FakeQnA",
+      "signature": "class _FakeQnA:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_ask_service_fallback.py",
+      "importance": "high",
+      "kind": "function",
+      "line": 33,
+      "name": "run",
+      "signature": "def run(self, question: str, context: str) -> str:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_chat_background_index.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 8,
+      "name": "_FakeIndexService",
+      "signature": "class _FakeIndexService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_chat_planning_mode.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 13,
+      "name": "DummySettings",
+      "signature": "class DummySettings:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_chat_planning_mode.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 29,
+      "name": "RecordingAskService",
+      "signature": "class RecordingAskService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_chat_planning_mode.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 47,
+      "name": "FakeWorkerClient",
+      "signature": "class FakeWorkerClient:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_chat_planning_mode.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 61,
+      "name": "RecordingCodingAgent",
+      "signature": "class RecordingCodingAgent:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_flow.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 10,
+      "name": "DummySettings",
+      "signature": "class DummySettings:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_flow.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 26,
+      "name": "_AskServiceWithAgent",
+      "signature": "class _AskServiceWithAgent:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_flow.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 28,
+      "name": "_AskAgent",
+      "signature": "class _AskAgent:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 14,
+      "name": "FakeIndexService",
+      "signature": "class FakeIndexService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 28,
+      "name": "FakeSearchService",
+      "signature": "class FakeSearchService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 122,
+      "name": "FakeAskService",
+      "signature": "class FakeAskService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 173,
+      "name": "DummySettings",
+      "signature": "class DummySettings:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 260,
+      "name": "FakeStructureService",
+      "signature": "class FakeStructureService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 284,
+      "name": "FakeDependencyReport",
+      "signature": "class FakeDependencyReport:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 317,
+      "name": "FakeDependencyService",
+      "signature": "class FakeDependencyService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 323,
+      "name": "FakeDescribeService",
+      "signature": "class FakeDescribeService:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 77,
+      "name": "_FakeWorkerClient",
+      "signature": "class _FakeWorkerClient:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 86,
+      "name": "_FakeResult",
+      "signature": "class _FakeResult:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 94,
+      "name": "_FakeOrchestrator",
+      "signature": "class _FakeOrchestrator:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 381,
+      "name": "_NoCallAskService",
+      "signature": "class _NoCallAskService(FakeAskService):"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 410,
+      "name": "_AskService",
+      "signature": "class _AskService(FakeAskService):"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 431,
+      "name": "_AskService",
+      "signature": "class _AskService(FakeAskService):"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 435,
+      "name": "_FakeWorkerClient",
+      "signature": "class _FakeWorkerClient:"
+    },
+    {
+      "docstring": null,
+      "file": "tests/test_cli_smoke.py",
+      "importance": "high",
+      "kind": "class",
+      "line": 444,
+      "name": "_FakeCodingAgent",
+      "signature": "class _FakeCodingAgent:"
+    }
+  ],
+  "last_analyzed_at": "2026-07-04T21:42:27+00:00",
+  "llm_available": true,
+  "onboarding_summary": "Start by using the CLI entrypoint defined in pyproject.toml (mana_agent.commands.cli:app) to discover available command modes, then trace the call chain into src/mana_agent/services (e.g., ask_service.py) and further into src/mana_agent/llm (agent_work_queue.py / ask_agent.py). For changes that affect safety or file/repo mutations, focus on src/mana_agent/tools/* and run the specific work-queue tests (tests/test_agent_work_queue.py) because they encode important gating/behavior constraints. For reliability/safety, also review the existing tests that mock workers/executors and the risk-prone command strings in src/mana_agent/tools/repository.py and src/mana_agent/llm/ask_agent.py.",
+  "project_summary": "mana-agent is a Python CLI application that orchestrates LangChain-based “agent” workflows for asking, analyzing, and coding-related tasks. It includes a command layer (including chat-related commands) that routes into service and LLM/queue layers, plus a tools layer for repository/file mutations. The repository contains extensive tests around agent orchestration, work queues, and parsing/command behaviors.",
+  "recommended_tasks": [
+    {
+      "acceptance_criteria": [
+        "No rm -rf or git reset --hard commands execute without explicit, user-confirmed intent and strict path validation (evidence-based scope tied to the detected command strings).",
+        "Existing tests continue to pass, and new tests (if added) assert that unsafe commands are rejected/blocked."
+      ],
+      "files": [
+        "src/mana_agent/tools/repository.py",
+        "src/mana_agent/llm/ask_agent.py"
+      ],
+      "priority": "High",
+      "title": "Block/guard destructive repository operations with explicit confirmation and safe targeting",
+      "verification_command": "pytest -q"
+    },
+    {
+      "acceptance_criteria": [
+        "Replace secret-bearing values with environment-variable references and ensure .env.example contains only non-secret placeholders.",
+        "Add/enable a repository-level check that fails if secret patterns (e.g., OPENAI_/openai_) appear in tracked files."
+      ],
+      "files": [
+        "README.md",
+        "CHANGELOG.md",
+        "docs/03-quick-start.md",
+        "tests/test_chat_planning_mode.py",
+        "tests/test_cli_smoke.py",
+        "tests/test_ask_agent_recovery.py",
+        "tests/test_tool_worker_process.py"
+      ],
+      "priority": "High",
+      "title": "Remove any committed secrets from tracked files and ensure tests/docs never write real credentials",
+      "verification_command": "python -m compileall . && pytest -q"
+    },
+    {
+      "acceptance_criteria": [
+        "Document whether pip installs from requirements.txt or from pyproject.toml and how version pinning is enforced.",
+        "CI installs deterministically and compilation succeeds."
+      ],
+      "files": [
+        "pyproject.toml",
+        "requirements.txt"
+      ],
+      "priority": "Medium",
+      "title": "Stabilize test suite and CI by aligning dependency installation policy",
+      "verification_command": "python -m compileall src"
+    }
+  ],
+  "risks": [
+    {
+      "evidence": "src/mana_agent/tools/repository.py lines 239-240 include command strings \"rm -rf\" and \"git reset --hard\"; risks evidence also mentions unsafe shell command in src/mana_agent/llm/ask_agent.py lines 149 and 151 for \"rm -rf\" and \"git reset --hard\".",
+      "recommended_fix": "Ensure destructive commands are blocked or require explicit, user-visible confirmation and are restricted to narrowly-scoped, validated paths/operations. Add/extend tests verifying that only allowed operations execute given specific worker/tool outcomes.",
+      "severity": "High",
+      "title": "Unsafe shell commands present in repository/tooling",
+      "why_it_matters": "Destructive commands can remove or reset user work if unguarded, parameterized incorrectly, or executed unexpectedly during agent runs."
+    },
+    {
+      "evidence": "tests/test_ask_agent.py line 295 uses run_command.invoke({\"cmd\": \"rm -rf /tmp/foo\"}).",
+      "recommended_fix": "Tighten command execution validation: reject dangerous commands at parsing time and add explicit assertions that the dangerous command never executes.",
+      "severity": "High",
+      "title": "Unsafe rm -rf invocation demonstrated in tests",
+      "why_it_matters": "Even if used as a negative/guard test, it indicates the system accepts raw command input paths where rm -rf could be attempted, so safety gating must be reliable."
+    },
+    {
+      "evidence": "Multiple files contain redacted but present patterns like \"OPENAI_<redacted>\" or openai_<redacted>\" in CHANGELOG.md (line 154), README.md (line 116), and many tests (e.g., tests/test_chat_planning_mode.py line 14, tests/test_cli_smoke.py line 174) plus docs/03-quick-start.md (line 36). Also CHANGELOG.md line 17 references restored rm -rf blocking behavior in AskAgent.run_command.",
+      "recommended_fix": "Purge any committed secrets from history (not just working tree), ensure runtime uses environment variables loaded from .env.example, and rotate any affected credentials. Add a CI guard that fails on patterns matching known secret prefixes.",
+      "severity": "High",
+      "title": "Secrets exposure risk in tracked docs/tests/code",
+      "why_it_matters": "If real credentials exist in tracked files, they can be leaked via repository history and logs; this is especially critical for LLM providers."
+    }
+  ],
+  "verification_commands": [
+    "python -m compileall .",
+    "pytest"
+  ]
+}

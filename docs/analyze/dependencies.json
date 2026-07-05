@@ -1,0 +1,47 @@
+{
+  "dev_dependencies": [
+    "pytest"
+  ],
+  "framework_packages": [
+    "LangChain",
+    "Typer"
+  ],
+  "llm_agent_tooling_packages": [
+    "faiss-cpu",
+    "langchain",
+    "langchain-community",
+    "langchain-openai",
+    "openai"
+  ],
+  "lock_files": [],
+  "manifests": [
+    "pyproject.toml",
+    "requirements.txt"
+  ],
+  "package_managers": [
+    "pip"
+  ],
+  "runtime_dependencies": [
+    "faiss-cpu",
+    "langchain",
+    "langchain-community",
+    "langchain-openai",
+    "openai",
+    "prompt_toolkit",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "redis",
+    "rich",
+    "rq",
+    "safety",
+    "tenacity",
+    "typer"
+  ],
+  "testing_packages": [
+    "pytest"
+  ],
+  "warnings": [
+    "Python dependency manifest detected without poetry.lock; pip may still use requirements pinning."
+  ]
+}

@@ -56,6 +56,7 @@ from mana_agent.llm.run_logger import LlmRunLogger  # noqa: F401 - consumed by c
 from mana_agent.utils.project_search import project_search  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.skills import SkillManager
 from mana_agent.ui.banner import render_mode_header
+from mana_agent.multi_agent import MainAgent
 from .output import build_output_sink, get_shared_console
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,12 @@ def _split_csv(value: str | None) -> list[str]:
 def _resolve_repo(repo: str | None, fallback: str | Path = ".") -> Path:
     root = Path(repo or fallback).expanduser().resolve()
     return root.parent if root.is_file() else root
+
+
+def _record_multi_agent_request(root: str | Path, request: str, *, entrypoint: str) -> str:
+    """Record a mandatory MainAgent route before a legacy entrypoint continues."""
+    result = MainAgent(root).run_user_request(request, entrypoint=entrypoint)
+    return result.task_id
 
 
 def _analyze_report_markdown(result, *, root: Path, focus: str | None = None) -> str:
@@ -375,6 +382,7 @@ def analyze_command(
         root = Path.cwd().resolve()
         inferred_focus = path_or_task
     effective_focus = focus or inferred_focus
+    _record_multi_agent_request(root, effective_focus or path_or_task or "analyze", entrypoint="analyze")
     out_dir = Path(artifact_dir).expanduser().resolve() if artifact_dir else (root / ".mana" / "analyze")
     render_mode_header("Analyze", "Scanning repository and generating report", console)
     result = ProjectAnalyzeService().run(
@@ -432,6 +440,7 @@ def plan_command(
             task = ""
         if not task.strip():
             raise typer.BadParameter("Plan mode requires a task.")
+    _record_multi_agent_request(root, task, entrypoint="plan")
     manager = SkillManager(root)
     console.print("[cyan]Inspecting repository...[/cyan]")
     console.print("[cyan]Loading relevant skills...[/cyan]")

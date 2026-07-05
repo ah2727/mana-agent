@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 
 from .cli_internal import *
-from .cli_internal import _build_project_llm_analyzer
+from .cli_internal import _build_project_llm_analyzer, _record_multi_agent_request
 from .chat_analyze_command import (
     analyze_command_args,
     handle_analyze_command,
@@ -540,7 +540,10 @@ def chat(
         root = root.parent
     render_mode_header("Chat", "Ask about your repository or request edits", console)
 
+    recorded_initial_prompt = False
     if prompt:
+        _record_multi_agent_request(root, prompt, entrypoint="chat")
+        recorded_initial_prompt = True
         direct_edit_result = handle_small_direct_edit(root, prompt)
         if direct_edit_result.handled:
             console.print(f"[bold cyan]mana ❯[/bold cyan] {prompt}")
@@ -1609,6 +1612,11 @@ def chat(
             if question.strip().startswith("/plan"):
                 plan_args = question.strip()[len("/plan"):].strip()
                 question = f"plan {plan_args}" if plan_args else "plan the next repository change"
+
+            if recorded_initial_prompt and question == prompt:
+                recorded_initial_prompt = False
+            else:
+                _record_multi_agent_request(root, question, entrypoint="chat")
 
             # -----------------------------
             # /analyze slash command (read-only; writes only .mana/ artifacts).

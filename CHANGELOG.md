@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-05 (hierarchical multi-agent core)
+
+- Added the mandatory `mana_agent.multi_agent` hierarchy with readable IDs, TaskBoard persistence, MessageBus, DecisionRoom, AgentRegistry, Router, QueueManager, ToolsManager permissions, specialized agents, prompt files, and trace/memory helpers.
+- Routed chat, `/analyze`, `/plan`, `mana-agent analyze`, and `mana-agent plan` through `MainAgent.run_user_request(...)` before existing command behavior continues; no multi-agent disable flag or environment bypass was added.
+- Documented the architecture in `docs/multi-agent-routing.md` and added focused tests for IDs, taskboard transitions, messages, decisions, registry hierarchy, routing, queue/tool enforcement, CodingAgent tool restrictions, VerifierAgent records, CLI command continuity, and disable-switch absence.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent/multi_agent src/mana_agent/commands/cli_internal.py src/mana_agent/commands/chat_cli.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py tests/test_agent_work_queue.py tests/test_chat_planning_mode.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src` passed; `PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 546 tests and 16 warnings; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/multi_agent tests/test_multi_agent_core.py --select F,E9` passed.
+
 ## 2026-07-04 (agent decision and evidence gate)
 
 - Added a central agent orchestrator with task classification, evidence queue items, an evaluation gate state machine, post-tool critic tracing, and verification-profile selection.
