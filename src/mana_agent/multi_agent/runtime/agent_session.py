@@ -32,7 +32,10 @@ class AgentSession(BaseModel):
     index_dirs: list[str] | None = None
     tool_policy: dict[str, Any] = Field(default_factory=dict)
     execution_backend: str = "local"
-
+    memory_snapshot: str | None = None
+    task_memory: list[str] | None = None
+    repo_facts: list[str] | None = None
+    
     @classmethod
     def from_queue_run(
         cls,
@@ -44,8 +47,14 @@ class AgentSession(BaseModel):
         index_dirs: Sequence[str | Path] | None = None,
         tool_policy: dict[str, Any] | None = None,
         execution_backend: str = "local",
+        memory_snapshot: str | None = None,
+        task_memory: Sequence[str] | None = None,
+        repo_facts: Sequence[str] | None = None,
     ) -> "AgentSession":
         return cls(
+            memory_snapshot=memory_snapshot,
+            task_memory=[str(item) for item in (task_memory or [])] or None,
+            repo_facts=[str(item) for item in (repo_facts or [])] or None,
             flow_id=flow_id or None,
             run_id=str(run_id),
             repo_root=str(Path(repo_root).resolve()),

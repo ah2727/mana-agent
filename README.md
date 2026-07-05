@@ -43,9 +43,16 @@ Large codebases are hard to inspect, summarize, and safely modify. `mana-agent` 
 
 ## Core Capabilities
 
-### Interactive coding workflows
+### Interactive coding + deterministic mutation execution
 
-`mana-agent chat` opens an interactive session for repository Q&A and coding-agent tasks. The chat workflow supports planning mode, auto-execution, persisted coding memory, optional tool-worker execution paths, and diagram rendering.
+`mana-agent` supports two complementary ways to work with a repository:
+
+1. **Interactive REPL workflows** via `mana-agent chat` (Q&A + guided coding-agent loops).
+2. **Deterministic, approved mutations** via `mana-agent run --plan-id <id>` (execute an approved plan as a gated mutation/run against a target repository).
+
+The chat workflow supports planning mode, persisted coding memory, optional tool-worker execution paths, and diagram rendering.
+
+The approved mutation workflow separates planning/approval from executing changes, using a typed `MutationCommand` contract.
 
 ---
 
@@ -61,7 +68,6 @@ flowchart TD
     J --> K[Run verification]
     K --> L[Summarize changes]
 ```
-
 
 For a standalone diagram, see [docs/07-diagram.md](./docs/07-diagram.md).
 
@@ -136,39 +142,44 @@ DEFAULT_TOP_K=8
 
 ## Quick Start
 
-
 Start an interactive coding-agent session:
 
 ```bash
 mana-agent chat --root-dir /path/to/project
 ```
 
+You can also run a previously approved mutation plan deterministically:
+
+```bash
+mana-agent run --root-dir /path/to/project --plan-id mp_a672168ef9c0
+```
+
 ---
 
 ## Running an approved mutation plan
 
-If you have an approved workflow/mutation plan id (for example: `mp_887861bdc617`), you can execute it deterministically against a target repository.
+If you have an approved workflow/mutation plan id (for example: `mp_a672168ef9c0`), you can execute it deterministically against a target repository.
 
 ```bash
-mana-agent run --root-dir /path/to/project --plan-id mp_887861bdc617
+mana-agent run --root-dir /path/to/project --plan-id mp_a672168ef9c0
 ```
 
 This runs the approved plan as an isolated, reproducible mutation/run (separating planning/approval from applying changes).
 
 ### MutationCommand (executable)
 
-To execute an approved mutation plan id, use the following `MutationCommand(...)` form (this is the executable command used by the `mana-agent run` workflow).
+To execute an approved mutation plan id, `mana-agent run` compiles the plan into an internal, executable mutation command.
 
-> Note: `MutationCommand(...)` is the internal executable representation for the plan. In normal usage you typically run the plan via `mana-agent run`.
+> Note: You normally run the plan via `mana-agent run --plan-id ...`. The `MutationCommand(mp_a672168ef9c0)` form below is shown to make the executable contract explicit.
 
 ```text
-MutationCommand(mp_9f9e6a7d49ba)
+MutationCommand(mp_a672168ef9c0)
 ```
 
 Example:
 
 ```bash
-mana-agent run --root-dir /path/to/project --plan-id mp_887861bdc617
+mana-agent run --root-dir /path/to/project --plan-id mp_a672168ef9c0
 ```
 
 Useful global flags:
@@ -239,7 +250,7 @@ Enter choice:
 
 Direct forms skip the menu:
 
-```text
+```bash
 /analyze all
 /analyze json markdown html
 /analyze --format json,markdown,html
@@ -296,17 +307,17 @@ Available repository tools include semantic search, text search, file listing, s
 ```text
 src/mana_agent/
   analysis/       Static analysis and chunking
-  commands/       CLI commands, chat input, and output rendering
-  config/         Settings and environment handling
-  dependencies/   Dependency graph support
-  describe/       Repository description service
-  multi_agent/runtime/            Chains, agents, prompts, tool managers, and workers
-  parsers/        Python and multi-language parser entry points
-  renderers/      HTML report rendering
-  services/       Index, ask, analyze, report, structure, and security services
-  tools/          Agent tools for repository access and mutation
-  utils/          Discovery, IO, logging, guards, and tool-run helpers
-  vector_store/   FAISS vector-store wrapper
+  commands/      CLI commands, chat input, and output rendering
+  config/        Settings and environment handling
+  dependencies/  Dependency graph support
+  describe/      Repository description service
+  multi_agent/runtime/            Work queue + decision lifecycle, tool managers/workers, and execution traces
+  parsers/       Python and multi-language parser entry points
+  renderers/     HTML report rendering
+  services/      Index, ask, analyze, report, structure, and security services
+  tools/         Agent tools for repository access and mutation
+  utils/         Discovery, IO, logging, guards, and tool-run helpers
+  vector_store/  FAISS vector-store wrapper
 
 tests/            Pytest suite
 docs/             User and developer documentation

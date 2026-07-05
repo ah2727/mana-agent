@@ -19,7 +19,10 @@ from mana_agent.multi_agent.queue.queue_manager import QueueManager
 from mana_agent.multi_agent.registry.agent_registry import AgentRegistry
 from mana_agent.multi_agent.routing.router import Router
 from mana_agent.multi_agent.taskboard.taskboard import TaskBoard
-
+from mana_agent.multi_agent.memory.memory_bundle import AgentMemoryBundle
+from mana_agent.multi_agent.memory.repo_context import RepoContext
+from mana_agent.multi_agent.memory.service import MultiAgentMemoryService
+from mana_agent.multi_agent.memory.task_memory import TaskMemory
 
 @dataclass
 class MainAgentResult:
@@ -34,37 +37,100 @@ class MainAgentResult:
 class MainAgent:
     def __init__(self, root: str | Path = ".") -> None:
         self.root = Path(root).resolve()
-        self.taskboard = TaskBoard(self.root)
+        self.memory_service = MultiAgentMemoryService(root=self.root)
+        self.memory = AgentMemoryBundle(
+            repo_context=RepoContext(root=str(self.root)),
+            task_memory=TaskMemory(),
+            service=self.memory_service,
+        )
+        self.taskboard = TaskBoard(self.root, memory_service=self.memory_service)
         self.message_bus = MessageBus(self.root)
         self.registry = AgentRegistry()
         self.router = Router()
-        self.queue_manager = QueueManager(self.root, taskboard=self.taskboard)
+        self.queue_manager = QueueManager(self.root, taskboard=self.taskboard, memory_service=self.memory_service)
         self.decision_room = DecisionRoom(self.root, self.taskboard, self.message_bus)
         self.agents = self._build_agents()
 
     def run_user_request(self, user_request: str, *, entrypoint: str = "chat") -> MainAgentResult:
         request = str(user_request or "").strip()
+        self.memory.remember_task(f"User request received via {entrypoint}: {request[:500]}")
+        self.memory.remember_repo_fact(f"Repository root: {self.root}")
         title = request[:80] or entrypoint
         main_node = self.registry.find_by_role(AgentRole.MAIN)
+        self.memory.remember_agent(
+            main_node.agent_id,
+            f"Main agent received request via {entrypoint}: {request[:500]}",
+        )
+        self.memory_service.record_decision(
+            agent_id=main_node.agent_id,
+            task_id="pending",
+            decision_type="main_request_received",
+            input_summary=request,
+            memory_used=[],
+            decision="create_or_reuse_task",
+            reason="main agent checks memory before task creation",
+        )
         task = self.taskboard.create_task(
             title=title,
             user_request=request,
             normalized_goal=f"{entrypoint}: {request}",
             owner_agent_id=main_node.agent_id,
         )
+        duplicate_of = str(task.memory_status.get("duplicate_of") or "")
+        if duplicate_of:
+            self.memory_service.update_task(
+                task.task_id,
+                status=TaskStatus.SKIPPED.value,
+                result_summary=f"duplicate_of:{duplicate_of}",
+            )
+            answer = f"Skipped duplicate task; reused existing task {duplicate_of}."
+            self.memory.remember_task(answer)
+            return MainAgentResult(task.task_id, "skipped", "duplicate", answer, [], [])
+        self.memory_service.record_decision(
+            agent_id=main_node.agent_id,
+            task_id=task.task_id,
+            decision_type="route_request",
+            input_summary=request,
+            memory_used=[str(task.memory_status.get("memory_bundle_id") or "")],
+            decision="query_router",
+            reason="route after task duplicate and bundle checks",
+        )
         route = self.router.route(task_id=task.task_id, user_request=f"{entrypoint} {request}")
+        self.memory.remember_task(
+            "Route selected: "
+            f"{route.route_name}; size={route.task_size}; "
+            f"agents={', '.join(route.required_agents)}; "
+            f"subagents={', '.join(route.required_subagents)}"
+        )
         self.taskboard.add_evidence(task.task_id, f"HeadDecisionAgent classified task size as {route.task_size}.")
         for role_name in route.required_agents:
             node = self._node_by_role_name(role_name)
             if node is not None:
                 self.taskboard.assign(task.task_id, node.agent_id)
+                self.memory.remember_agent(
+                    node.agent_id,
+                    f"Assigned to task {task.task_id} for route {route.route_name}",
+                )
                 if node.model_level:
                     self.taskboard.add_evidence(task.task_id, f"{node.agent_id} uses {node.model_level}.")
         subagent_ids = self._create_required_subagents(task.task_id, route.required_subagents)
         head = self._agent(AgentRole.HEAD_DECISION, HeadDecisionAgent)
         head.decide(task.task_id, route, self.decision_room)
+        self.memory.remember_agent(
+            head.agent_id,
+            f"Decided route {route.route_name} for task {task.task_id}: {route.reason_summary}",
+        )
         planner = self._agent(AgentRole.PLANNER, PlannerAgent)
         plan = planner.plan(task.task_id, request, route.route_name)
+        self.memory.remember_agent(
+            planner.agent_id,
+            f"Created plan for task {task.task_id}; verification commands: "
+            f"{', '.join(getattr(plan, 'verification_commands', []) or [])}",
+        )
+        self.memory.remember_task(
+            f"Plan created for task {task.task_id}; verification commands: "
+            f"{', '.join(getattr(plan, 'verification_commands', []) or [])}"
+        )
         self.taskboard.update_status(task.task_id, TaskStatus.IN_PROGRESS, reason="Specialist agents are handling the routed workflow.")
         if route.route_name == "analyze":
             self._agent(AgentRole.RESEARCH, ResearchAgent).collect_evidence(task.task_id, "Analyze flow delegated to existing analyzer after multi-agent route creation.")
@@ -74,12 +140,21 @@ class MainAgent:
             self._agent(AgentRole.REVIEWER, ReviewerAgent).review(task.task_id, f"Risk level is {route.risk_level.value}; route requires {len(route.required_agents)} agents.")
         if route.requires_verification:
             self.taskboard.update_status(task.task_id, TaskStatus.VERIFYING, reason="VerifierAgent records verification plan.")
-            verification = self._agent(AgentRole.VERIFIER, VerifierAgent).verify_no_mutation(task.task_id, plan.verification_commands)
+            verifier = self._agent(AgentRole.VERIFIER, VerifierAgent)
+            verification = verifier.verify_no_mutation(task.task_id, plan.verification_commands)
+            self.memory.remember_agent(
+                verifier.agent_id,
+                f"Recorded verification for task {task.task_id}: passed={verification.passed}; {verification.summary}",
+            )
+            self.memory.remember_task(
+                f"Verification recorded: passed={verification.passed}; summary={verification.summary}"
+            )
             if not verification.passed:
                 self._agent(AgentRole.REVIEWER, ReviewerAgent).reject_weak_evidence(task.task_id, verification.summary)
         self._deactivate_subagents(task.task_id, subagent_ids)
         self.taskboard.update_status(task.task_id, TaskStatus.DONE, reason="Multi-agent route completed; legacy entrypoint continues concrete command behavior.")
         answer = self._agent(AgentRole.SUMMARIZER, SummarizerAgent).summarize(task.task_id)
+        self.memory.remember_task(f"Final summary produced for task {task.task_id}: {answer[:500]}")
         return MainAgentResult(task.task_id, route.route_name, route.task_size, answer, route.required_agents, route.required_subagents)
 
     def _create_required_subagents(self, task_id: str, subagent_names: list[str]) -> list[str]:
@@ -127,6 +202,7 @@ class MainAgent:
                 taskboard=self.taskboard,
                 message_bus=self.message_bus,
                 registry=self.registry,
+                memory=self.memory,
                 **kwargs,
             )
         return agents
