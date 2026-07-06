@@ -2466,6 +2466,8 @@ def _verification_summary_from_trace(trace: Sequence[dict[str, Any]]) -> dict[st
     passed_any = False
     failing: list[dict[str, str]] = []
     commands: list[str] = []
+    planned_commands: list[str] = []
+    skipped_commands: list[dict[str, str]] = []
     for row in trace:
         if not isinstance(row, dict):
             continue
@@ -2473,6 +2475,19 @@ def _verification_summary_from_trace(trace: Sequence[dict[str, Any]]) -> dict[st
         if tool not in _VERIFICATION_TOOLS:
             continue
         ran = True
+        for value in row.get("verification_commands") or row.get("planned_commands") or []:
+            text = str(value or "").strip()
+            if text:
+                planned_commands.append(text)
+        for value in row.get("skipped_commands") or []:
+            if isinstance(value, dict):
+                command = str(value.get("command") or value.get("name") or "").strip()
+                reason = str(value.get("reason") or "skipped").strip()
+            else:
+                command = str(value or "").strip()
+                reason = "skipped"
+            if command:
+                skipped_commands.append({"command": command, "reason": reason})
         command = str(row.get("command") or "").strip()
         if command:
             commands.append(command)
@@ -2516,6 +2531,9 @@ def _verification_summary_from_trace(trace: Sequence[dict[str, Any]]) -> dict[st
         "passed": bool(ran and passed_any and not failed),
         "failing": failing,
         "commands": commands,
+        "commands_run": commands,
+        "planned_commands": list(dict.fromkeys(planned_commands)),
+        "skipped_commands": skipped_commands,
     }
 
 

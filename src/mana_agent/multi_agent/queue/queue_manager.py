@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from mana_agent.multi_agent.core.ids import new_queue_job_id
-from mana_agent.multi_agent.core.types import QueueJob, QueueJobStatus, QueueJobType, utc_now
+from mana_agent.multi_agent.core.types import ExecutionContext, QueueJob, QueueJobStatus, QueueJobType, enrich_event_identity, utc_now
 from mana_agent.multi_agent.routing.hierarchy import HierarchyPolicy
 from mana_agent.services.memory_service import MultiAgentMemoryService, normalize_file_path, stable_hash
 from mana_agent.multi_agent.queue.locks import LockTable
@@ -39,7 +39,7 @@ class QueueManager:
             requested_by = str(kwargs.get("requested_by_agent_id") or "")
             self.hierarchy_policy.assert_can_create_queue_job(requested_by, task_id=task_id)
             if not kwargs.get("approved_by_agent_id"):
-                kwargs["approved_by_agent_id"] = kwargs.get("requested_by_agent_id")
+                kwargs["approved_by_agent_id"] = self._approver_for_task(task_id) or kwargs.get("requested_by_agent_id")
             if not kwargs.get("purpose"):
                 kwargs["purpose"] = f"Run {kwargs.get('job_type', 'tool')} for task {kwargs.get('task_id')}"
             kwargs.setdefault("assigned_worker_agent_id", self.default_worker_agent_id)
@@ -50,6 +50,8 @@ class QueueManager:
             )
             kwargs.setdefault("root_task_id", self._root_task_id(task_id))
             kwargs.setdefault("parent_task_id", self._parent_task_id(task_id))
+            kwargs.setdefault("parent_agent_id", kwargs.get("requested_by_agent_id"))
+            kwargs.setdefault("agent_role", "tool_worker")
             kwargs.setdefault("args_summary", self._args_summary(kwargs.get("payload") or {}))
             kwargs.setdefault("budget_reserved", self._default_budget_for(kwargs.get("job_type")))
             kwargs.setdefault("budget_reserved_ms", 30_000)
@@ -68,6 +70,12 @@ class QueueManager:
             self.hierarchy_policy.assert_can_create_queue_job(job.requested_by_agent_id, task_id=job.task_id)
             if not job.assigned_worker_agent_id:
                 job.assigned_worker_agent_id = self.default_worker_agent_id
+            if not job.approved_by_agent_id:
+                job.approved_by_agent_id = self._approver_for_task(job.task_id) or job.requested_by_agent_id
+            if not job.parent_agent_id:
+                job.parent_agent_id = job.requested_by_agent_id
+            if not job.agent_role:
+                job.agent_role = "tool_worker"
             self.hierarchy_policy.assert_can_assign_worker(
                 job.requested_by_agent_id,
                 job.assigned_worker_agent_id,
@@ -113,6 +121,11 @@ class QueueManager:
         job.status = QueueJobStatus.CLAIMED
         job.updated_at = utc_now()
         job.assigned_worker_agent_id = job.assigned_worker_agent_id or agent_id
+        job.agent_id = agent_id
+        if agent_id.startswith("subagent_"):
+            job.subagent_id = agent_id
+        elif not job.subagent_id and str(job.assigned_worker_agent_id or "").startswith("subagent_"):
+            job.subagent_id = job.assigned_worker_agent_id
         job.payload = {**job.payload, "claimed_by_agent_id": agent_id}
         return job
 
@@ -263,6 +276,13 @@ class QueueManager:
         except KeyError:
             return None
 
+    def _approver_for_task(self, task_id: str) -> str | None:
+        try:
+            task = self.taskboard.get_task(task_id)
+        except KeyError:
+            return None
+        return task.supervisor_agent_id or task.owner_agent_id or task.approved_by_agent_id
+
     def _args_summary(self, payload: dict[str, Any]) -> str:
         text = str(payload or {})
         return text if len(text) <= 240 else text[:237] + "..."
@@ -288,24 +308,35 @@ class QueueManager:
         )
 
     def _record_tool_event(self, job: QueueJob, *, event_type: str, worker_agent_id: str) -> None:
+        context = ExecutionContext(
+            agent_id=worker_agent_id,
+            subagent_id=job.subagent_id or (worker_agent_id if worker_agent_id.startswith("subagent_") else None),
+            agent_role=job.agent_role or "tool_worker",
+            parent_agent_id=job.parent_agent_id or job.requested_by_agent_id,
+            requested_by_agent_id=job.requested_by_agent_id,
+            queue_job_id=job.job_id,
+            task_id=job.task_id,
+            root_task_id=job.root_task_id or job.task_id,
+            delegation_path=list(
+                dict.fromkeys(
+                    item
+                    for item in [job.approved_by_agent_id, job.requested_by_agent_id, worker_agent_id]
+                    if item
+                )
+            ),
+        )
         event = self.hierarchy_policy.approve_tool_event(
-            {
+            enrich_event_identity(
+                {
                 "type": event_type,
-                "agent_id": worker_agent_id,
-                "agent_role": "tool_worker",
-                "parent_agent_id": job.requested_by_agent_id,
-                "subagent_id": worker_agent_id,
-                "task_id": job.task_id,
-                "root_task_id": job.root_task_id or job.task_id,
-                "queue_job_id": job.job_id,
-                "requested_by_agent_id": job.requested_by_agent_id,
                 "approved_by_agent_id": job.approved_by_agent_id,
                 "assigned_worker_agent_id": job.assigned_worker_agent_id,
                 "tool_name": job.job_type.value,
-                "delegation_path": [job.approved_by_agent_id, job.requested_by_agent_id, worker_agent_id],
                 "budget_used": job.token_usage,
                 "token_usage": job.token_usage,
-            }
+                },
+                context,
+            )
         )
         self.taskboard.record_tool_event(job.task_id, event)
 

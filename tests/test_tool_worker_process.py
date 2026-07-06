@@ -876,6 +876,41 @@ def test_run_tool_request_expands_file_system_alias() -> None:
     assert set(allowed) == {"ls", "list_files", "read_file", "repo_batch_read", "repo_search", "repo_batch_search"}
 
 
+def test_run_tool_request_trace_inherits_execution_context() -> None:
+    class _FakeAskAgent:
+        def run(self, **kwargs):
+            return SimpleNamespace(
+                answer="ok",
+                sources=[],
+                mode="agent-tools",
+                trace=[SimpleNamespace(to_dict=lambda: {"tool_name": "read_file", "status": "ok", "path": "README.md"})],
+                warnings=[],
+            )
+
+    response = twp._run_tool_request(
+        ask_agent=_FakeAskAgent(),  # type: ignore[arg-type]
+        req=twp.ToolRunRequest(
+            question="q",
+            index_dir="/tmp/.mana/index",
+            execution_context={
+                "agent_id": "subagent_tool_worker_0001",
+                "agent_role": "tool_worker",
+                "parent_agent_id": "agent_coding_0001",
+                "requested_by_agent_id": "agent_coding_0001",
+                "queue_job_id": "job_1",
+                "task_id": "task_1",
+                "root_task_id": "task_1",
+            },
+        ),
+        tools_only_strict_default=False,
+        callbacks=None,
+    )
+
+    assert response.trace[0]["subagent_id"] == "subagent_tool_worker_0001"
+    assert response.trace[0]["agent_role"] == "tool_worker"
+    assert response.trace[0]["queue_job_id"] == "job_1"
+
+
 def test_run_tool_request_rejects_unknown_tool_policy() -> None:
     class _FakeAskAgent:
         def run(self, **_kwargs):  # pragma: no cover - should not be reached

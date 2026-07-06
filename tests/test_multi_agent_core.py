@@ -27,11 +27,13 @@ from mana_agent.multi_agent.core.ids import (
 from mana_agent.multi_agent.core.types import (
     AgentState,
     AgentRole,
+    ExecutionContext,
     MessageType,
     QueueJobStatus,
     QueueJobType,
     TaskStatus,
 )
+from mana_agent.multi_agent.observability.trace import TraceWriter
 from mana_agent.multi_agent.runtime.model_levels import MODEL_LEVEL_2_CODING, model_level_for_role
 from mana_agent.multi_agent.queue.queue_manager import QueueManager
 from mana_agent.multi_agent.registry.agent_registry import AgentRegistry
@@ -454,6 +456,77 @@ def test_queue_manager_runs_batch_read_through_tools_manager(tmp_path):
     task_after = board.get_task(task.task_id)
     assert task_after.actual_tool_events[0]["agent_role"] == "tool_worker"
     assert task_after.actual_tool_events[0]["queue_job_id"] == job.job_id
+
+
+def test_queue_job_execution_records_subagent_identity(tmp_path):
+    (tmp_path / "README.md").write_text("# Test\n", encoding="utf-8")
+    board = TaskBoard(tmp_path)
+    task = board.create_task(title="Batch read", user_request="read docs", owner_agent_id="agent_main_0002")
+    worker_id = "subagent_tool_worker_0001"
+    board.assign_subagent(task.task_id, worker_id)
+    queue = QueueManager(tmp_path, taskboard=board, default_worker_agent_id=worker_id)
+    job = queue.enqueue(
+        task_id=task.task_id,
+        requested_by_agent_id="agent_coding_0001",
+        job_type=QueueJobType.REPO_BATCH_READ,
+        payload={"files": ["README.md"]},
+    )
+
+    queue.run_until_idle()
+
+    task_after = board.get_task(task.task_id)
+    assert worker_id in task_after.assigned_subagent_ids
+    assert task_after.actual_tool_events
+    assert all(event["subagent_id"] == worker_id for event in task_after.actual_tool_events)
+    assert all(event["queue_job_id"] == job.job_id for event in task_after.actual_tool_events)
+    assert all(event["root_task_id"] == task.task_id for event in task_after.actual_tool_events)
+
+
+def test_queue_job_default_approver_uses_current_task_owner(tmp_path):
+    board = TaskBoard(tmp_path)
+    first = board.create_task(title="First", user_request="first", owner_agent_id="agent_main_0001")
+    second = board.create_task(title="Second", user_request="second", owner_agent_id="agent_main_0002")
+    queue = QueueManager(tmp_path, taskboard=board)
+
+    first_job = queue.enqueue(
+        task_id=first.task_id,
+        requested_by_agent_id="agent_coding_0001",
+        job_type=QueueJobType.GIT_STATUS,
+        payload={},
+    )
+    second_job = queue.enqueue(
+        task_id=second.task_id,
+        requested_by_agent_id="agent_coding_0001",
+        job_type=QueueJobType.GIT_STATUS,
+        payload={"scope": "second"},
+    )
+
+    assert first_job.approved_by_agent_id == "agent_main_0001"
+    assert second_job.approved_by_agent_id == "agent_main_0002"
+    assert second_job.root_task_id == second.task_id
+
+
+def test_trace_writer_persists_execution_identity(tmp_path):
+    writer = TraceWriter(tmp_path)
+    event = writer.emit(
+        "tool.finished",
+        context=ExecutionContext(
+            agent_id="subagent_tool_worker_0001",
+            agent_role="tool_worker",
+            parent_agent_id="agent_coding_0001",
+            requested_by_agent_id="agent_coding_0001",
+            queue_job_id="queue_job_1",
+            task_id="task_1",
+            root_task_id="task_1",
+            delegation_path=["agent_coding_0001", "subagent_tool_worker_0001"],
+        ),
+        payload={"tool_name": "read_file"},
+    )
+
+    assert event.subagent_id == "subagent_tool_worker_0001"
+    saved = (tmp_path / ".mana" / "traces" / f"{event.trace_id}.json").read_text(encoding="utf-8")
+    assert '"subagent_id": "subagent_tool_worker_0001"' in saved
+    assert '"queue_job_id": "queue_job_1"' in saved
 
 
 def test_queue_manager_requires_budget_before_every_job(tmp_path):

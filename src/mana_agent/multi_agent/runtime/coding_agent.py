@@ -1134,15 +1134,42 @@ class CodingAgent:
 
         tool = str(data.get("tool", "") or "tool")
         event_id = str(data.get("event_id", "") or "").strip() or None
+        agent_id = str(data.get("agent_id", "") or "").strip()
+        subagent_id = str(data.get("subagent_id", "") or "").strip()
+        agent_role = str(data.get("agent_role", "") or "").strip()
         if name in {"tool_start", "worker_request_start"}:
-            emit_tool_event("start", tool, args=str(data.get("args", "") or "").strip(), event_id=event_id)
+            emit_tool_event(
+                "start",
+                tool,
+                args=str(data.get("args", "") or "").strip(),
+                event_id=event_id,
+                agent_id=agent_id,
+                subagent_id=subagent_id,
+                agent_role=agent_role,
+            )
             return
         if name in {"tool_end", "worker_request_end"}:
             dt = data.get("duration_seconds")
-            emit_tool_event("end", tool, duration=dt if isinstance(dt, (int, float)) else None, event_id=event_id)
+            emit_tool_event(
+                "end",
+                tool,
+                duration=dt if isinstance(dt, (int, float)) else None,
+                event_id=event_id,
+                agent_id=agent_id,
+                subagent_id=subagent_id,
+                agent_role=agent_role,
+            )
             return
         if name in {"tool_error", "worker_request_error"}:
-            emit_tool_event("error", tool, error=str(data.get("error", "") or "").strip(), event_id=event_id)
+            emit_tool_event(
+                "error",
+                tool,
+                error=str(data.get("error", "") or "").strip(),
+                event_id=event_id,
+                agent_id=agent_id,
+                subagent_id=subagent_id,
+                agent_role=agent_role,
+            )
             return
 
     def _plan_checklist_with_source(

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 from mana_agent.services.coding_memory_service import CodingMemoryService
 from mana_agent.services.search_service import SearchService
 from mana_agent.multi_agent.runtime.ask_agent import AskAgent
+from mana_agent.multi_agent.core.types import ExecutionContext, enrich_event_identity
 from mana_agent.multi_agent.runtime.mutation_plan import validate_mutation_plan
 from mana_agent.vector_store.embeddings import build_embeddings
 from mana_agent.tools import (
@@ -826,6 +827,7 @@ class ToolRunRequest(BaseModel):
     tool_name: str = ""
     tool_args: dict[str, Any] = Field(default_factory=dict)
     retry_attempt: int = 0
+    execution_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolRunResponse(BaseModel):
@@ -1058,11 +1060,15 @@ class ToolWorkerClient:
             if on_event is None:
                 return
             try:
+                event_data = enrich_event_identity(
+                    {"tool": "tool_worker", "event_id": request_event_id, **(data or {})},
+                    request.execution_context,
+                )
                 on_event(
                     WorkerEvent(
                         name=name,
                         message=name.replace("_", " "),
-                        data={"tool": "tool_worker", "event_id": request_event_id, **(data or {})},
+                        data=event_data,
                     )
                 )
             except Exception:
@@ -1461,6 +1467,7 @@ def _run_tool_request(
     raw_trace = getattr(result, "trace", [])
     logger.debug("Trace length: %d", len(raw_trace))
 
+    execution_context = ExecutionContext.from_mapping(req.execution_context)
     trace_rows_raw = []
     for i, item in enumerate(raw_trace):
         if hasattr(item, "to_dict"):
@@ -1469,7 +1476,7 @@ def _run_tool_request(
             row = dict(item)
         else:
             row = {"raw_item": str(item), "type": type(item).__name__}
-        trace_rows_raw.append(row)
+        trace_rows_raw.append(enrich_event_identity(row, execution_context))
         logger.debug("TRACE RAW [%d]: %s", i, json.dumps(row, default=str)[:500])
 
     ok_tools = 0
@@ -1570,9 +1577,10 @@ def run_tool_request_once(
 class _WorkerToolEventCallback(BaseCallbackHandler):
     """Emit per-tool events from worker process back to parent client."""
 
-    def __init__(self, *, request_id: str, emit_reply: Callable[[WorkerReply], None]) -> None:
+    def __init__(self, *, request_id: str, emit_reply: Callable[[WorkerReply], None], execution_context: ExecutionContext | None = None) -> None:
         self._request_id = request_id
         self._emit_reply = emit_reply
+        self._execution_context = execution_context or ExecutionContext()
         self._tool: str | None = None
         self._t0: float = 0.0
         self._event_id: str | None = None
@@ -1585,7 +1593,11 @@ class _WorkerToolEventCallback(BaseCallbackHandler):
             WorkerReply(
                 type="event",
                 request_id=self._request_id,
-                payload=WorkerEvent(name=name, message=message, data=data or {}).model_dump(),
+                payload=WorkerEvent(
+                    name=name,
+                    message=message,
+                    data=enrich_event_identity(data or {}, self._execution_context),
+                ).model_dump(),
             )
         )
 
@@ -1835,7 +1847,11 @@ class _ToolWorkerServer:
                 else:
                     logger.info("Registered tool execution for turn: tool=%s turn=%s", tool_name, env.request_id)
             
-            tool_event_cb = _WorkerToolEventCallback(request_id=env.request_id, emit_reply=self._emit)
+            tool_event_cb = _WorkerToolEventCallback(
+                request_id=env.request_id,
+                emit_reply=self._emit,
+                execution_context=ExecutionContext.from_mapping(req.execution_context),
+            )
             response = _run_tool_request(
                 ask_agent=self._ask_agent,
                 req=req,

@@ -1957,3 +1957,23 @@ def test_edit_request_cannot_finalize_after_only_read_search(tmp_path: Path):
     assert decision["verification_passed"] is False
     # Must not claim a successful edit when nothing actually changed.
     assert "applied changes" not in result.answer.lower()
+
+
+def test_verification_summary_records_skipped_commands_explicitly() -> None:
+    from mana_agent.multi_agent.runtime.tools_manager import _verification_summary_from_trace
+
+    summary = _verification_summary_from_trace(
+        [
+            {
+                "tool_name": "verify_project",
+                "status": "ok",
+                "command": "python -m compileall src",
+                "verification_commands": ["python -m compileall src", "pytest"],
+                "skipped_commands": [{"command": "pytest", "reason": "mutation blocked"}],
+            }
+        ]
+    )
+
+    assert summary["commands_run"] == ["python -m compileall src"]
+    assert summary["planned_commands"] == ["python -m compileall src", "pytest"]
+    assert summary["skipped_commands"] == [{"command": "pytest", "reason": "mutation blocked"}]

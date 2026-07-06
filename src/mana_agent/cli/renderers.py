@@ -55,6 +55,15 @@ def _status_icon(status: str, *, plain: bool = False) -> str:
     }.get(normalized, "•")
 
 
+def _event_actor_label(event: ChatEvent) -> str:
+    if event.subagent_id:
+        return str(event.subagent_id)
+    if str(event.agent_id or "").startswith("subagent_"):
+        return str(event.agent_id)
+    role = str(event.metadata.get("agent_role") or event.metadata.get("role") or "").strip()
+    return role or "-"
+
+
 class EventRenderer:
     def __init__(self, *, mode: str = "rich", trace_mode: str = "compact") -> None:
         self.mode = self.normalize_mode(mode)
@@ -157,6 +166,7 @@ class EventRenderer:
         table = Table(show_header=True, header_style="bold", box=box.SIMPLE, expand=True)
         table.add_column("", no_wrap=True)
         table.add_column("Tool", no_wrap=True)
+        table.add_column("Subagent", no_wrap=True)
         table.add_column("Purpose", overflow="fold")
         table.add_column("Duration", justify="right", no_wrap=True)
         table.add_column("Result", overflow="fold")
@@ -164,6 +174,7 @@ class EventRenderer:
             table.add_row(
                 _status_icon(event.status, plain=self.mode == "plain"),
                 str(event.metadata.get("tool_name") or event.title or "tool"),
+                _event_actor_label(event),
                 str(event.metadata.get("args_summary") or event.message or "-"),
                 f"{event.duration_ms / 1000:.1f}s" if event.duration_ms else "",
                 str(event.metadata.get("result_summary") or event.message or "-"),

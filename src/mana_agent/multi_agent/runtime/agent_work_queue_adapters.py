@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 from mana_agent.multi_agent.runtime.agent_session import AgentSession
 from mana_agent.multi_agent.runtime.agent_work_queue import TaskBoard, WorkItem, WorkResult
+from mana_agent.multi_agent.core.types import ExecutionContext, enrich_event_identity
 from mana_agent.multi_agent.runtime.mutation_plan import (
     is_architecture_docs_update,
     mutation_trace_has_plan,
@@ -48,6 +49,32 @@ MUTATION_ONLY_TOOLS = [
     "create_file",
     "delete_file",
 ]
+
+
+def _execution_context_for_item(item: WorkItem, *, run_id: str | None, flow_id: str | None) -> ExecutionContext:
+    raw = item.tool_args.get("execution_context") if isinstance(item.tool_args, dict) else None
+    if isinstance(raw, dict):
+        return ExecutionContext.from_mapping(raw)
+    worker_id = "subagent_tool_worker_0001"
+    return ExecutionContext(
+        agent_id=worker_id,
+        subagent_id=worker_id,
+        agent_role="tool_worker",
+        parent_agent_id="agent_coding_0001",
+        requested_by_agent_id="agent_coding_0001",
+        queue_job_id=item.id,
+        task_id=flow_id or run_id,
+        root_task_id=flow_id or run_id,
+        delegation_path=["agent_coding_0001", worker_id],
+    ).normalized()
+
+
+def _with_identity(result: WorkResult, context: ExecutionContext) -> WorkResult:
+    result.trace = [
+        enrich_event_identity(row, context) if isinstance(row, dict) else row
+        for row in result.trace
+    ]
+    return result
 
 _PATH_RE = re.compile(r"[\w./-]*?[\w-]+\.(?:py|md|txt|toml|yaml|yml|json|cfg|ini)\b")
 _LOCAL_IMPORT_RE = re.compile(r"^\s*(?:from|import)\s+([\w.]+)", re.MULTILINE)
@@ -213,6 +240,7 @@ def make_worker_executor(
     repo_root = Path(repo_root).resolve()
 
     def _execute(item: WorkItem) -> WorkResult:
+        context = _execution_context_for_item(item, run_id=run_id, flow_id=flow_id)
         if item.kind == "edit" and (item.tool_name or "").strip().lower() in MUTATION_ONLY_TOOLS:
             tool_args = dict(item.tool_args or {})
             plan_id = str(tool_args.get("mutation_plan_id") or "").strip()
@@ -239,7 +267,7 @@ def make_worker_executor(
                 t0 = time.perf_counter()
                 result = execute_registered_mutation_command(repo_root=repo_root, command=command)
                 result.duration_ms = round((time.perf_counter() - t0) * 1000.0, 3)
-                return result
+                return _with_identity(result, context)
         request = build_tool_run_request(
             item,
             repo_root=repo_root,
@@ -250,6 +278,7 @@ def make_worker_executor(
             max_steps=default_max_steps,
             timeout_seconds=default_timeout,
             tool_policy=tool_policy,
+            execution_context=context,
         )
         t0 = time.perf_counter()
         try:
@@ -273,11 +302,14 @@ def make_worker_executor(
                         ok=False,
                         summary="mutation did not execute with approved plan",
                         error="mutation_tool_missing_plan_id",
-                        trace=list(response.trace),
+                        trace=[
+                            enrich_event_identity(row, context) if isinstance(row, dict) else row
+                            for row in response.trace
+                        ],
                     )
         result = classify_result(item, response, repo_root=repo_root)
         result.duration_ms = round((time.perf_counter() - t0) * 1000.0, 3)
-        return result
+        return _with_identity(result, context)
 
     return _execute
 
@@ -322,6 +354,7 @@ def build_tool_run_request(
     max_steps: int = 6,
     timeout_seconds: int = 60,
     tool_policy: dict[str, Any] | None = None,
+    execution_context: ExecutionContext | dict[str, Any] | None = None,
 ) -> ToolRunRequest:
     question = item.question or (f"run tool {item.tool_name}" if item.tool_name else item.title)
     tool_args = dict(item.tool_args or {})
@@ -340,6 +373,11 @@ def build_tool_run_request(
         tools_only_strict_override=False if item.kind == "summarize" and not (item.tool_name or "").strip() else None,
         tool_name=item.tool_name or "",
         tool_args=tool_args,
+        execution_context=(
+            execution_context.as_dict()
+            if isinstance(execution_context, ExecutionContext)
+            else ExecutionContext.from_mapping(execution_context).as_dict()
+        ),
     )
 
 
@@ -356,6 +394,7 @@ def make_batch_executor(
     repo_root = Path(session.repo_root).resolve()
 
     def _execute(item: WorkItem) -> WorkResult:
+        context = _execution_context_for_item(item, run_id=session.run_id, flow_id=session.flow_id)
         request = build_tool_run_request(
             item,
             repo_root=repo_root,
@@ -367,6 +406,7 @@ def make_batch_executor(
             max_steps=default_max_steps,
             timeout_seconds=default_timeout,
             tool_policy=session.tool_policy,
+            execution_context=context,
         )
         results = executor.run_batch(
             run_id=session.run_id,
@@ -414,11 +454,14 @@ def make_batch_executor(
                         ok=False,
                         summary="mutation did not execute with approved plan",
                         error="mutation_tool_missing_plan_id",
-                        trace=list(response.trace),
-                    )
+                trace=[
+                    enrich_event_identity(row, context) if isinstance(row, dict) else row
+                    for row in response.trace
+                ],
+            )
         work_result = classify_result(item, response, repo_root=repo_root)
         work_result.duration_ms = float(result.duration_ms or 0.0)
-        return work_result
+        return _with_identity(work_result, context)
 
     return _execute
 

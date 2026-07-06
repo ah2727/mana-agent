@@ -137,6 +137,9 @@ class ChatLogEntry:
     duration: float | None = None
     run_id: str = ""
     tool_call_id: str = ""
+    agent_id: str = ""
+    subagent_id: str = ""
+    agent_role: str = ""
     timestamp: float = field(default_factory=time.time)
     error: str = ""
 
@@ -189,12 +192,18 @@ class ChatLog:
         tool_args: str = "",
         run_id: str = "",
         tool_call_id: str = "",
+        agent_id: str = "",
+        subagent_id: str = "",
+        agent_role: str = "",
     ) -> ChatLogEntry:
         key = self._tool_key(tool_name, tool_args, run_id, tool_call_id)
         existing = self._tool_entries.get(key)
         if existing is not None:
             existing.status = "running"
             existing.tool_args = _compact_display_text(tool_args)
+            existing.agent_id = agent_id or existing.agent_id
+            existing.subagent_id = subagent_id or existing.subagent_id
+            existing.agent_role = agent_role or existing.agent_role
             existing.timestamp = time.time()
             return existing
         entry = ChatLogEntry(
@@ -204,6 +213,9 @@ class ChatLog:
             tool_args=_compact_display_text(tool_args),
             run_id=str(run_id or "").strip(),
             tool_call_id=str(tool_call_id or "").strip(),
+            agent_id=str(agent_id or "").strip(),
+            subagent_id=str(subagent_id or "").strip(),
+            agent_role=str(agent_role or "").strip(),
         )
         self._tool_entries[key] = entry
         self.entries.append(entry)
@@ -217,12 +229,18 @@ class ChatLog:
         run_id: str = "",
         tool_call_id: str = "",
         tool_args: str = "",
+        agent_id: str = "",
+        subagent_id: str = "",
+        agent_role: str = "",
     ) -> ChatLogEntry:
         entry = self._resolve_tool(tool_name, tool_args, run_id, tool_call_id)
         entry.status = "success"
         entry.duration = duration
         if tool_args and not entry.tool_args:
             entry.tool_args = _compact_display_text(tool_args)
+        entry.agent_id = agent_id or entry.agent_id
+        entry.subagent_id = subagent_id or entry.subagent_id
+        entry.agent_role = agent_role or entry.agent_role
         return entry
 
     def fail_tool(
@@ -234,6 +252,9 @@ class ChatLog:
         run_id: str = "",
         tool_call_id: str = "",
         tool_args: str = "",
+        agent_id: str = "",
+        subagent_id: str = "",
+        agent_role: str = "",
     ) -> ChatLogEntry:
         entry = self._resolve_tool(tool_name, tool_args, run_id, tool_call_id)
         entry.status = "failure"
@@ -241,6 +262,9 @@ class ChatLog:
         entry.error = _compact_display_text(error, 120)
         if tool_args and not entry.tool_args:
             entry.tool_args = _compact_display_text(tool_args)
+        entry.agent_id = agent_id or entry.agent_id
+        entry.subagent_id = subagent_id or entry.subagent_id
+        entry.agent_role = agent_role or entry.agent_role
         return entry
 
     def add_assistant(self, content: str) -> ChatLogEntry:
@@ -279,6 +303,17 @@ class ChatLog:
                 if entry.role == "tool" and entry.tool_name == str(tool_name or "tool").strip() and entry.status == "running":
                     return entry
         return self.start_tool(tool_name, tool_args=tool_args, run_id=run_id, tool_call_id=tool_call_id)
+
+
+def _tool_actor_label(entry: ChatLogEntry) -> str:
+    subagent_id = str(entry.subagent_id or "").strip()
+    agent_id = str(entry.agent_id or "").strip()
+    role = str(entry.agent_role or "").strip()
+    if subagent_id:
+        return _compact_display_text(subagent_id, 36)
+    if agent_id.startswith("subagent_"):
+        return _compact_display_text(agent_id, 36)
+    return _compact_display_text(role, 24) or "-"
 
 
 class ChatLogRenderer:
@@ -325,6 +360,7 @@ class ChatLogRenderer:
         table = Table.grid(padding=(0, 1))
         table.add_column(no_wrap=True)
         table.add_column(style="cyan", no_wrap=True)
+        table.add_column(style="green", no_wrap=True)
         table.add_column(overflow="fold", style="dim")
         table.add_column(justify="right", no_wrap=True, style="dim")
         for entry in tools:
@@ -337,7 +373,7 @@ class ChatLogRenderer:
             else:
                 status = Text("⠙", style="cyan")
                 detail = entry.tool_args
-            table.add_row(status, entry.tool_name or "tool", detail, self._duration_text(entry.duration))
+            table.add_row(status, entry.tool_name or "tool", _tool_actor_label(entry), detail, self._duration_text(entry.duration))
         return Panel(table, title="tools", title_align="left", border_style="cyan", box=box.ROUNDED, padding=(0, 1))
 
 
@@ -372,14 +408,17 @@ class LiveToolActivity:
         duration: float | None = None,
         error: str = "",
         event_id: str | None = None,
+        agent_id: str = "",
+        subagent_id: str = "",
+        agent_role: str = "",
     ) -> None:
         tool = str(tool or "tool")
         args = str(args or "")
         key = self._event_key(tool, args, event_id)
         if kind == "start":
             self._started_at[key] = time.time()
-            self._running_meta[key] = {"tool": tool, "args": args}
-            self.log.start_tool(tool, tool_args=args, tool_call_id=event_id or "")
+            self._running_meta[key] = {"tool": tool, "args": args, "agent_id": agent_id, "subagent_id": subagent_id, "agent_role": agent_role}
+            self.log.start_tool(tool, tool_args=args, tool_call_id=event_id or "", agent_id=agent_id, subagent_id=subagent_id, agent_role=agent_role)
             self.events.append(
                 make_event(
                     "tool.started",
@@ -387,15 +426,17 @@ class LiveToolActivity:
                     message="Tool started.",
                     status="running",
                     step_id="07",
-                    metadata={"tool_name": tool, "args_summary": _compact_display_text(args, 160)},
+                    agent_id=agent_id or None,
+                    subagent_id=subagent_id or None,
+                    metadata={"tool_name": tool, "args_summary": _compact_display_text(args, 160), "agent_role": agent_role},
                 )
             )
         elif kind == "end":
             key = self._matching_running_key(key, tool, args, event_id)
-            self._finish(key, tool, duration=duration, ok=True, event_id=event_id)
+            self._finish(key, tool, duration=duration, ok=True, event_id=event_id, agent_id=agent_id, subagent_id=subagent_id, agent_role=agent_role)
         elif kind == "error":
             key = self._matching_running_key(key, tool, args, event_id)
-            self._finish(key, tool, duration=duration, ok=False, error=str(error or ""), event_id=event_id)
+            self._finish(key, tool, duration=duration, ok=False, error=str(error or ""), event_id=event_id, agent_id=agent_id, subagent_id=subagent_id, agent_role=agent_role)
 
     @staticmethod
     def _event_key(tool: str, args: str, event_id: str | None) -> str:
@@ -427,21 +468,27 @@ class LiveToolActivity:
         ok: bool,
         error: str = "",
         event_id: str | None = None,
+        agent_id: str = "",
+        subagent_id: str = "",
+        agent_role: str = "",
     ) -> None:
         started = self._started_at.pop(key, None)
         meta = self._running_meta.pop(key, None) or {}
         if duration is None and started is not None:
             duration = max(0.0, time.time() - float(started))
         args = str(meta.get("args", ""))
+        agent_id = agent_id or str(meta.get("agent_id", ""))
+        subagent_id = subagent_id or str(meta.get("subagent_id", ""))
+        agent_role = agent_role or str(meta.get("agent_role", ""))
         if ok:
             self._ok += 1
-            self.log.finish_tool(tool, duration=duration, tool_call_id=event_id or key, tool_args=args)
+            self.log.finish_tool(tool, duration=duration, tool_call_id=event_id or key, tool_args=args, agent_id=agent_id, subagent_id=subagent_id, agent_role=agent_role)
             status = "success"
             message = "Tool finished."
             event_type = "tool.finished"
         else:
             self._failed += 1
-            self.log.fail_tool(tool, error=error, duration=duration, tool_call_id=event_id or key, tool_args=args)
+            self.log.fail_tool(tool, error=error, duration=duration, tool_call_id=event_id or key, tool_args=args, agent_id=agent_id, subagent_id=subagent_id, agent_role=agent_role)
             status = "failed"
             message = error or "Tool failed."
             event_type = "tool.failed"
@@ -451,10 +498,13 @@ class LiveToolActivity:
             message=message,
             status=status,
             step_id="07",
+            agent_id=agent_id or None,
+            subagent_id=subagent_id or None,
             metadata={
                 "tool_name": tool,
                 "args_summary": _compact_display_text(args, 160),
                 "result_summary": _compact_display_text(message, 160),
+                "agent_role": agent_role,
             },
         ).finish(status=status, message=message)
         event.duration_ms = max(0.0, float(duration or 0.0) * 1000)
@@ -535,13 +585,26 @@ def emit_tool_event(
     duration: float | None = None,
     error: str = "",
     event_id: str | None = None,
+    agent_id: str = "",
+    subagent_id: str = "",
+    agent_role: str = "",
 ) -> None:
     """Send a tool start/end/error event to the active chat log, if any."""
     activity = _ACTIVE_TOOL_ACTIVITY
     if activity is None:
         return
     before = len(activity.events)
-    activity.handle(kind, tool, args=args, duration=duration, error=error, event_id=event_id)
+    activity.handle(
+        kind,
+        tool,
+        args=args,
+        duration=duration,
+        error=error,
+        event_id=event_id,
+        agent_id=agent_id,
+        subagent_id=subagent_id,
+        agent_role=agent_role,
+    )
     state = _ACTIVE_CHAT_UI_STATE
     if state is None:
         return

@@ -240,6 +240,11 @@ class QueueJob:
     parent_task_id: str | None = None
     assigned_worker_agent_id: str | None = None
     approved_by_agent_id: str | None = None
+    agent_id: str | None = None
+    subagent_id: str | None = None
+    agent_role: str | None = None
+    parent_agent_id: str | None = None
+    delegation_path: list[str] = field(default_factory=list)
     purpose: str = ""
     args_summary: str = ""
     budget_reserved: int = 0
@@ -347,8 +352,96 @@ class TraceEvent:
     event_type: str
     task_id: str | None = None
     agent_id: str | None = None
+    subagent_id: str | None = None
+    agent_role: str | None = None
+    parent_agent_id: str | None = None
+    requested_by_agent_id: str | None = None
+    queue_job_id: str | None = None
+    root_task_id: str | None = None
+    delegation_path: list[str] = field(default_factory=list)
     payload: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass
+class ExecutionContext:
+    agent_id: str | None = None
+    subagent_id: str | None = None
+    agent_role: str | None = None
+    parent_agent_id: str | None = None
+    requested_by_agent_id: str | None = None
+    queue_job_id: str | None = None
+    task_id: str | None = None
+    root_task_id: str | None = None
+    delegation_path: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_mapping(cls, value: dict[str, Any] | None) -> "ExecutionContext":
+        data = dict(value or {})
+        return cls(
+            agent_id=_clean_optional(data.get("agent_id")),
+            subagent_id=_clean_optional(data.get("subagent_id")),
+            agent_role=_clean_optional(data.get("agent_role")),
+            parent_agent_id=_clean_optional(data.get("parent_agent_id")),
+            requested_by_agent_id=_clean_optional(data.get("requested_by_agent_id")),
+            queue_job_id=_clean_optional(data.get("queue_job_id")),
+            task_id=_clean_optional(data.get("task_id")),
+            root_task_id=_clean_optional(data.get("root_task_id")),
+            delegation_path=[str(item) for item in data.get("delegation_path") or [] if str(item or "").strip()],
+        ).normalized()
+
+    def normalized(self) -> "ExecutionContext":
+        subagent_id = self.subagent_id
+        agent_id = self.agent_id
+        if not subagent_id and str(agent_id or "").startswith("subagent_"):
+            subagent_id = agent_id
+        delegation = list(dict.fromkeys(str(item) for item in self.delegation_path if str(item or "").strip()))
+        return ExecutionContext(
+            agent_id=agent_id,
+            subagent_id=subagent_id,
+            agent_role=self.agent_role,
+            parent_agent_id=self.parent_agent_id,
+            requested_by_agent_id=self.requested_by_agent_id,
+            queue_job_id=self.queue_job_id,
+            task_id=self.task_id,
+            root_task_id=self.root_task_id or self.task_id,
+            delegation_path=delegation,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        ctx = self.normalized()
+        return {
+            "agent_id": ctx.agent_id,
+            "subagent_id": ctx.subagent_id,
+            "agent_role": ctx.agent_role,
+            "parent_agent_id": ctx.parent_agent_id,
+            "requested_by_agent_id": ctx.requested_by_agent_id,
+            "queue_job_id": ctx.queue_job_id,
+            "task_id": ctx.task_id,
+            "root_task_id": ctx.root_task_id,
+            "delegation_path": list(ctx.delegation_path),
+        }
+
+
+def _clean_optional(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def enrich_event_identity(row: dict[str, Any], context: ExecutionContext | dict[str, Any] | None) -> dict[str, Any]:
+    """Attach execution identity to a trace/tool row without overwriting explicit values."""
+    ctx = context if isinstance(context, ExecutionContext) else ExecutionContext.from_mapping(context)
+    data = dict(row)
+    for key, value in ctx.as_dict().items():
+        if key == "delegation_path":
+            if not data.get(key) and value:
+                data[key] = value
+            continue
+        if data.get(key) in (None, "") and value not in (None, ""):
+            data[key] = value
+    if not data.get("subagent_id") and str(data.get("agent_id") or "").startswith("subagent_"):
+        data["subagent_id"] = data["agent_id"]
+    return data
 
 
 @dataclass

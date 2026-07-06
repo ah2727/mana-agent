@@ -157,6 +157,8 @@ def test_tools_and_subagents_render_from_events_only() -> None:
         message="pytest failed",
         status="failed",
         step_id="09",
+        agent_id="subagent_tool_worker_0001",
+        subagent_id="subagent_tool_worker_0001",
         metadata={"tool_name": "run_tests", "args_summary": "pytest tests/test_cli_ui.py", "result_summary": "1 failed"},
     ).finish(status="failed")
     subagent_event = make_event(
@@ -174,7 +176,9 @@ def test_tools_and_subagents_render_from_events_only() -> None:
     subagent_text = _render_to_text(renderer.render_subagents([subagent_event]))
 
     assert "run_tests" in tool_text
-    assert "pytest tests/test_cli_ui.py" in tool_text
+    assert "subagent_tool_worker_0001" in tool_text
+    assert "pytest" in tool_text
+    assert "tests/test_cli_ui.py" in tool_text
     assert "A-003" in subagent_text
     assert "test-runner" in subagent_text
 
