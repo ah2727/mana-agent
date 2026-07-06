@@ -1137,6 +1137,8 @@ class CodingAgent:
         agent_id = str(data.get("agent_id", "") or "").strip()
         subagent_id = str(data.get("subagent_id", "") or "").strip()
         agent_role = str(data.get("agent_role", "") or "").strip()
+        model_level = str(data.get("model_level", "") or "").strip()
+        resolved_model = str(data.get("resolved_model", "") or "").strip()
         if name in {"tool_start", "worker_request_start"}:
             emit_tool_event(
                 "start",
@@ -1146,6 +1148,8 @@ class CodingAgent:
                 agent_id=agent_id,
                 subagent_id=subagent_id,
                 agent_role=agent_role,
+                model_level=model_level,
+                resolved_model=resolved_model,
             )
             return
         if name in {"tool_end", "worker_request_end"}:
@@ -1158,6 +1162,8 @@ class CodingAgent:
                 agent_id=agent_id,
                 subagent_id=subagent_id,
                 agent_role=agent_role,
+                model_level=model_level,
+                resolved_model=resolved_model,
             )
             return
         if name in {"tool_error", "worker_request_error"}:
@@ -1169,6 +1175,8 @@ class CodingAgent:
                 agent_id=agent_id,
                 subagent_id=subagent_id,
                 agent_role=agent_role,
+                model_level=model_level,
+                resolved_model=resolved_model,
             )
             return
 

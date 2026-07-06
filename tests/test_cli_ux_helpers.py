@@ -309,6 +309,53 @@ def test_fullscreen_mode_suppresses_legacy_tool_activity_box() -> None:
     assert "read_file" not in rendered
 
 
+def test_tool_events_preserve_role_and_model_metadata_in_chat_state() -> None:
+    state = ChatUIState(
+        repo_root=Path.cwd(),
+        provider="openai",
+        model="main-model",
+        ui_mode="fullscreen",
+    )
+    state.tracker.start_turn("turn-1")
+    activity = LiveToolActivity(spinner_text="Coding…")
+    set_active_chat_ui_state(state)
+    set_active_tool_activity(activity)
+    try:
+        emit_tool_event(
+            "start",
+            "list_files",
+            args="glob='src/**'",
+            event_id="event-1",
+            agent_id="subagent_tool_worker_0001",
+            subagent_id="subagent_tool_worker_0001",
+            agent_role="tool_worker",
+            model_level="MODEL_LEVEL_1_FAST_TOOL",
+            resolved_model="fast-model",
+        )
+        emit_tool_event(
+            "end",
+            "list_files",
+            event_id="event-1",
+            agent_id="subagent_tool_worker_0001",
+            subagent_id="subagent_tool_worker_0001",
+            agent_role="tool_worker",
+            model_level="MODEL_LEVEL_1_FAST_TOOL",
+            resolved_model="fast-model",
+            duration=0.944,
+        )
+    finally:
+        set_active_tool_activity(None)
+        set_active_chat_ui_state(None)
+
+    finished = [event for event in state.tool_runs if event.type == "tool.finished"][-1]
+    assert finished.metadata["agent_role"] == "tool_worker"
+    assert finished.metadata["model_level"] == "MODEL_LEVEL_1_FAST_TOOL"
+    assert finished.metadata["resolved_model"] == "fast-model"
+    assert "subagent_tool_worker_0001" in state.tracker.by_subagent
+    assert state.tracker.by_subagent["subagent_tool_worker_0001"].total_tokens > 0
+    assert any(event.subagent_id == "subagent_tool_worker_0001" for event in state.subagent_events)
+
+
 def test_tool_activity_can_share_one_box_across_request_cycles() -> None:
     console = Console(record=True)
     activity = LiveToolActivity(spinner_text="Coding…")

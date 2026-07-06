@@ -61,7 +61,38 @@ def _event_actor_label(event: ChatEvent) -> str:
     if str(event.agent_id or "").startswith("subagent_"):
         return str(event.agent_id)
     role = str(event.metadata.get("agent_role") or event.metadata.get("role") or "").strip()
-    return role or "-"
+    return role or "main"
+
+
+def _event_model_label(event: ChatEvent) -> str:
+    level = str(event.metadata.get("model_level") or "").strip()
+    model = str(event.metadata.get("resolved_model") or "").strip()
+    if level and model:
+        return f"{level} • {model}"
+    return level or model
+
+
+def _tool_name(event: ChatEvent) -> str:
+    return str(event.metadata.get("tool_name") or event.title or "tool")
+
+
+def _duration_label(event: ChatEvent) -> str:
+    if event.duration_ms is None:
+        return ""
+    milliseconds = int(event.duration_ms)
+    return f"{milliseconds}ms" if milliseconds < 1000 else f"{milliseconds / 1000:.1f}s"
+
+
+def _compact_tool_line(event: ChatEvent) -> str:
+    actor = _event_actor_label(event)
+    model = _event_model_label(event)
+    status = _status_icon(event.status, plain=False)
+    duration = _duration_label(event)
+    parts = [actor]
+    if model:
+        parts.append(model)
+    parts.append(f"{_tool_name(event)} {status}{(' ' + duration) if duration else ''}".strip())
+    return " • ".join(parts)
 
 
 class EventRenderer:
@@ -163,26 +194,36 @@ class EventRenderer:
         tool_events = [event for event in events if event.type.startswith("tool.")]
         if self.mode == "json":
             return "\n".join(json.dumps(event.as_dict(), ensure_ascii=False) for event in tool_events)
-        table = Table(show_header=True, header_style="bold", box=box.SIMPLE, expand=True)
-        table.add_column("", no_wrap=True)
-        table.add_column("Tool", no_wrap=True)
-        table.add_column("Subagent", no_wrap=True)
-        table.add_column("Purpose", overflow="fold")
-        table.add_column("Duration", justify="right", no_wrap=True)
-        table.add_column("Result", overflow="fold")
+        if self.mode in {"plain", "compact"}:
+            lines = [_compact_tool_line(event) for event in tool_events[-30:]]
+            return Group(*(Text(line) for line in lines)) if self.mode == "compact" else "\n".join(lines)
+
+        rows: list[Text] = []
+        grouped: dict[str, list[ChatEvent]] = {}
         for event in tool_events[-30:]:
-            table.add_row(
-                _status_icon(event.status, plain=self.mode == "plain"),
-                str(event.metadata.get("tool_name") or event.title or "tool"),
-                _event_actor_label(event),
-                str(event.metadata.get("args_summary") or event.message or "-"),
-                f"{event.duration_ms / 1000:.1f}s" if event.duration_ms else "",
-                str(event.metadata.get("result_summary") or event.message or "-"),
-            )
-        return Panel(table, title="Tool activity", border_style="cyan", box=box.ROUNDED)
+            grouped.setdefault(_event_actor_label(event), []).append(event)
+        for actor, actor_events in grouped.items():
+            header = Text(actor, style="bold cyan")
+            model = next((label for label in (_event_model_label(item) for item in actor_events) if label), "")
+            if model:
+                header.append(f" • {model}", style="dim")
+            rows.append(header)
+            for index, event in enumerate(actor_events):
+                branch = "└─" if index == len(actor_events) - 1 else "├─"
+                purpose = str(event.metadata.get("args_summary") or event.message or "").strip()
+                duration = _duration_label(event)
+                line = Text(f"  {branch} ")
+                line.append(_tool_name(event), style="bold")
+                line.append(f" {_status_icon(event.status)}")
+                if duration:
+                    line.append(f" {duration}", style="dim")
+                if purpose:
+                    line.append(f": {purpose}", style="dim")
+                rows.append(line)
+        return Panel(Group(*rows) if rows else Text("No tool calls yet."), title="Tool activity", border_style="cyan", box=box.ROUNDED)
 
     def render_subagents(self, events: list[ChatEvent]) -> Any:
-        subagent_events = [event for event in events if event.type.startswith("subagent.")]
+        subagent_events = [event for event in events if event.type.startswith("subagent.") or event.subagent_id]
         if self.mode == "json":
             return "\n".join(json.dumps(event.as_dict(), ensure_ascii=False) for event in subagent_events)
         table = Table(show_header=True, header_style="bold", box=box.SIMPLE, expand=True)
@@ -193,13 +234,20 @@ class EventRenderer:
         table.add_column("Tokens", justify="right", no_wrap=True)
         table.add_column("Summary", overflow="fold")
         latest: dict[str, ChatEvent] = {}
+        models: dict[str, str] = {}
         for event in subagent_events:
             key = str(event.subagent_id or event.agent_id or event.event_id)
             latest[key] = event
+            if not models.get(key):
+                models[key] = _event_model_label(event)
         for key, event in latest.items():
+            model = models.get(key, "")
+            role = str(event.metadata.get("role") or event.metadata.get("agent_role") or event.title or "subagent")
+            if model:
+                role = f"{role} • {model}"
             table.add_row(
                 key,
-                str(event.metadata.get("role") or event.title or "subagent"),
+                role,
                 event.status,
                 str(event.metadata.get("current_step") or event.step_id or "-"),
                 str(event.token_usage.total_tokens if event.token_usage else 0),

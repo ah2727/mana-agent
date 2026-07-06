@@ -174,6 +174,8 @@ class AskAgent:
             kwargs["base_url"] = base_url
         self.llm = ChatOpenAI(**kwargs)
         self.model = model
+        self.api_key = api_key
+        self.base_url = base_url
         self.search_service = search_service
         self.project_root = Path(project_root).resolve()
         self.coding_memory_service = coding_memory_service
@@ -183,6 +185,16 @@ class AskAgent:
 
         # ✅ NEW: allow external code to register extra tools (e.g. write_file/apply_patch)
         self.tools: list[BaseTool] = []
+
+    def update_model(self, model_name: str) -> None:
+        resolved = str(model_name or "").strip()
+        if not resolved or resolved == self.model:
+            return
+        kwargs = {"api_key": self.api_key, "model": resolved}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        self.llm = ChatOpenAI(**kwargs)
+        self.model = resolved
 
     def _is_blocked_command(self, cmd: str) -> bool:
         lowered = f"{cmd.lower()} "

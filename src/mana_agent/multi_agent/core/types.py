@@ -357,6 +357,8 @@ class TraceEvent:
     parent_agent_id: str | None = None
     requested_by_agent_id: str | None = None
     queue_job_id: str | None = None
+    model_level: str | None = None
+    resolved_model: str | None = None
     root_task_id: str | None = None
     delegation_path: list[str] = field(default_factory=list)
     payload: dict[str, Any] = field(default_factory=dict)
@@ -371,6 +373,8 @@ class ExecutionContext:
     parent_agent_id: str | None = None
     requested_by_agent_id: str | None = None
     queue_job_id: str | None = None
+    model_level: str | None = None
+    resolved_model: str | None = None
     task_id: str | None = None
     root_task_id: str | None = None
     delegation_path: list[str] = field(default_factory=list)
@@ -385,6 +389,8 @@ class ExecutionContext:
             parent_agent_id=_clean_optional(data.get("parent_agent_id")),
             requested_by_agent_id=_clean_optional(data.get("requested_by_agent_id")),
             queue_job_id=_clean_optional(data.get("queue_job_id")),
+            model_level=_clean_optional(data.get("model_level")),
+            resolved_model=_clean_optional(data.get("resolved_model")),
             task_id=_clean_optional(data.get("task_id")),
             root_task_id=_clean_optional(data.get("root_task_id")),
             delegation_path=[str(item) for item in data.get("delegation_path") or [] if str(item or "").strip()],
@@ -403,6 +409,8 @@ class ExecutionContext:
             parent_agent_id=self.parent_agent_id,
             requested_by_agent_id=self.requested_by_agent_id,
             queue_job_id=self.queue_job_id,
+            model_level=self.model_level,
+            resolved_model=self.resolved_model,
             task_id=self.task_id,
             root_task_id=self.root_task_id or self.task_id,
             delegation_path=delegation,
@@ -417,6 +425,8 @@ class ExecutionContext:
             "parent_agent_id": ctx.parent_agent_id,
             "requested_by_agent_id": ctx.requested_by_agent_id,
             "queue_job_id": ctx.queue_job_id,
+            "model_level": ctx.model_level,
+            "resolved_model": ctx.resolved_model,
             "task_id": ctx.task_id,
             "root_task_id": ctx.root_task_id,
             "delegation_path": list(ctx.delegation_path),

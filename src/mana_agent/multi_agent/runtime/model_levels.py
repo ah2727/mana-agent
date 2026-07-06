@@ -33,3 +33,36 @@ class ModelLevelAssignment:
 def model_level_for_role(role: AgentRole) -> ModelLevelAssignment:
     env_var, default = _DEFAULT_MODEL_LEVELS[role]
     return ModelLevelAssignment(role=role, env_var=env_var, model_level=os.getenv(env_var, default))
+
+
+@dataclass(frozen=True)
+class ResolvedModelAssignment:
+    role: AgentRole
+    env_var: str
+    model_level: str
+    resolved_model: str
+
+
+def _is_symbolic_model_level(value: str) -> bool:
+    return str(value or "").strip().startswith("MODEL_LEVEL_")
+
+
+def resolve_model_for_role(role: AgentRole, *, global_model: str) -> ResolvedModelAssignment:
+    env_var, default_level = _DEFAULT_MODEL_LEVELS[role]
+    role_value = str(os.getenv(env_var, "") or "").strip()
+    fallback = str(global_model or "").strip()
+    if role_value and not _is_symbolic_model_level(role_value):
+        return ResolvedModelAssignment(
+            role=role,
+            env_var=env_var,
+            model_level=default_level,
+            resolved_model=role_value,
+        )
+    configured = role_value or default_level
+    resolved = str(os.getenv(configured, "") or "").strip()
+    return ResolvedModelAssignment(
+        role=role,
+        env_var=env_var,
+        model_level=configured,
+        resolved_model=resolved or fallback,
+    )
