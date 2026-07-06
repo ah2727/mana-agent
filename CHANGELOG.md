@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-06 (FastAPI analyze ZIP endpoint)
+
+- Added a FastAPI API package with `POST /api/v1/analyze` for uploaded ZIP projects, safe ZIP extraction, real Mana-Agent analyze reuse, and downloadable result ZIP responses.
+- Added API ZIP validation/extraction services, public `analysis-report.md`, `analysis-report.json`, and `manifest.json` result generation, and a `mana-agent api` uvicorn command.
+- Added FastAPI, uvicorn, and python-multipart dependencies plus focused API tests for successful uploads, invalid files, unsafe archive paths, and CLI import/help continuity.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_api_analyze.py tests/commands/test_analyze_slash_command.py::test_run_project_analysis_writes_selected tests/test_cli_smoke.py::test_pyproject_exposes_mana_agent_primary_script -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/api/app.py src/mana_agent/api/exceptions.py src/mana_agent/api/routes/analyze.py src/mana_agent/api/services/zip_service.py src/mana_agent/api/services/analyze_service.py src/mana_agent/commands/cli.py src/mana_agent/commands/cli_internal.py tests/test_api_analyze.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/api tests/test_api_analyze.py --select F,E9` passed; `PYTHONPATH=src .venv/bin/mana-agent api --help` passed. A broader touched-file ruff check including `src/mana_agent/commands/cli_internal.py` still reports pre-existing F841 warnings in unrelated legacy code paths.
+
 ## 2026-07-06 (memory service consolidation)
 
 - Added `mana_agent.services.memory_service` as the canonical memory service module for multi-agent task/tool memory and run-scoped read evidence.

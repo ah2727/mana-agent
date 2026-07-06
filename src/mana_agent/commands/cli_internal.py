@@ -513,6 +513,18 @@ def plan_command(
             console.print("[green]Plan generated only.[/green]")
 
 
+@app.command("api")
+def api_command(
+    host: str = typer.Option("127.0.0.1", "--host", help="Host interface for the FastAPI server."),
+    port: int = typer.Option(8000, "--port", help="Port for the FastAPI server."),
+    reload: bool = typer.Option(False, "--reload", help="Enable uvicorn reload mode."),
+) -> None:
+    """Run the Mana-Agent FastAPI server."""
+    import uvicorn
+
+    uvicorn.run("mana_agent.api.app:app", host=host, port=port, reload=reload)
+
+
 @skills_app.command("init")
 def skills_init(
     repo: str | None = typer.Option(None, "--repo", "--root-dir", help="Repository root."),

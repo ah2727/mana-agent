@@ -35,6 +35,7 @@ app.callback()(main)
 _replace_command("chat", chat)
 _replace_command("analyze", _cli_internal.analyze_command)
 _replace_command("plan", _cli_internal.plan_command)
+_replace_command("api", _cli_internal.api_command)
 _replace_command("continue", _cli_internal.continue_command)
 
 
