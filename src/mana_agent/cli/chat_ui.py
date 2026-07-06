@@ -94,7 +94,7 @@ class ChatUIState:
             self.trace.record(event)
         if event.type.startswith("tool."):
             self.tool_runs.append(event)
-        if event.type.startswith("subagent."):
+        if event.type.startswith("subagent.") or event.subagent_id:
             self.subagent_events.append(event)
         return event
 
@@ -153,6 +153,30 @@ class ChatUIState:
             self.conversation.append({"role": "assistant", "content": answer_text})
         if len(self.conversation) > 40:
             self.conversation = self.conversation[-40:]
+
+    def agents_used(self, *, turn_id: str | None = None) -> list[str]:
+        agents: list[str] = []
+        for event in self.events:
+            if turn_id and event.turn_id != turn_id:
+                continue
+            label = str(event.subagent_id or event.agent_id or "").strip()
+            if not label:
+                label = str(event.metadata.get("agent_role") or "").strip()
+            if not label:
+                continue
+            if label.startswith("agent_main_") or label == "main":
+                label = "main"
+            if label not in agents:
+                agents.append(label)
+        if "main" not in agents:
+            agents.insert(0, "main")
+        return agents
+
+    def execution_summary(self, *, turn_id: str | None = None) -> str:
+        agents = self.agents_used(turn_id=turn_id)
+        if not agents:
+            return ""
+        return "Agents used:\n" + "\n".join(f"- {agent}" for agent in agents)
 
 
 def detect_skills_status(root: Path) -> str:

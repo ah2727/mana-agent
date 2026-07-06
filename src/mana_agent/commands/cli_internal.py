@@ -50,6 +50,8 @@ from mana_agent.utils.project_discovery import discover_subprojects  # noqa: F40
 from mana_agent.multi_agent.runtime.ask_agent import AskAgent
 from mana_agent.multi_agent.runtime.qna_chain import QnAChain
 from mana_agent.multi_agent.runtime.coding_agent import CodingAgent
+from mana_agent.multi_agent.core.types import AgentRole
+from mana_agent.multi_agent.runtime.model_levels import resolve_model_for_role
 from mana_agent.multi_agent.runtime.tool_worker_process import ToolWorkerClient, ToolWorkerProcessError  # noqa: F401 - error class consumed by chat_cli through wildcard command wiring
 from mana_agent.multi_agent.runtime.tools_executor import LocalToolsExecutor, RedisRQToolsExecutor, ToolsExecutionConfig  # noqa: F401 - executor types consumed by chat_cli through wildcard command wiring
 from mana_agent.multi_agent.runtime.agent_work_queue import QueueManager
@@ -1053,7 +1055,10 @@ def build_ask_service(
     *,
     project_root: Path | None = None,
 ) -> AskService:
-    model = model_override or settings.openai_chat_model
+    model = resolve_model_for_role(
+        AgentRole.MAIN,
+        global_model=model_override or settings.openai_chat_model,
+    ).resolved_model
     root = project_root.resolve() if project_root else Path.cwd().resolve()
     qna_chain_cls = _public_symbol("QnAChain", QnAChain)
     chat_openai_cls = _public_symbol("ChatOpenAI", ChatOpenAI)

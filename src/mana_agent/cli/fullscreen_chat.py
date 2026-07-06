@@ -82,6 +82,35 @@ def token_bar(value: int, maximum: int | None = None, *, width: int = 18) -> str
     return "[" + ("#" * filled).ljust(width, "-") + f"] {value}/{maximum}"
 
 
+def _event_actor_label(event: Any) -> str:
+    subagent_id = str(getattr(event, "subagent_id", "") or "").strip()
+    if subagent_id:
+        return subagent_id
+    agent_id = str(getattr(event, "agent_id", "") or "").strip()
+    if agent_id.startswith("subagent_"):
+        return agent_id
+    metadata = getattr(event, "metadata", {}) or {}
+    role = str(metadata.get("agent_role") or metadata.get("role") or "").strip()
+    return role or agent_id or "main"
+
+
+def _event_model_label(event: Any) -> str:
+    metadata = getattr(event, "metadata", {}) or {}
+    level = str(metadata.get("model_level") or "").strip()
+    model = str(metadata.get("resolved_model") or "").strip()
+    if level and model:
+        return f"{level} • {model}"
+    return level or model
+
+
+def _duration_label(event: Any) -> str:
+    duration_ms = getattr(event, "duration_ms", None)
+    if duration_ms is None:
+        return ""
+    milliseconds = int(duration_ms)
+    return f"{milliseconds}ms" if milliseconds < 1000 else f"{milliseconds / 1000:.1f}s"
+
+
 def _conversation_text(state: "ChatUIState") -> str:
     rows: list[str] = []
     for item in state.conversation[-12:]:
@@ -119,23 +148,44 @@ def _steps_text(state: "ChatUIState") -> str:
 
 def _tools_text(state: "ChatUIState") -> str:
     rows: list[str] = []
-    for event in state.tool_runs[-14:]:
-        tool = event.metadata.get("tool_name") or event.title or "tool"
-        result = event.metadata.get("result_summary") or event.message or ""
-        rows.append(f"{event.status:<8} {_clip(tool, 24):<24} {_clip(result, 90)}")
-    return "\n".join(rows) or "No tool calls yet."
+    grouped: dict[str, list[Any]] = {}
+    for event in state.tool_runs[-20:]:
+        grouped.setdefault(_event_actor_label(event), []).append(event)
+    for actor, events in grouped.items():
+        model = next((label for label in (_event_model_label(item) for item in events) if label), "")
+        header = actor if not model else f"{actor} • {model}"
+        rows.append(_clip(header, 120))
+        for index, event in enumerate(events):
+            metadata = event.metadata or {}
+            branch = "└─" if index == len(events) - 1 else "├─"
+            tool = metadata.get("tool_name") or event.title or "tool"
+            detail = metadata.get("args_summary") or metadata.get("result_summary") or event.message or ""
+            status = "✓" if event.status in {"success", "done"} else ("✗" if event.status in {"failed", "failure"} else "•")
+            duration = _duration_label(event)
+            suffix = f" {status}{(' ' + duration) if duration else ''}"
+            if detail:
+                suffix += f": {_clip(detail, 80)}"
+            rows.append(f"  {branch} {_clip(tool, 24)}{suffix}")
+    return "\n".join(rows[-14:]) or "No tool calls yet."
 
 
 def _agents_text(state: "ChatUIState") -> str:
     latest: dict[str, Any] = {}
+    models: dict[str, str] = {}
     for event in state.subagent_events:
         key = str(event.subagent_id or event.agent_id or event.event_id)
         latest[key] = event
+        if not models.get(key):
+            models[key] = _event_model_label(event)
     rows = []
     for key, event in list(latest.items())[-10:]:
-        role = event.metadata.get("role") or event.title or "subagent"
-        rows.append(f"{_clip(key, 12):<12} {event.status:<8} {_clip(role, 22):<22} {_clip(event.message, 80)}")
-    return "\n".join(rows) or "No subagents active."
+        role = event.metadata.get("role") or event.metadata.get("agent_role") or event.title or "subagent"
+        model = models.get(key, "") or _event_model_label(event)
+        rows.append(_clip(key, 80))
+        if model:
+            rows.append(f"  {model}")
+        rows.append(f"  {event.status:<8} {_clip(role, 22)} {_clip(event.message, 80)}")
+    return "\n".join(rows[-12:]) or "No subagents active."
 
 
 def _tokens_text(state: "ChatUIState") -> str:

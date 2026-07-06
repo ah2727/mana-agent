@@ -21,6 +21,8 @@ from mana_agent.multi_agent.runtime.auto_chat import (
     save_auto_chat_state,
 )
 from mana_agent.multi_agent.runtime.agent_session import route_for_turn
+from mana_agent.multi_agent.core.types import AgentRole
+from mana_agent.multi_agent.runtime.model_levels import resolve_model_for_role
 from mana_agent.multi_agent.runtime.small_direct_edit import handle_small_direct_edit
 from mana_agent.multi_agent.runtime.tools_executor import build_tools_executor_with_fallback
 from mana_agent.cli.chat_ui import (
@@ -609,8 +611,20 @@ def chat(
     tools_executor_instance: LocalToolsExecutor | RedisRQToolsExecutor | None = None
     coding_agent_cls = _public_symbol("CodingAgent", CodingAgent)
     coding_agent_is_custom = coding_agent_cls is not CodingAgent
-    effective_model = model or settings.openai_chat_model
-    effective_tool_worker_model = settings.openai_tool_worker_model or effective_model
+    effective_model = resolve_model_for_role(
+        AgentRole.MAIN,
+        global_model=model or settings.openai_chat_model,
+    ).resolved_model
+    coding_model_assignment = resolve_model_for_role(AgentRole.CODING, global_model=effective_model)
+    planner_model_assignment = resolve_model_for_role(
+        AgentRole.PLANNER,
+        global_model=settings.openai_coding_planner_model or effective_model,
+    )
+    tool_worker_model_assignment = resolve_model_for_role(
+        AgentRole.TOOL_WORKER,
+        global_model=settings.openai_tool_worker_model or effective_model,
+    )
+    effective_tool_worker_model = tool_worker_model_assignment.resolved_model
     effective_base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
     chat_log_path = default_logs_dir(root) / f"mana_agent_{datetime.now().strftime('%Y%m%d')}.log"
     chat_ui_state = ChatUIState(
@@ -666,6 +680,10 @@ def chat(
                 max_turns=settings.coding_flow_max_turns,
                 max_tasks=settings.coding_flow_max_tasks,
             )
+        if hasattr(ask_service.ask_agent, "update_model"):
+            ask_service.ask_agent.update_model(coding_model_assignment.resolved_model)
+        elif getattr(ask_service, "ask_agent", None) is not None:
+            ask_service.ask_agent.model = coding_model_assignment.resolved_model
         if tool_worker_process:
             tool_worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)
             tool_worker_client = tool_worker_client_cls(
@@ -676,6 +694,7 @@ def chat(
                 project_root=root,
                 allowed_prefixes=None,
                 tools_only_strict=tool_worker_strict,
+                model_level=tool_worker_model_assignment.model_level,
             )
 
         # ✅ IMPORTANT: allow_prefixes=None => unrestricted under repo_root
@@ -693,7 +712,7 @@ def chat(
             require_read_files=max(1, int(coding_require_read_files or settings.coding_require_read_files)),
             tool_worker_client=tool_worker_client,
             full_auto_mode=(execution_profile == "full-auto"),
-            planner_model=settings.openai_coding_planner_model,
+            planner_model=planner_model_assignment.resolved_model,
         )
 
     if coding_agent_instance is not None and auto_execute_plan and tool_worker_client is not None:
@@ -997,6 +1016,16 @@ def chat(
 
         def _finish_ui_turn(turn_id: str, message: str = "Final response rendered.") -> None:
             chat_ui_state.finish_turn(turn_id, message=message)
+            summary = chat_ui_state.execution_summary(turn_id=turn_id)
+            if (
+                summary
+                and "\n- subagent_" in summary
+                and chat_ui_state.ui_mode != "json"
+                and str(os.getenv("MANA_CHAT_EXECUTION_SUMMARY", "1") or "").strip().lower()
+                not in {"0", "false", "no", "off"}
+            ):
+                console.print("\n[bold]Execution summary[/bold]")
+                console.print(summary)
             if chat_ui_state.trace_mode == "off":
                 return
             turn_events = [
@@ -1059,12 +1088,13 @@ def chat(
                 tool_worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)
                 tool_worker_client = tool_worker_client_cls(
                     api_key=settings.openai_api_key,
-                    model=settings.openai_tool_worker_model or model or settings.openai_chat_model,
+                    model=effective_tool_worker_model,
                     base_url=effective_base_url,
                     repo_root=root,
                     project_root=root,
                     allowed_prefixes=None,
                     tools_only_strict=tool_worker_strict,
+                    model_level=tool_worker_model_assignment.model_level,
                 )
             try:
                 start = getattr(tool_worker_client, "start", None)
@@ -1081,7 +1111,7 @@ def chat(
             tools_manager_orchestrator_cls = _public_symbol("QueueManager", QueueManager)
             tools_manager_orchestrator = tools_manager_orchestrator_cls(
                 api_key=settings.openai_api_key,
-                model=model or settings.openai_chat_model,
+                model=effective_model,
                 base_url=effective_base_url,
                 worker_client=tool_worker_client,
                 repo_root=root,

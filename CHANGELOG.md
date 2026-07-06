@@ -2,6 +2,14 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-06 (chat subagent visibility and model routing)
+
+- Made chat tool activity render subagent-owned tool events with stable event rows, nested subagent/tool labels, compact one-line subagent activity, model level/model labels, and an optional agents-used execution summary.
+- Made tool-backed subagent events populate the full-screen Subagents pane and subagent token totals instead of only the Tools pane.
+- Added role-based model resolution for main, coding, planner, and tool-worker LLM clients so `MANA_MODEL_*` and `MODEL_LEVEL_*` assignments affect real provider calls while preserving global-model fallback.
+- Propagated `agent_role`, `model_level`, and `resolved_model` through execution context and tool-event metadata for trace/TUI display without raw JSON.
+- Verification: `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/multi_agent/runtime/model_levels.py src/mana_agent/multi_agent/core/types.py src/mana_agent/multi_agent/runtime/ask_agent.py src/mana_agent/commands/cli_internal.py src/mana_agent/commands/chat_cli.py src/mana_agent/multi_agent/runtime/tool_worker_process.py src/mana_agent/commands/ui_helpers.py src/mana_agent/multi_agent/runtime/coding_agent.py src/mana_agent/multi_agent/runtime/agent_work_queue_adapters.py src/mana_agent/cli/renderers.py src/mana_agent/cli/fullscreen_chat.py src/mana_agent/cli/chat_ui.py tests/test_chat_ui_events_tokens.py tests/test_multi_agent_core.py tests/test_cli_ux_helpers.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_chat_ui_events_tokens.py tests/test_cli_ux_helpers.py tests/test_multi_agent_core.py` passed with 83 tests; full `git diff --check` was not clean because of a pre-existing blank-line-at-EOF issue in `src/mana_agent/default_skills/security.md`.
+
 ## 2026-07-06 (GitHub release workflow)
 
 - Added a GitHub Actions release workflow for main-branch `latest-dev` prereleases, version-tag stable releases, Python package artifacts, platform standalone binaries, and SHA256 checksums.

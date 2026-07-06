@@ -911,6 +911,7 @@ class ToolWorkerClient:
         base_url: str | None = None,
         allowed_prefixes: list[str] | None = None,
         tools_only_strict: bool = True,
+        model_level: str = "",
     ) -> None:
         resolved_base_url = str(base_url or os.getenv("OPENAI_BASE_URL") or "").strip() or None
         self._init_payload = WorkerInitPayload(
@@ -922,6 +923,7 @@ class ToolWorkerClient:
             allowed_prefixes=allowed_prefixes,
             tools_only_strict=tools_only_strict,
         )
+        self._model_level = str(model_level or "").strip()
         self._proc: subprocess.Popen[str] | None = None
         self._stderr_thread: threading.Thread | None = None
         logger.info(
@@ -1074,6 +1076,12 @@ class ToolWorkerClient:
             except Exception:
                 logger.debug("Failed to process worker request event", exc_info=True)
 
+        context = ExecutionContext.from_mapping(request.execution_context).normalized()
+        request.execution_context = {
+            **context.as_dict(),
+            "model_level": context.model_level or self._model_level,
+            "resolved_model": context.resolved_model or self._init_payload.model,
+        }
         _emit_request_event(
             "worker_request_start",
             {"args": request.question[:160]},

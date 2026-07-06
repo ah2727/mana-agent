@@ -34,7 +34,13 @@ from mana_agent.multi_agent.core.types import (
     TaskStatus,
 )
 from mana_agent.multi_agent.observability.trace import TraceWriter
-from mana_agent.multi_agent.runtime.model_levels import MODEL_LEVEL_2_CODING, model_level_for_role
+from mana_agent.multi_agent.runtime.model_levels import (
+    MODEL_LEVEL_1_FAST_TOOL,
+    MODEL_LEVEL_2_CODING,
+    MODEL_LEVEL_3_HIGH_REASONING,
+    model_level_for_role,
+    resolve_model_for_role,
+)
 from mana_agent.multi_agent.queue.queue_manager import QueueManager
 from mana_agent.multi_agent.registry.agent_registry import AgentRegistry
 from mana_agent.multi_agent.routing.hierarchy import HierarchyPolicy, HierarchyViolation
@@ -712,6 +718,61 @@ def test_model_levels_are_configurable_by_tier(monkeypatch):
     assert model_level_for_role(AgentRole.CODING).model_level == "MODEL_LEVEL_2_CUSTOM"
     monkeypatch.delenv("MANA_MODEL_CODING")
     assert model_level_for_role(AgentRole.CODING).model_level == MODEL_LEVEL_2_CODING
+
+
+def test_role_model_resolution_uses_distinct_level_envs(monkeypatch):
+    for name in (
+        "MANA_MODEL_MAIN",
+        "MANA_MODEL_CODING",
+        "MANA_MODEL_TOOL_WORKER",
+        MODEL_LEVEL_3_HIGH_REASONING,
+        MODEL_LEVEL_2_CODING,
+        MODEL_LEVEL_1_FAST_TOOL,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(MODEL_LEVEL_3_HIGH_REASONING, "high-model")
+    monkeypatch.setenv(MODEL_LEVEL_2_CODING, "coding-model")
+    monkeypatch.setenv(MODEL_LEVEL_1_FAST_TOOL, "fast-model")
+
+    assert resolve_model_for_role(AgentRole.MAIN, global_model="fallback").resolved_model == "high-model"
+    assert resolve_model_for_role(AgentRole.CODING, global_model="fallback").resolved_model == "coding-model"
+    assert resolve_model_for_role(AgentRole.TOOL_WORKER, global_model="fallback").resolved_model == "fast-model"
+
+
+def test_role_specific_model_env_overrides_level_env(monkeypatch):
+    monkeypatch.setenv(MODEL_LEVEL_1_FAST_TOOL, "fast-model")
+    monkeypatch.setenv("MANA_MODEL_TOOL_WORKER", "tool-worker-override")
+
+    assignment = resolve_model_for_role(AgentRole.TOOL_WORKER, global_model="fallback")
+
+    assert assignment.model_level == MODEL_LEVEL_1_FAST_TOOL
+    assert assignment.resolved_model == "tool-worker-override"
+
+
+def test_missing_symbolic_model_level_falls_back_to_global(monkeypatch):
+    monkeypatch.delenv("MANA_MODEL_CODING", raising=False)
+    monkeypatch.delenv(MODEL_LEVEL_2_CODING, raising=False)
+
+    assignment = resolve_model_for_role(AgentRole.CODING, global_model="global-model")
+
+    assert assignment.model_level == MODEL_LEVEL_2_CODING
+    assert assignment.resolved_model == "global-model"
+
+
+def test_execution_context_preserves_model_metadata():
+    ctx = ExecutionContext.from_mapping(
+        {
+            "agent_id": "subagent_tool_worker_0001",
+            "agent_role": "tool_worker",
+            "model_level": MODEL_LEVEL_1_FAST_TOOL,
+            "resolved_model": "fast-model",
+        }
+    )
+
+    assert ctx.agent_role == "tool_worker"
+    assert ctx.subagent_id == "subagent_tool_worker_0001"
+    assert ctx.as_dict()["model_level"] == MODEL_LEVEL_1_FAST_TOOL
+    assert ctx.as_dict()["resolved_model"] == "fast-model"
 
 
 def test_cli_commands_exist_and_record_multi_agent_route(tmp_path):

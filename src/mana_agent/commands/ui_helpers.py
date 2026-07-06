@@ -411,13 +411,23 @@ class LiveToolActivity:
         agent_id: str = "",
         subagent_id: str = "",
         agent_role: str = "",
+        model_level: str = "",
+        resolved_model: str = "",
     ) -> None:
         tool = str(tool or "tool")
         args = str(args or "")
         key = self._event_key(tool, args, event_id)
         if kind == "start":
             self._started_at[key] = time.time()
-            self._running_meta[key] = {"tool": tool, "args": args, "agent_id": agent_id, "subagent_id": subagent_id, "agent_role": agent_role}
+            self._running_meta[key] = {
+                "tool": tool,
+                "args": args,
+                "agent_id": agent_id,
+                "subagent_id": subagent_id,
+                "agent_role": agent_role,
+                "model_level": model_level,
+                "resolved_model": resolved_model,
+            }
             self.log.start_tool(tool, tool_args=args, tool_call_id=event_id or "", agent_id=agent_id, subagent_id=subagent_id, agent_role=agent_role)
             self.events.append(
                 make_event(
@@ -428,7 +438,13 @@ class LiveToolActivity:
                     step_id="07",
                     agent_id=agent_id or None,
                     subagent_id=subagent_id or None,
-                    metadata={"tool_name": tool, "args_summary": _compact_display_text(args, 160), "agent_role": agent_role},
+                    metadata={
+                        "tool_name": tool,
+                        "args_summary": _compact_display_text(args, 160),
+                        "agent_role": agent_role,
+                        "model_level": model_level,
+                        "resolved_model": resolved_model,
+                    },
                 )
             )
         elif kind == "end":
@@ -480,6 +496,8 @@ class LiveToolActivity:
         agent_id = agent_id or str(meta.get("agent_id", ""))
         subagent_id = subagent_id or str(meta.get("subagent_id", ""))
         agent_role = agent_role or str(meta.get("agent_role", ""))
+        model_level = str(meta.get("model_level", ""))
+        resolved_model = str(meta.get("resolved_model", ""))
         if ok:
             self._ok += 1
             self.log.finish_tool(tool, duration=duration, tool_call_id=event_id or key, tool_args=args, agent_id=agent_id, subagent_id=subagent_id, agent_role=agent_role)
@@ -505,6 +523,8 @@ class LiveToolActivity:
                 "args_summary": _compact_display_text(args, 160),
                 "result_summary": _compact_display_text(message, 160),
                 "agent_role": agent_role,
+                "model_level": model_level,
+                "resolved_model": resolved_model,
             },
         ).finish(status=status, message=message)
         event.duration_ms = max(0.0, float(duration or 0.0) * 1000)
@@ -588,6 +608,8 @@ def emit_tool_event(
     agent_id: str = "",
     subagent_id: str = "",
     agent_role: str = "",
+    model_level: str = "",
+    resolved_model: str = "",
 ) -> None:
     """Send a tool start/end/error event to the active chat log, if any."""
     activity = _ACTIVE_TOOL_ACTIVITY
@@ -604,6 +626,8 @@ def emit_tool_event(
         agent_id=agent_id,
         subagent_id=subagent_id,
         agent_role=agent_role,
+        model_level=model_level,
+        resolved_model=resolved_model,
     )
     state = _ACTIVE_CHAT_UI_STATE
     if state is None:
@@ -615,6 +639,8 @@ def emit_tool_event(
             usage = state.tracker.record_tool_result(
                 event.event_id,
                 event.metadata.get("result_summary") or event.message,
+                agent_id=event.agent_id or "main",
+                subagent_id=event.subagent_id,
                 step_id=event.step_id,
                 turn_id=event.turn_id,
             )

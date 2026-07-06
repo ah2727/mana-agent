@@ -8,7 +8,7 @@ from rich.console import Console
 
 from mana_agent.cli.chat_ui import ChatUIState, compact_path, default_ui_mode, render_startup_header, render_status
 from mana_agent.cli.events import make_event
-from mana_agent.cli.fullscreen_chat import MenuOption, select_option, token_bar
+from mana_agent.cli.fullscreen_chat import MenuOption, _agents_text, _tools_text, select_option, token_bar
 from mana_agent.cli.renderers import EventRenderer
 from mana_agent.telemetry.tokens import TokenUsageTracker, token_usage_from_provider
 
@@ -181,6 +181,80 @@ def test_tools_and_subagents_render_from_events_only() -> None:
     assert "tests/test_cli_ui.py" in tool_text
     assert "A-003" in subagent_text
     assert "test-runner" in subagent_text
+
+
+def test_tool_activity_keeps_nested_subagent_events_with_shared_step_id() -> None:
+    state = ChatUIState(repo_root=Path.cwd(), provider="openai", model="gpt-test", ui_mode="fullscreen")
+    events = [
+        make_event(
+            "tool.started",
+            title="tool_worker",
+            message="Locate files relevant to rendering",
+            status="running",
+            turn_id="turn-1",
+            step_id="07",
+            agent_id="subagent_tool_worker_0001",
+            subagent_id="subagent_tool_worker_0001",
+            metadata={
+                "tool_name": "tool_worker",
+                "args_summary": "Locate files relevant to rendering",
+                "agent_role": "tool_worker",
+                "model_level": "MODEL_LEVEL_1_FAST_TOOL",
+                "resolved_model": "fast-model",
+            },
+        ),
+        make_event(
+            "tool.finished",
+            title="ls",
+            status="success",
+            turn_id="turn-1",
+            step_id="07",
+            agent_id="subagent_tool_worker_0001",
+            subagent_id="subagent_tool_worker_0001",
+            metadata={"tool_name": "ls", "agent_role": "tool_worker"},
+        ),
+        make_event(
+            "tool.finished",
+            title="list_files",
+            status="success",
+            turn_id="turn-1",
+            step_id="07",
+            agent_id="subagent_tool_worker_0001",
+            subagent_id="subagent_tool_worker_0001",
+            metadata={"tool_name": "list_files", "agent_role": "tool_worker"},
+        ),
+        make_event(
+            "tool.finished",
+            title="read_file",
+            status="success",
+            turn_id="turn-1",
+            step_id="07",
+            agent_id="subagent_tool_worker_0001",
+            subagent_id="subagent_tool_worker_0001",
+            metadata={"tool_name": "read_file", "agent_role": "tool_worker"},
+        ),
+    ]
+    for duration, event in zip((0, 376, 944, 3), events):
+        event.duration_ms = duration
+        state.record_event(event)
+    renderer = EventRenderer(mode="rich")
+
+    rich_text = _render_to_text(renderer.render_tool_activity(events))
+    compact_text = _render_to_text(EventRenderer(mode="compact").render_tool_activity(events))
+    fullscreen_text = _tools_text(state)
+    agents_text = _agents_text(state)
+
+    for expected in ("subagent_tool_worker_0001", "tool_worker", "ls", "list_files", "read_file"):
+        assert expected in rich_text
+        assert expected in compact_text
+        assert expected in fullscreen_text
+    assert "subagent_tool_worker_0001" in agents_text
+    assert "MODEL_LEVEL_1_FAST_TOOL" in agents_text
+    assert "tool_worker" in agents_text
+    assert "MODEL_LEVEL_1_FAST_TOOL" in rich_text
+    assert "fast-model" in rich_text
+    assert "list_files ✓ 944ms" in compact_text
+    assert "read_file ✓ 3ms" in fullscreen_text
 
 
 def test_chat_ui_startup_header_and_token_command_render() -> None:
