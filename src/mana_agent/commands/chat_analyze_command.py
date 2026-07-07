@@ -27,7 +27,7 @@ from mana_agent.services.structure_service import StructureService
 from mana_agent.services.vulnerability_service import VulnerabilityService
 from mana_agent.analysis.checks import PythonStaticAnalyzer
 from mana_agent.utils.io import iter_python_files
-from mana_agent.cli.fullscreen_chat import MenuOption, select_option
+from mana_agent.cli.menu import MenuOption, select_option
 
 from .analyze_formats import (
     ANALYZE_ARTIFACTS,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import uuid
 from dataclasses import dataclass, field
@@ -60,13 +61,23 @@ class ChatUIState:
     tool_worker_backend: str = "local"
     log_path: Path | None = None
     trace_path: Path | None = None
+    session_path: Path | None = None
     session_id: str = field(default_factory=lambda: f"sess-{uuid.uuid4().hex}")
     tracker: TokenUsageTracker = field(default_factory=TokenUsageTracker)
     trace: SessionTrace | None = None
     events: list[ChatEvent] = field(default_factory=list)
+    events_by_id: dict[str, ChatEvent] = field(default_factory=dict)
+    event_order: list[str] = field(default_factory=list)
     tool_runs: list[ChatEvent] = field(default_factory=list)
     subagent_events: list[ChatEvent] = field(default_factory=list)
+    file_events: list[ChatEvent] = field(default_factory=list)
+    test_runs: list[ChatEvent] = field(default_factory=list)
+    log_events: list[ChatEvent] = field(default_factory=list)
     conversation: list[dict[str, str]] = field(default_factory=list)
+    active_panel: str = "chat"
+    verbose_logs: bool = False
+    compact_mode: bool = False
+    timeline_scroll_offset: int = 0
 
     def __post_init__(self) -> None:
         self.repo_root = Path(self.repo_root).resolve()
@@ -75,6 +86,8 @@ class ChatUIState:
         if self.trace_path is None:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.trace_path = self.repo_root / ".mana" / "traces" / f"session_{stamp}.jsonl"
+        if self.session_path is None:
+            self.session_path = self.repo_root / ".mana" / "sessions" / f"{self.session_id}.jsonl"
         if self.trace is None:
             self.trace = SessionTrace(
                 session_id=self.session_id,
@@ -89,14 +102,92 @@ class ChatUIState:
     def record_event(self, event: ChatEvent) -> ChatEvent:
         if not event.session_id:
             event.session_id = self.session_id
-        self.events.append(event)
+        stored = self._upsert_event(event)
+        self._persist_session_event(event)
         if self.trace is not None:
             self.trace.record(event)
+        self._sync_event_collections(stored)
+        return stored
+
+    @property
+    def normalized_events(self) -> list[ChatEvent]:
+        return [self.events_by_id[event_id] for event_id in self.event_order if event_id in self.events_by_id]
+
+    def _upsert_event(self, event: ChatEvent) -> ChatEvent:
+        existing = self.events_by_id.get(event.event_id)
+        if existing is None:
+            self.events_by_id[event.event_id] = event
+            self.event_order.append(event.event_id)
+            self.events.append(event)
+            return event
+        existing.parent_event_id = event.parent_event_id or existing.parent_event_id
+        existing.session_id = event.session_id or existing.session_id
+        existing.turn_id = event.turn_id or existing.turn_id
+        existing.agent_id = event.agent_id if event.agent_id is not None else existing.agent_id
+        existing.subagent_id = event.subagent_id if event.subagent_id is not None else existing.subagent_id
+        existing.step_id = event.step_id if event.step_id is not None else existing.step_id
+        existing.type = event.type or existing.type
+        existing.status = event.status or existing.status
+        existing.title = event.title or existing.title
+        existing.summary = event.summary if event.summary is not None else existing.summary
+        existing.ended_at = event.ended_at or existing.ended_at
+        existing.duration_ms = event.duration_ms if event.duration_ms is not None else existing.duration_ms
+        existing.token_usage = event.token_usage or existing.token_usage
+        existing.metadata.update(event.metadata or {})
+        return existing
+
+    def _sync_event_collections(self, event: ChatEvent) -> None:
         if event.type.startswith("tool."):
-            self.tool_runs.append(event)
+            _upsert_collection(self.tool_runs, event)
         if event.type.startswith("subagent.") or event.subagent_id:
-            self.subagent_events.append(event)
-        return event
+            _upsert_collection(self.subagent_events, event)
+        if event.type.startswith("file.") or event.type.startswith("patch.") or event.metadata.get("path") or event.metadata.get("file_path"):
+            _upsert_collection(self.file_events, event)
+        if event.type.startswith("test.") or event.metadata.get("command"):
+            _upsert_collection(self.test_runs, event)
+        if event.type.startswith("log.") or event.type in {"tool.stdout", "tool.stderr"}:
+            _upsert_collection(self.log_events, event)
+
+    def update_event_status(
+        self,
+        event_id: str,
+        *,
+        status: str,
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> ChatEvent:
+        original = self.events_by_id.get(event_id)
+        if original is None:
+            original = next((item for item in reversed(self.events) if item.event_id == event_id), None)
+        if original is None:
+            raise ValueError(f"Cannot update unknown event id: {event_id}")
+        updated = make_event(
+            original.type,
+            title=original.title,
+            message=message if message is not None else original.message,
+            status=status,
+            session_id=self.session_id,
+            turn_id=original.turn_id,
+            agent_id=original.agent_id,
+            subagent_id=original.subagent_id,
+            step_id=original.step_id,
+            parent_event_id=original.parent_event_id,
+            token_usage=original.token_usage,
+            metadata={**original.metadata, **(details or {}), "updates_event_id": event_id},
+        )
+        updated.event_id = event_id
+        updated.started_at = original.started_at
+        return self.record_event(updated.finish(status=status, message=updated.message))
+
+    def _persist_session_event(self, event: ChatEvent) -> None:
+        if self.session_path is None:
+            return
+        try:
+            self.session_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.session_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event.as_dict(), ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            return
 
     def start_turn(self, turn_id: str) -> ChatEvent:
         self.tracker.start_turn(turn_id)
@@ -187,11 +278,19 @@ def detect_skills_status(root: Path) -> str:
     return "not found"
 
 
+def _upsert_collection(collection: list[ChatEvent], event: ChatEvent) -> None:
+    for index, existing in enumerate(collection):
+        if existing.event_id == event.event_id:
+            collection[index] = event
+            return
+    collection.append(event)
+
+
 def default_ui_mode(console: Console, *, as_json: bool = False) -> str:
     if as_json:
         return "json"
     env_mode = str(os.getenv("MANA_CHAT_UI", "") or "").strip().lower()
-    if env_mode in {"fullscreen", "rich", "compact", "plain", "json"}:
+    if env_mode in {"rich", "compact", "plain", "json"}:
         return env_mode
     if not bool(getattr(console, "is_terminal", False)) or os.getenv("CI"):
         return "plain"
@@ -200,13 +299,6 @@ def default_ui_mode(console: Console, *, as_json: bool = False) -> str:
         return "plain"
     if width < 100:
         return "compact"
-    try:
-        from mana_agent.cli.fullscreen_chat import fullscreen_available
-
-        if fullscreen_available():
-            return "fullscreen"
-    except Exception:
-        pass
     return "rich"
 
 
@@ -249,35 +341,6 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
         state.record_event(ready)
         console.print(state.renderer.render_event(ready))
         return
-    if state.ui_mode == "fullscreen":
-        try:
-            from mana_agent.cli.fullscreen_chat import show_startup_pet_animation
-
-            show_startup_pet_animation()
-        except Exception:
-            pass
-        state.record_event(
-            make_event(
-                "session.started",
-                title="Mana-Agent session started",
-                status="success",
-                session_id=state.session_id,
-                message=str(state.repo_root),
-                metadata=startup_metadata(state),
-            ).finish(status="success")
-        )
-        state.record_event(
-            make_event(
-                "session.ready",
-                title="Ready",
-                status="success",
-                session_id=state.session_id,
-                message="Ready for chat input.",
-                metadata={"prompt": "mana >"},
-            ).finish(status="success")
-        )
-        return
-
     branch = git_branch(state.repo_root)
     width = max(60, int(getattr(console, "width", 100) or 100))
     cwd_text = compact_path(state.repo_root, width=max(36, width - 4))

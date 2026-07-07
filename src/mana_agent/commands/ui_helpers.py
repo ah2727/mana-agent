@@ -29,14 +29,13 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from mana_agent.cli.chat_ui import ChatUIState, git_branch, render_status
+from mana_agent.cli.chat_ui import ChatUIState, render_status
 from mana_agent.cli.events import ChatEvent, make_event
-from mana_agent.cli.renderers import EventRenderer, format_token_usage
+from mana_agent.cli.renderers import EventRenderer
 from mana_agent.config.settings import default_diagrams_dir
 from mana_agent.multi_agent.runtime.ask_agent import AskAgent
 from mana_agent.multi_agent.runtime.run_logger import LlmRunLogger
 from mana_agent.services.coding_memory_service import CodingMemoryService
-from mana_agent.telemetry.tokens import TokenUsage
 
 logger = logging.getLogger('mana_agent.commands.cli')
 UNLIMITED_AGENT_MAX_STEPS = 1_000_000_000
@@ -585,11 +584,6 @@ def set_active_chat_ui_state(state: ChatUIState | None) -> None:
     _ACTIVE_CHAT_UI_STATE = state
 
 
-def fullscreen_chat_ui_active() -> bool:
-    state = _ACTIVE_CHAT_UI_STATE
-    return bool(state is not None and state.ui_mode == "fullscreen")
-
-
 def emit_chat_event(event: ChatEvent) -> ChatEvent:
     state = _ACTIVE_CHAT_UI_STATE
     if state is not None:
@@ -816,6 +810,15 @@ _DIRECT_COMMANDS: frozenset[str] = frozenset(
         "/tokens",
         "/tools",
         "/agents",
+        "/subagents",
+        "/timeline",
+        "/diff",
+        "/tests",
+        "/logs",
+        "/verbose",
+        "/compact",
+        "/expanded",
+        "/cancel",
         "/trace",
         "/ui",
     }
@@ -856,7 +859,12 @@ def _classify_direct_command(question: str) -> str | None:
     that real questions like "help me fix the parser" are not intercepted.
     """
     text = str(question or "").strip().lower().rstrip("!.?")
-    if text.startswith("/trace ") or text.startswith("/ui ") or text.startswith("/status "):
+    if (
+        text.startswith("/trace ")
+        or text.startswith("/ui ")
+        or text.startswith("/status ")
+        or text.startswith("/verbose ")
+    ):
         return text.split(None, 1)[0]
     if text in _DIRECT_COMMANDS:
         return text
@@ -953,6 +961,10 @@ def _render_direct_command(
     normalized = str(command or "").strip().lower()
     if normalized.startswith("/") and normalized not in {"/trace", "/ui"}:
         normalized = normalized[1:]
+
+    def _print(renderable: Any) -> None:
+        console.print(renderable)
+
     if normalized == "ping":
         answer = "pong"
     elif normalized in {"hello", "hi"}:
@@ -965,7 +977,13 @@ def _render_direct_command(
             "- /model — show provider/model\n"
             "- /tokens — detailed token accounting\n"
             "- /tools — enabled tools plus recent tool runs/failures\n"
-            "- /agents — active/completed subagent activity\n"
+            "- /agents or /subagents — active/completed subagent activity\n"
+            "- /timeline — chronological event history\n"
+            "- /diff — changed-file and patch summary\n"
+            "- /tests — verification history\n"
+            "- /logs — raw logs only when verbose mode is enabled\n"
+            "- /verbose on|off — toggle detailed log visibility\n"
+            "- /compact or /expanded — switch compact status rendering\n"
             "- /trace off|compact|full — control trace detail\n"
             "- /ui rich|compact|plain|json — switch renderer mode\n"
             "- /clear — clear visible history\n"
@@ -977,7 +995,7 @@ def _render_direct_command(
     elif normalized == "status":
         if ui_state is not None:
             full = str(raw_question or "").strip().lower() in {"/status full", "status full"}
-            console.print(render_status(ui_state, full=full))
+            _print(render_status(ui_state, full=full))
             return "Displayed full status." if full else "Displayed status."
         index_line = (
             "available (semantic search enabled)"
@@ -997,14 +1015,57 @@ def _render_direct_command(
         else:
             answer = "provider/model unavailable"
     elif normalized == "tokens" and ui_state is not None:
-        console.print(ui_state.renderer.render_tokens(ui_state.tracker))
+        _print(ui_state.renderer.render_tokens(ui_state.tracker))
         return "Displayed token usage."
     elif normalized == "tools" and ui_state is not None:
-        console.print(ui_state.renderer.render_tool_activity(ui_state.tool_runs))
+        ui_state.active_panel = "tools"
+        _print(ui_state.renderer.render_tools_table(ui_state.tool_runs))
         return "Displayed tool activity."
-    elif normalized == "agents" and ui_state is not None:
-        console.print(ui_state.renderer.render_subagents(ui_state.subagent_events))
+    elif normalized in {"agents", "subagents"} and ui_state is not None:
+        ui_state.active_panel = "subagents"
+        _print(ui_state.renderer.render_subagents(ui_state.subagent_events))
         return "Displayed subagent activity."
+    elif normalized == "timeline" and ui_state is not None:
+        ui_state.active_panel = "timeline"
+        _print(ui_state.renderer.render_timeline(ui_state.normalized_events))
+        return "Displayed timeline."
+    elif normalized == "diff" and ui_state is not None:
+        ui_state.active_panel = "diff"
+        _print(ui_state.renderer.render_diff(ui_state.file_events or ui_state.events))
+        return "Displayed diff summary."
+    elif normalized == "tests" and ui_state is not None:
+        ui_state.active_panel = "tests"
+        _print(ui_state.renderer.render_tests(ui_state.test_runs or ui_state.events))
+        return "Displayed test history."
+    elif normalized == "logs" and ui_state is not None:
+        ui_state.active_panel = "logs"
+        if not ui_state.verbose_logs:
+            answer = "Verbose logs are hidden. Run `/verbose on` before using `/logs`."
+        else:
+            _print(ui_state.renderer.render_log_lines(_tail_file(ui_state.log_path, limit=80)))
+            return "Displayed logs."
+    elif normalized == "verbose" and ui_state is not None:
+        requested = str(raw_question or "").strip().split(maxsplit=1)
+        if len(requested) == 2:
+            ui_state.verbose_logs = requested[1].strip().lower() in {"1", "true", "yes", "on", "full"}
+        answer = f"verbose logs: {'on' if ui_state.verbose_logs else 'off'}"
+    elif normalized == "compact" and ui_state is not None:
+        ui_state.compact_mode = True
+        answer = "compact mode: on"
+    elif normalized == "expanded" and ui_state is not None:
+        ui_state.compact_mode = False
+        answer = "compact mode: off"
+    elif normalized == "cancel" and ui_state is not None:
+        event = make_event(
+            "warning",
+            title="Cancel requested",
+            message="No running task was cancelled from this direct command handler.",
+            status="warning",
+            session_id=ui_state.session_id,
+            turn_id=ui_state.tracker.current_turn_id,
+        ).finish(status="warning")
+        ui_state.record_event(event)
+        answer = "Cancel requested. No active synchronous task was available to stop."
     elif normalized == "/trace" and ui_state is not None:
         requested = str(raw_question or "").strip().split(maxsplit=1)
         if len(requested) == 2:
@@ -1015,7 +1076,7 @@ def _render_direct_command(
             console.print(ui_state.renderer.render_log_lines(_tail_file(ui_state.log_path, limit=40)))
             return "Displayed trace logs."
         if ui_state.trace_mode == "full":
-            console.print(ui_state.renderer.render_events(ui_state.events[-40:], title="Trace events"))
+            console.print(ui_state.renderer.render_events(ui_state.normalized_events[-40:], title="Trace events"))
             return "Displayed full trace."
         answer = f"trace mode: {ui_state.trace_mode}\ntrace path: {ui_state.trace_path}"
     elif normalized == "/ui" and ui_state is not None:
@@ -1074,34 +1135,12 @@ def _run_with_live_buffer(
         set_active_tool_activity(live_activity)
     use_live_activity = bool(
         manage_live
-        and not fullscreen_chat_ui_active()
         and _use_live_tool_activity(console)
     )
 
     try:
         if manage_live:
-            if fullscreen_chat_ui_active():
-                state = _ACTIVE_CHAT_UI_STATE
-                if state is None:
-                    result = fn(callbacks=callbacks or [])
-                else:
-                    from mana_agent.cli.fullscreen_chat import run_fullscreen_worker
-
-                    old_quiet = bool(getattr(console, "quiet", False))
-
-                    def _worker() -> object:
-                        console.quiet = True
-                        try:
-                            return fn(callbacks=callbacks or [])
-                        finally:
-                            console.quiet = old_quiet
-
-                    result = run_fullscreen_worker(
-                        state,
-                        title=spinner_text,
-                        worker=_worker,
-                    )
-            elif use_live_activity:
+            if use_live_activity:
                 with Live(live_activity, console=console, refresh_per_second=12, transient=True):
                     result = fn(callbacks=callbacks or [])
             else:
@@ -1112,8 +1151,7 @@ def _run_with_live_buffer(
         root_logger.removeHandler(log_buf)
         if manage_live:
             set_active_tool_activity(None)
-            if not fullscreen_chat_ui_active():
-                console.print(live_activity)
+            console.print(live_activity)
 
     return result, ""
 
@@ -2000,17 +2038,6 @@ def _read_chat_input(
     to plain ``input()`` collection (tests, pipes, CI, or when prompt_toolkit is
     unavailable), preserving the legacy ``/paste`` + terminator behavior.
     """
-    state = _ACTIVE_CHAT_UI_STATE
-    if state is not None and state.ui_mode == "fullscreen":
-        try:
-            from mana_agent.cli.fullscreen_chat import read_fullscreen_chat_input
-
-            return read_fullscreen_chat_input(state)
-        except (EOFError, KeyboardInterrupt):
-            raise
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            logger.debug("full-screen chat input unavailable; using prompt fallback", extra={"error": str(exc)})
-
     if multiline_enabled:
         try:
             from mana_agent.commands.chat_input import (

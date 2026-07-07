@@ -8,8 +8,8 @@ from rich.console import Console
 
 from mana_agent.cli.chat_ui import ChatUIState, compact_path, default_ui_mode, render_startup_header, render_status
 from mana_agent.cli.events import make_event
-from mana_agent.cli.fullscreen_chat import MenuOption, _agents_text, _tools_text, select_option, token_bar
-from mana_agent.cli.renderers import EventRenderer
+from mana_agent.cli.menu import MenuOption, select_option
+from mana_agent.cli.renderers import EventRenderer, InlineChatRenderer
 from mana_agent.telemetry.tokens import TokenUsageTracker, token_usage_from_provider
 
 
@@ -104,8 +104,71 @@ def test_event_schema_contains_required_fields() -> None:
     ):
         assert key in data
     assert data["type"] == "tool.finished"
+    assert data["kind"] == "tool"
+    assert data["id"] == data["event_id"]
+    assert data["details"]["path"] == "src/app.py"
     assert data["summary"] == "Read src/app.py"
     assert data["token_usage"] is None
+
+
+def test_agent_event_aliases_and_append_only_status_update(tmp_path: Path) -> None:
+    state = ChatUIState(repo_root=tmp_path, provider="openai", model="gpt-test", ui_mode="plain")
+    event = make_event(
+        "tool_started",
+        title="repo_search",
+        message="searching",
+        status="running",
+        metadata={"tool_name": "repo_search"},
+    )
+
+    assert event.kind == "tool"
+    assert event.type == "tool.started"
+    event.details = {"tool_name": "repo_search", "target": "chat tui"}
+    event.parent_id = "parent-1"
+    state.record_event(event)
+    state.update_event_status(event.id, status="success", message="8 matches", details={"result_summary": "8 matches"})
+
+    assert len(state.events) == 1
+    assert len(state.normalized_events) == 1
+    assert state.events[-1].id == event.id
+    assert state.events[-1].parent_id == "parent-1"
+    assert state.events[-1].status == "success"
+    assert state.session_path is not None and state.session_path.exists()
+    persisted = state.session_path.read_text(encoding="utf-8")
+    assert '"kind": "tool"' in persisted
+
+
+def test_timeline_normalizes_updates_and_hides_raw_event_names(tmp_path: Path) -> None:
+    state = ChatUIState(repo_root=tmp_path, provider="openai", model="gpt-test", ui_mode="plain")
+    event = state.record_event(
+        make_event(
+            "plan_step_started",
+            title="Routing decision",
+            message="Routing decision is running.",
+            status="running",
+        )
+    )
+    state.update_event_status(event.id, status="completed", message="Routing complete")
+
+    rendered = _render_to_text(state.renderer.render_timeline(state.normalized_events))
+
+    assert rendered.count("Routing complete") == 1
+    assert "plan_step_started" not in rendered
+    assert "Completed" not in rendered
+    assert "✓" in rendered or "ok" in rendered
+
+
+def test_timeline_truncates_long_reasoning_summaries() -> None:
+    event = make_event(
+        "thinking_summary",
+        title="Reasoning",
+        message="Internal analysis " * 30,
+        status="success",
+    ).finish(status="success")
+    rendered = _render_to_text(EventRenderer(mode="plain").render_timeline([event]))
+
+    assert "Reasoning updated" in rendered
+    assert "Internal analysis Internal analysis" not in rendered
 
 
 def test_event_renderer_modes_render_without_raw_json_noise() -> None:
@@ -126,7 +189,45 @@ def test_event_renderer_modes_render_without_raw_json_noise() -> None:
     assert "Agent decision" in compact_text
     assert "inspect CLI renderer" in plain_text
     assert json.loads(json_text)["type"] == "agent.decision"
-    assert EventRenderer.normalize_mode("fullscreen") == "fullscreen"
+    assert EventRenderer.normalize_mode("fullscreen") == "rich"
+
+
+def test_event_renderer_renders_inline_status_and_tabs() -> None:
+    events = [
+        make_event(
+            "file_read",
+            title="README.md",
+            status="success",
+            metadata={"path": "README.md"},
+        ).finish(status="success"),
+        make_event(
+            "patch_applied",
+            title="src/app.py",
+            message="Updated UI",
+            status="success",
+            metadata={"path": "src/app.py", "insertions": 3, "deletions": 1},
+        ).finish(status="success"),
+        make_event(
+            "test_done",
+            title="pytest tests/test_chat_ui.py",
+            status="success",
+            metadata={"command": "pytest tests/test_chat_ui.py", "result_summary": "passed"},
+        ).finish(status="success"),
+    ]
+    renderer = EventRenderer(mode="plain")
+
+    inline = str(renderer.render_inline_status(events))
+    timeline = _render_to_text(renderer.render_timeline(events))
+    files = _render_to_text(renderer.render_files(events))
+    diff = _render_to_text(renderer.render_diff(events))
+    tests = _render_to_text(renderer.render_tests(events))
+
+    assert "files read 1" in inline
+    assert "files changed 1" in inline
+    assert "Timeline" in timeline
+    assert "README.md" in files
+    assert "src/app.py" in diff
+    assert "pytest tests/test_chat_ui.py" in tests
 
 
 def test_default_ui_mode_keeps_non_tty_plain(monkeypatch) -> None:
@@ -137,17 +238,102 @@ def test_default_ui_mode_keeps_non_tty_plain(monkeypatch) -> None:
     assert default_ui_mode(console) == "plain"
 
 
-def test_env_ui_mode_accepts_fullscreen() -> None:
+def test_env_ui_mode_rejects_fullscreen() -> None:
     console = Console(record=True, width=100)
     old = os.environ.get("MANA_CHAT_UI")
     try:
         os.environ["MANA_CHAT_UI"] = "fullscreen"
-        assert default_ui_mode(console) == "fullscreen"
+        assert default_ui_mode(console) == "plain"
     finally:
         if old is None:
             os.environ.pop("MANA_CHAT_UI", None)
         else:
             os.environ["MANA_CHAT_UI"] = old
+
+
+def test_default_ui_mode_is_terminal_native_not_fullscreen(monkeypatch) -> None:
+    monkeypatch.delenv("MANA_CHAT_UI", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    console = Console(force_terminal=True, width=140)
+
+    assert default_ui_mode(console) in {"rich", "compact"}
+    assert default_ui_mode(console) != "fullscreen"
+
+
+def test_inline_renderer_collapses_repeated_events_and_avoids_timeline_panel() -> None:
+    console = Console(record=True, width=100)
+    renderer = InlineChatRenderer(console, mode="rich")
+    event = make_event(
+        "RoutingStarted",
+        title="routing request",
+        message="Running.",
+        status="running",
+    )
+
+    renderer.render_event(event)
+    renderer.render_event(event)
+
+    rendered = console.export_text()
+    assert rendered.count("routing request") == 1
+    assert "Timeline" not in rendered
+    assert "╭" not in rendered
+
+
+def test_inline_renderer_renders_tool_and_subagent_events_compactly() -> None:
+    console = Console(record=True, width=100)
+    renderer = InlineChatRenderer(console, mode="rich")
+    renderer.render_event(
+        make_event(
+            "ToolStarted",
+            title="repo_search",
+            status="running",
+            metadata={"tool_name": "repo_search", "args_summary": '"openclaw"'},
+        )
+    )
+    renderer.render_event(
+        make_event(
+            "ToolCompleted",
+            title="repo_search",
+            message="12 matches",
+            status="success",
+            metadata={"tool_name": "repo_search", "result_summary": "12 matches"},
+        ).finish(status="success")
+    )
+    renderer.render_event(
+        make_event(
+            "SubagentCreated",
+            title="coding agent",
+            status="success",
+            subagent_id="coding-agent-0002",
+            metadata={"role": "refactor chat renderer"},
+        ).finish(status="success")
+    )
+    renderer.render_event(
+        make_event(
+            "SubagentCompleted",
+            title="coding agent",
+            status="success",
+            subagent_id="coding-agent-0002",
+        ).finish(status="success")
+    )
+
+    rendered = console.export_text()
+    assert '→ tool repo_search "openclaw"' in rendered
+    assert "✓ tool repo_search 12 matches" in rendered
+    assert "↳ subagent coding-agent-0002 created: refactor chat renderer" in rendered
+    assert "  ✓ coding-agent-0002 completed" in rendered
+    assert "{" not in rendered
+
+
+def test_inline_renderer_final_response_appears_once() -> None:
+    console = Console(record=True, width=100)
+    renderer = InlineChatRenderer(console, mode="rich")
+
+    renderer.render_final("Final **answer**.")
+
+    rendered = console.export_text()
+    assert rendered.count("Final answer.") == 1
+    assert "Timeline" not in rendered
 
 
 def test_tools_and_subagents_render_from_events_only() -> None:
@@ -184,7 +370,6 @@ def test_tools_and_subagents_render_from_events_only() -> None:
 
 
 def test_tool_activity_keeps_nested_subagent_events_with_shared_step_id() -> None:
-    state = ChatUIState(repo_root=Path.cwd(), provider="openai", model="gpt-test", ui_mode="fullscreen")
     events = [
         make_event(
             "tool.started",
@@ -236,25 +421,21 @@ def test_tool_activity_keeps_nested_subagent_events_with_shared_step_id() -> Non
     ]
     for duration, event in zip((0, 376, 944, 3), events):
         event.duration_ms = duration
-        state.record_event(event)
     renderer = EventRenderer(mode="rich")
 
     rich_text = _render_to_text(renderer.render_tool_activity(events))
     compact_text = _render_to_text(EventRenderer(mode="compact").render_tool_activity(events))
-    fullscreen_text = _tools_text(state)
-    agents_text = _agents_text(state)
+    subagent_text = _render_to_text(renderer.render_subagents(events))
 
     for expected in ("subagent_tool_worker_0001", "tool_worker", "ls", "list_files", "read_file"):
         assert expected in rich_text
         assert expected in compact_text
-        assert expected in fullscreen_text
-    assert "subagent_tool_worker_0001" in agents_text
-    assert "MODEL_LEVEL_1_FAST_TOOL" in agents_text
-    assert "tool_worker" in agents_text
+    assert "subagent_tool_worker_0" in subagent_text
+    assert "MODEL_LEVEL_1_FAST_TOOL" in subagent_text
+    assert "tool_worker" in subagent_text
     assert "MODEL_LEVEL_1_FAST_TOOL" in rich_text
     assert "fast-model" in rich_text
     assert "list_files ✓ 944ms" in compact_text
-    assert "read_file ✓ 3ms" in fullscreen_text
 
 
 def test_chat_ui_startup_header_and_token_command_render() -> None:
@@ -280,31 +461,6 @@ def test_chat_ui_startup_header_and_token_command_render() -> None:
     assert "~" in rendered
     assert "Chat Mode" not in rendered
     assert "[INFO]" not in rendered
-
-
-def test_fullscreen_token_renderer_includes_progress_bars() -> None:
-    state = ChatUIState(
-        repo_root=Path.cwd(),
-        provider="openai",
-        model="gpt-test",
-        skills_status="indexed",
-        ui_mode="fullscreen",
-    )
-    state.tracker.start_turn("turn-1")
-    state.tracker.record_model_call(
-        "call-1",
-        usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-        step_id="05",
-        turn_id="turn-1",
-    )
-    state.tracker.record_tool_result("tool-1", "tool output", step_id="08", turn_id="turn-1")
-
-    rendered = _render_to_text(state.renderer.render_tokens(state.tracker))
-
-    assert "turn bar" in rendered
-    assert "session bar" in rendered
-    assert "step 05" in rendered
-    assert token_bar(3, 6, width=6) == "[###---] 3/6"
 
 
 def test_arrow_menu_helper_fallback_accepts_number_and_alias() -> None:

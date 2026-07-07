@@ -4,7 +4,7 @@ import warnings
 
 from .cli_internal import *
 from .output import build_output_sink
-from mana_agent.cli.fullscreen_chat import MenuOption, select_option
+from mana_agent.cli.menu import MenuOption, select_option
 from mana_agent.ui.banner import render_banner, render_repository
 
 

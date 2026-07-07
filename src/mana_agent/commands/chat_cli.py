@@ -39,7 +39,7 @@ from mana_agent.cli.chat_ui import (
     render_status,
 )
 from mana_agent.cli.events import make_event
-from mana_agent.cli.fullscreen_chat import MenuOption, select_option
+from mana_agent.cli.renderers import InlineChatRenderer
 
 
 _NEW_TOPIC_COMMANDS = {"/new", "/new-topic", "new topic", "new topic chat"}
@@ -542,6 +542,7 @@ def chat(
         help="Timeout in seconds for Mermaid artifact rendering.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
+    simple: bool = typer.Option(False, "--simple", help="Use the plain chat renderer."),
     welcome: str = typer.Option(
         "compact",
         "--welcome",
@@ -756,7 +757,7 @@ def chat(
         approvals="auto",
         memory_enabled=bool(coding_memory and coding_agent),
         skills_status=detect_skills_status(root),
-        ui_mode=default_ui_mode(console, as_json=as_json),
+        ui_mode=("plain" if simple else default_ui_mode(console, as_json=as_json)),
         index_path=str(index_dir or default_index_dir(root)),
         k_value=resolved_k,
         ephemeral_index=bool(ephemeral_index),
@@ -1134,6 +1135,8 @@ def chat(
         full_auto_passes_total: int = 0
         full_auto_pass_checkpoints_emitted: int = 0
 
+        inline_renderer = InlineChatRenderer(console, mode=chat_ui_state.ui_mode)
+
         def _finish_ui_turn(turn_id: str, message: str = "Final response rendered.") -> None:
             chat_ui_state.finish_turn(turn_id, message=message)
             summary = chat_ui_state.execution_summary(turn_id=turn_id)
@@ -1146,15 +1149,45 @@ def chat(
             ):
                 console.print("\n[bold]Execution summary[/bold]")
                 console.print(summary)
-            if chat_ui_state.trace_mode == "off":
+            detailed_timeline_enabled = bool(
+                chat_ui_state.verbose_logs
+                or _cli_verbose_enabled()
+                or chat_ui_state.trace_mode == "full"
+            )
+            if not detailed_timeline_enabled:
+                return
+            if chat_ui_state.trace_mode == "off" or chat_ui_state.active_panel != "timeline":
                 return
             turn_events = [
                 event
-                for event in chat_ui_state.events
+                for event in chat_ui_state.normalized_events
                 if event.turn_id == turn_id and not event.type.startswith("tool.")
             ]
             if turn_events:
-                console.print(chat_ui_state.renderer.render_events(turn_events, title="Step timeline"))
+                console.print(chat_ui_state.renderer.render_timeline(turn_events))
+
+        def _run_chat_event_step(title: str, worker, *, event_type: str = "step.started", tool_name: str | None = None):
+            event = chat_ui_state.record_event(
+                make_event(
+                    event_type,
+                    title=title.rstrip("."),
+                    message="Running.",
+                    status="running",
+                    session_id=chat_ui_state.session_id,
+                    turn_id=chat_ui_state.tracker.current_turn_id,
+                    metadata={"tool_name": tool_name} if tool_name else None,
+                )
+            )
+            inline_renderer.render_event(event)
+            try:
+                result = worker()
+                completed = chat_ui_state.update_event_status(event.event_id, status="success", message="Completed.")
+                inline_renderer.render_event(completed)
+                return result
+            except BaseException as exc:
+                failed = chat_ui_state.update_event_status(event.event_id, status="failed", message=str(exc) or "Failed.")
+                inline_renderer.render_event(failed)
+                raise
 
         def _start_new_topic() -> str | None:
             nonlocal active_flow_id, pending_conflict_question
@@ -2012,7 +2045,11 @@ def chat(
 
             original_auto_question = question
             question = resolve_auto_followup(question, auto_chat_state)
-            agent_decision = _decide_chat_route(ask_service=ask_service, question=question, root=root)
+            agent_decision = _run_chat_event_step(
+                "Decision routing...",
+                lambda: _decide_chat_route(ask_service=ask_service, question=question, root=root),
+                event_type="RoutingStarted",
+            )
             auto_chat_mode = _auto_chat_mode_from_agent_decision(
                 agent_decision,
                 classify_auto_chat_intent(question),
@@ -2020,7 +2057,11 @@ def chat(
             if is_plan_execution_request(question):
                 auto_chat_mode = AutoChatMode.EDIT
 
-            small_direct_edit_result = handle_small_direct_edit(root, question)
+            small_direct_edit_result = _run_chat_event_step(
+                "Checking direct edit...",
+                lambda: handle_small_direct_edit(root, question),
+                event_type="ReasoningStarted",
+            )
             if small_direct_edit_result.handled:
                 answer_text = small_direct_edit_result.answer
                 _render_answer_header(console)
@@ -2085,11 +2126,16 @@ def chat(
                 and agent_decision.web_search_needed
                 and not agent_decision.code_editing_needed
             ):
-                answer_text, sources, trace = _run_web_research_answer(
-                    ask_service=ask_service,
-                    question=question,
-                    root=root,
-                    decision=agent_decision,
+                answer_text, sources, trace = _run_chat_event_step(
+                    "Web search...",
+                    lambda: _run_web_research_answer(
+                        ask_service=ask_service,
+                        question=question,
+                        root=root,
+                        decision=agent_decision,
+                    ),
+                    event_type="ToolStarted",
+                    tool_name="web_search",
                 )
                 _render_answer_header(console, title="Web search")
                 console.print(Markdown(answer_text))
@@ -2152,7 +2198,12 @@ def chat(
                 and coding_agent_instance is None
             ):
                 tool_query = str((agent_decision.tool_inputs.get("repo_search") or {}).get("query") or question).strip()
-                search_result = project_search(tool_query, root)
+                search_result = _run_chat_event_step(
+                    "Repository search...",
+                    lambda: project_search(tool_query, root),
+                    event_type="ToolStarted",
+                    tool_name="repo_search",
+                )
                 if search_result.matches:
                     body = search_result.format(root)
                     if search_result.truncated:
@@ -2253,27 +2304,6 @@ def chat(
                 if pending_ui_selection is None:
                     pass
                 else:
-                    if (
-                        chat_ui_state.ui_mode == "fullscreen"
-                        and not bool(pending_ui_selection.get("allow_free_text", False))
-                        and isinstance(pending_ui_selection.get("options"), list)
-                    ):
-                        selection_id = str(pending_ui_selection.get("id", "selection") or "selection")
-                        menu_options: list[MenuOption] = []
-                        for idx, item in enumerate(pending_ui_selection.get("options") or [], start=1):
-                            if not isinstance(item, dict):
-                                continue
-                            option_id = str(item.get("id", "") or item.get("value", "") or idx)
-                            label = str(item.get("label", "") or item.get("title", "") or option_id)
-                            value = str(item.get("value", option_id) or option_id)
-                            menu_options.append(MenuOption(option_id, label, (str(idx), value)))
-                        selected_option = select_option(
-                            title="Selection",
-                            text=str(pending_ui_selection.get("prompt", "") or pending_ui_selection.get("title", "") or "Choose an option."),
-                            options=menu_options,
-                        )
-                        if selected_option:
-                            question = selected_option
                     selection_kind, selection_payload = _resolve_ui_selection_input(pending_ui_selection, question)
                     selection_id = str(pending_ui_selection.get("id", "selection") or "selection")
 
@@ -2547,26 +2577,6 @@ def chat(
                             "Full-auto flow conflict auto-continued",
                             extra={"flow_id": active_flow_id, "question": question},
                         )
-                    elif chat_ui_state.ui_mode == "fullscreen":
-                        selected_flow_action = select_option(
-                            title="Active flow",
-                            text="This request appears to diverge from the active flow.",
-                            options=[
-                                MenuOption("continue", "Continue current flow", ("1", "c")),
-                                MenuOption("new", "Start new topic", ("2", "n", "new topic", "/new-topic")),
-                            ],
-                        )
-                        if selected_flow_action in {"continue", "1", "c"}:
-                            pass
-                        elif selected_flow_action in {"new", "2", "n", "new topic", "/new-topic"}:
-                            _start_new_topic()
-                        else:
-                            pending_conflict_question = question
-                            console.print(
-                                "[yellow]This request appears to diverge from the active flow.[/yellow] "
-                                "Type [bold]continue[/bold] to keep current flow or [bold]new/new topic[/bold] to start a new flow."
-                            )
-                            continue
                     else:
                         pending_conflict_question = question
                         console.print(
@@ -2811,10 +2821,7 @@ def chat(
                         show_all_logs=_cli_verbose_enabled(),
                     )
                     set_active_tool_activity(activity)
-                    use_live_activity = bool(
-                        not fullscreen_chat_ui_active()
-                        and _use_live_tool_activity(console)
-                    )
+                    use_live_activity = bool(_use_live_tool_activity(console))
                     cycle_result: dict[str, object] = {}
 
                     def _run_generation_cycles() -> None:
@@ -2826,76 +2833,60 @@ def chat(
                         nonlocal turn_full_auto_passes_total
                         nonlocal turn_resume_run_id
 
-                        old_quiet = bool(getattr(console, "quiet", False))
-                        if fullscreen_chat_ui_active():
-                            console.quiet = True
-                        try:
-                            while True:
-                                cycle_payload, cycle_debug_tail = _run_with_live_buffer(
-                                    console,
-                                    spinner_text="Coding…",
-                                    fn=_call,
-                                    callbacks=[cb],
-                                    show_all_logs=_cli_verbose_enabled(),
-                                    activity=activity,
-                                    manage_live=False,
-                                )
-                                cycle_result["result"] = cycle_payload
-                                cycle_result["debug_tail"] = cycle_debug_tail
-                                if not (
-                                    chat_auto_continue
-                                    and execute_plan_now
-                                    and isinstance(cycle_payload, dict)
-                                ):
-                                    break
-                                turn_full_auto_passes_total += _ingest_full_auto_pass_payload(cycle_payload)
-                                terminal_reason = str((cycle_payload or {}).get("auto_execute_terminal_reason", "") or "").strip().lower()
-                                flow_from_cycle = (cycle_payload or {}).get("flow_id")
-                                if isinstance(flow_from_cycle, str) and flow_from_cycle.strip():
-                                    active_flow_id = flow_from_cycle.strip()
-                                run_from_cycle = (cycle_payload or {}).get("run_id")
-                                if isinstance(run_from_cycle, str) and run_from_cycle.strip():
-                                    turn_resume_run_id = run_from_cycle.strip()
-                                run_status = str((cycle_payload or {}).get("run_status", "") or "").strip().lower()
-                                if terminal_reason != "pass_cap_reached" and run_status != "needs_resume":
-                                    break
-                                turn_resumed_from_pass_cap = True
-                                turn_full_auto_resume_cycles += 1
-                                turn_full_auto_pass_checkpoints_emitted += _emit_full_auto_pass_checkpoints(
-                                    resume_cycles=turn_full_auto_resume_cycles
-                                )
-                                request_for_generation = _build_full_auto_resume_request(
-                                    original_question=question,
-                                    resume_cycle=turn_full_auto_resume_cycles,
-                                    terminal_reason=terminal_reason,
-                                )
-                                continue
-                        finally:
-                            console.quiet = old_quiet
+                        while True:
+                            cycle_payload, cycle_debug_tail = _run_with_live_buffer(
+                                console,
+                                spinner_text="Coding…",
+                                fn=_call,
+                                callbacks=[cb],
+                                show_all_logs=_cli_verbose_enabled(),
+                                activity=activity,
+                                manage_live=False,
+                            )
+                            cycle_result["result"] = cycle_payload
+                            cycle_result["debug_tail"] = cycle_debug_tail
+                            if not (
+                                chat_auto_continue
+                                and execute_plan_now
+                                and isinstance(cycle_payload, dict)
+                            ):
+                                break
+                            turn_full_auto_passes_total += _ingest_full_auto_pass_payload(cycle_payload)
+                            terminal_reason = str((cycle_payload or {}).get("auto_execute_terminal_reason", "") or "").strip().lower()
+                            flow_from_cycle = (cycle_payload or {}).get("flow_id")
+                            if isinstance(flow_from_cycle, str) and flow_from_cycle.strip():
+                                active_flow_id = flow_from_cycle.strip()
+                            run_from_cycle = (cycle_payload or {}).get("run_id")
+                            if isinstance(run_from_cycle, str) and run_from_cycle.strip():
+                                turn_resume_run_id = run_from_cycle.strip()
+                            run_status = str((cycle_payload or {}).get("run_status", "") or "").strip().lower()
+                            if terminal_reason != "pass_cap_reached" and run_status != "needs_resume":
+                                break
+                            turn_resumed_from_pass_cap = True
+                            turn_full_auto_resume_cycles += 1
+                            turn_full_auto_pass_checkpoints_emitted += _emit_full_auto_pass_checkpoints(
+                                resume_cycles=turn_full_auto_resume_cycles
+                            )
+                            request_for_generation = _build_full_auto_resume_request(
+                                original_question=question,
+                                resume_cycle=turn_full_auto_resume_cycles,
+                                terminal_reason=terminal_reason,
+                            )
+                            continue
 
                     try:
-                        if fullscreen_chat_ui_active():
-                            from mana_agent.cli.fullscreen_chat import run_fullscreen_worker
-
-                            run_fullscreen_worker(
-                                chat_ui_state,
-                                title="Coding…",
-                                worker=_run_generation_cycles,
-                            )
-                        else:
-                            live_context = (
-                                Live(activity, console=console, refresh_per_second=12, transient=True)
-                                if use_live_activity
-                                else nullcontext()
-                            )
-                            with live_context:
-                                _run_generation_cycles()
+                        live_context = (
+                            Live(activity, console=console, refresh_per_second=12, transient=True)
+                            if use_live_activity
+                            else nullcontext()
+                        )
+                        with live_context:
+                            _run_generation_cycles()
                         result = cycle_result.get("result")
                         debug_tail = str(cycle_result.get("debug_tail", "") or "")
                     finally:
                         set_active_tool_activity(None)
-                        if not fullscreen_chat_ui_active():
-                            console.print(activity)
+                        console.print(activity)
 
                 except ToolWorkerProcessError as exc:
                     _log_exception("coding_agent.generate.worker", exc)

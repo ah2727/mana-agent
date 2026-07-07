@@ -8,7 +8,6 @@ from typer.testing import CliRunner
 from mana_agent.commands import cli
 from mana_agent.cli.chat_ui import ChatUIState
 from mana_agent.cli.events import make_event
-from mana_agent.cli.fullscreen_chat import _conversation_text
 from mana_agent.commands.chat_cli import _should_use_coding_agent_turn
 from mana_agent.commands.ui_helpers import (
     ChatLog,
@@ -76,30 +75,6 @@ def test_coding_agent_mode_routes_general_analysis_turns_to_coding_agent() -> No
         has_pending_prechecklist=False,
         coding_agent_is_custom=False,
     )
-
-
-def test_direct_ui_command_accepts_fullscreen_mode() -> None:
-    console = Console(record=True)
-    state = ChatUIState(
-        repo_root=Path.cwd(),
-        provider="openai",
-        model="gpt-test",
-        ui_mode="plain",
-    )
-
-    answer = _render_direct_command(
-        console,
-        "/ui",
-        project_root=Path.cwd(),
-        index_available=False,
-        coding_agent_active=False,
-        tool_worker_active=False,
-        ui_state=state,
-        raw_question="/ui fullscreen",
-    )
-
-    assert answer == "ui mode: fullscreen"
-    assert state.ui_mode == "fullscreen"
 
 
 def test_render_turn_summary_and_transparency_sections() -> None:
@@ -207,31 +182,6 @@ def test_chat_log_renderer_shows_timeline_roles_and_updates_tool_rows() -> None:
     assert "clean warning" in rendered
 
 
-def test_fullscreen_conversation_text_prefers_answer_history() -> None:
-    state = ChatUIState(repo_root=Path.cwd(), provider="openai", model="fake", ui_mode="fullscreen")
-    turn_id = "turn-test"
-    state.start_turn(turn_id)
-    state.record_event(
-        make_event(
-            "agent.decision",
-            title="Agent decision",
-            message="Handled by direct chat command without repository tool routing.",
-            status="success",
-            session_id=state.session_id,
-            turn_id=turn_id,
-            step_id="05",
-        ).finish(status="success")
-    )
-    state.finish_turn(turn_id)
-    state.add_conversation_turn("help", "Available commands: /help, /clear, /exit")
-
-    rendered = _conversation_text(state)
-
-    assert "you: help" in rendered
-    assert "assistant: Available commands" in rendered
-    assert "Handled by direct chat command" not in rendered
-
-
 def test_tool_activity_can_use_live_without_fallback_duplicate(monkeypatch) -> None:
     live_entries = 0
     live_transient_values: list[object] = []
@@ -275,46 +225,12 @@ def test_tool_activity_can_use_live_without_fallback_duplicate(monkeypatch) -> N
     assert rendered.count("─ tools ") == 1
 
 
-def test_fullscreen_mode_suppresses_legacy_tool_activity_box() -> None:
-    console = Console(record=True)
-    state = ChatUIState(
-        repo_root=Path.cwd(),
-        provider="openai",
-        model="gpt-test",
-        ui_mode="fullscreen",
-    )
-    state.tracker.start_turn("turn-1")
-    set_active_chat_ui_state(state)
-
-    def _call(callbacks):
-        _ = callbacks
-        emit_tool_event("start", "read_file", args='{"path":"README.md"}')
-        emit_tool_event("end", "read_file", duration=0.0)
-        return {"ok": True}
-
-    try:
-        result, _debug_tail = _run_with_live_buffer(
-            console,
-            spinner_text="Coding…",
-            fn=_call,
-            callbacks=[],
-        )
-    finally:
-        set_active_chat_ui_state(None)
-
-    assert result == {"ok": True}
-    assert state.tool_runs
-    rendered = console.export_text()
-    assert "─ tools " not in rendered
-    assert "read_file" not in rendered
-
-
 def test_tool_events_preserve_role_and_model_metadata_in_chat_state() -> None:
     state = ChatUIState(
         repo_root=Path.cwd(),
         provider="openai",
         model="main-model",
-        ui_mode="fullscreen",
+        ui_mode="rich",
     )
     state.tracker.start_turn("turn-1")
     activity = LiveToolActivity(spinner_text="Coding…")
@@ -557,6 +473,62 @@ def test_render_coding_sections_contains_expected_blocks() -> None:
     assert "Files Changed" in rendered
     assert "Verification" in rendered
     assert "Next Step" in rendered
+
+
+def test_direct_panel_slash_commands_render_from_events(tmp_path: Path) -> None:
+    console = Console(record=True, width=100)
+    state = ChatUIState(
+        repo_root=tmp_path,
+        provider="openai",
+        model="gpt-test",
+        ui_mode="rich",
+        log_path=tmp_path / "chat.log",
+    )
+    state.record_event(
+        make_event(
+            "tool_done",
+            title="read_file",
+            message="Read README.md",
+            status="success",
+            metadata={"tool_name": "read_file", "path": "README.md"},
+        ).finish(status="success")
+    )
+    state.record_event(
+        make_event(
+            "patch_applied",
+            title="README.md",
+            message="Updated docs",
+            status="success",
+            metadata={"path": "README.md", "insertions": 2, "deletions": 0},
+        ).finish(status="success")
+    )
+    state.record_event(
+        make_event(
+            "test_done",
+            title="pytest tests/test_chat_ui.py",
+            status="success",
+            metadata={"command": "pytest tests/test_chat_ui.py", "result_summary": "passed"},
+        ).finish(status="success")
+    )
+
+    common = {
+        "project_root": tmp_path,
+        "index_available": True,
+        "coding_agent_active": True,
+        "tool_worker_active": True,
+        "ui_state": state,
+    }
+    assert _render_direct_command(console, "/timeline", raw_question="/timeline", **common) == "Displayed timeline."
+    assert _render_direct_command(console, "/tools", raw_question="/tools", **common) == "Displayed tool activity."
+    assert _render_direct_command(console, "/diff", raw_question="/diff", **common) == "Displayed diff summary."
+    assert _render_direct_command(console, "/tests", raw_question="/tests", **common) == "Displayed test history."
+    assert _render_direct_command(console, "/logs", raw_question="/logs", **common) == "Verbose logs are hidden. Run `/verbose on` before using `/logs`."
+
+    rendered = console.export_text()
+    assert "Timeline" in rendered
+    assert "read_file" in rendered
+    assert "README.md" in rendered
+    assert "pytest tests/test_chat_ui.py" in rendered
 
 
 def test_index_command_is_retired(tmp_path: Path) -> None:

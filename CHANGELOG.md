@@ -2,6 +2,18 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-07 (chat TUI event panels)
+
+- Upgraded chat UI events with AgentEvent-compatible aliases (`id`, `parent_id`, `timestamp`, `kind`, `details`), normalized file/test/log collections, and persisted session JSONL history under `.mana/sessions`.
+- Normalized chat TUI timeline rendering so started/completed updates merge by `event_id`, raw event names are mapped to compact display labels, timeline summaries are truncated/safe, and the Timeline panel is only rendered in the Timeline panel instead of being repeatedly appended after every chat update.
+- Added event-driven chat panels for inline status, timeline, tools, subagents, files, diff, tests, and verbose-only logs through normal terminal output and slash commands.
+- Added `/timeline`, `/tools`, `/subagents`, `/diff`, `/tests`, `/logs`, `/verbose on|off`, `/compact`, `/expanded`, and `/cancel` direct chat commands, and kept `mana-agent chat --simple` for a plain renderer.
+- Removed the full-screen alternate-screen chat implementation, including `--tui`, `--no-animations`, `MANA_CHAT_UI=fullscreen`, full-screen input handling, full-screen worker rendering, and full-screen-specific tests.
+- Added running/success/failure events around decision routing, direct-edit checks, web-search, and repository-search steps so normal chat shows compact step-by-step activity immediately after sending a message.
+- Added `InlineChatRenderer` as the default append-only event renderer, `TimelineDebugRenderer` for explicit verbose/debug timeline views, compact inline rendering for routing/tool/subagent events, and duplicate event-line collapse.
+- Changed chat UI selection so normal terminal chat keeps scrollback and does not print Timeline panels after each turn unless verbose/debug timeline output is explicitly enabled.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_chat_ui_events_tokens.py tests/test_cli_ux_helpers.py -q` passed with 40 tests; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/cli/events.py src/mana_agent/cli/chat_ui.py src/mana_agent/cli/renderers.py src/mana_agent/cli/menu.py src/mana_agent/commands/ui_helpers.py src/mana_agent/commands/chat_cli.py src/mana_agent/commands/main_cli.py src/mana_agent/commands/chat_analyze_command.py tests/test_chat_ui_events_tokens.py tests/test_cli_ux_helpers.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/cli/events.py src/mana_agent/cli/chat_ui.py src/mana_agent/cli/renderers.py src/mana_agent/cli/menu.py src/mana_agent/commands/ui_helpers.py src/mana_agent/commands/chat_analyze_command.py tests/test_chat_ui_events_tokens.py tests/test_cli_ux_helpers.py --select F,E9` passed; `PYTHONPATH=src .venv/bin/mana-agent chat --help | rg -- '--tui|--no-animations|--simple|fullscreen'` returned only `--simple`; `printf 'quit\n' | PYTHONPATH=src MANA_CHAT_UI=plain .venv/bin/mana-agent chat --simple --root-dir /Users/ah/Documents/mana-agent` passed; `rg "fullscreen_chat|--tui|no-animations|MANA_CHAT_UI=fullscreen|ui_mode=\"fullscreen\"|ui_mode == \"fullscreen\"|full-screen|fullscreen" src README.md -n` returned no matches.
+
 ## 2026-07-07 (model-driven tool routing)
 
 - Updated external search configuration to load web provider settings from the project `.env` through the shared `Settings` model when environment variables are not exported.

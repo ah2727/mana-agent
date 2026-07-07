@@ -106,14 +106,6 @@ This separates planning and approval from actual mutation execution.
 
 ---
 
-## Interface Preview
-
-The full-screen chat panel shows the chat UI, step-by-step tool activity, and related execution panes in one place.
-
-![mana-agent full-screen chat panel](https://i.ibb.co/NdCptLj1/Screenshot-2026-07-06-at-6-59-46-PM.png)
-
----
-
 ## How It Works
 
 ```mermaid
