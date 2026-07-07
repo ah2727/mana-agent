@@ -292,6 +292,55 @@ MUTATION_VERIFY_ON_CHANGE=1
 | `MUTATION_MAX_STEPS`          | Upper bound for tool/mutation work items per approved plan.                      |
 | `MUTATION_VERIFY_ON_CHANGE`   | When `1`, run verification gates after applying mutation changes when supported. |
 
+### Additional environment fields for external search
+
+If you enable external web/GitHub search, `mana-agent` routes search tool calls through a
+model-driven decision layer and caches retrieved context under your project.
+
+| Variable | Purpose |
+| --- | --- |
+| `MANA_GITHUB_TOKEN` | GitHub token used for GitHub API requests (recommended to avoid rate limits). |
+| `MANA_SEARCH_MEMORY_TTL_DAYS` | Cache TTL (in days) for `.mana/search_memory.jsonl`. |
+| `MANA_SEARCH_MAX_RESULTS` | Max results per external search request. |
+| `MANA_SEARCH_TIMEOUT_SECONDS` | Request timeout for external search. |
+| `MANA_WEB_SEARCH_PROVIDER` | Provider name for web search (configured by the repo’s search service). |
+| `MANA_WEB_SEARCH_API_KEY` | API key for the configured web search provider. |
+| `MANA_WEB_SEARCH_ENDPOINT` | Endpoint URL for the web search provider (if applicable). |
+| `MANA_WEB_SEARCH_MAX_RESULTS` | Provider-specific max results (may override defaults). |
+
+### Repository search (web + GitHub) configuration
+
+In addition to repository-local retrieval (FAISS / indexed code search), `mana-agent`
+can optionally use external web and GitHub search.
+
+External search is cached into `.mana/search_memory.jsonl`.
+
+| Variable                      | Purpose |
+| ----------------------------- | ------- |
+| `MANA_SEARCH_ENABLE_WEB`            | Enable external web search. |
+| `MANA_SEARCH_ENABLE_GITHUB`         | Enable GitHub search. |
+
+> How to get the GitHub token:
+>
+> 1. Go to **GitHub → Settings → Developer settings → Personal access tokens (classic)**
+>    (or **Fine-grained tokens** if your org requires it).
+> 2. Create a token with permission to read public repo metadata (scopes typically include
+>    public repo access / repository read).
+> 3. Export it as `MANA_GITHUB_TOKEN`.
+>
+> The token is used only for GitHub API calls made by the external search tool.
+
+| Variable                      | Purpose |
+| ----------------------------- | ------- |
+| `MANA_SEARCH_MAX_RESULTS`          | Max results per external search request. |
+| `MANA_SEARCH_TIMEOUT_SECONDS`      | Request timeout for external search. |
+| `MANA_SEARCH_MEMORY_TTL_DAYS`     | Cache TTL (in days) for external search memory. |
+| `MANA_GITHUB_TOKEN`                | GitHub token for GitHub API requests (recommended to avoid rate limits). |
+| `MANA_WEB_SEARCH_PROVIDER`        | Provider name for web search (configured by the repo’s search service). |
+| `MANA_WEB_SEARCH_API_KEY`         | API key for the configured web search provider. |
+| `MANA_WEB_SEARCH_ENDPOINT`       | Endpoint URL for the web search provider (if applicable). |
+| `MANA_WEB_SEARCH_MAX_RESULTS`     | Provider-specific max results (may override defaults). |
+
 ---
 
 ## Quick Start
@@ -313,6 +362,31 @@ mana-agent chat --root-dir . --planning-mode --coding-memory
 ```bash
 mana-agent run --root-dir /path/to/project --plan-id mp_a672168ef9c0
 ```
+
+> The `run` command compiles the approved plan into an internal `MutationCommand`
+> contract, then executes it using the repository mutation tool APIs.
+
+### Optional: enable external search (web + GitHub)
+
+External search is controlled by environment variables. To enable it, set:
+
+```bash
+MANA_SEARCH_ENABLE_WEB=1
+MANA_SEARCH_ENABLE_GITHUB=1
+
+# GitHub API rate-limit avoidance
+MANA_GITHUB_TOKEN="ghp_..."
+```
+
+If you also use a hosted web search provider:
+
+```bash
+MANA_WEB_SEARCH_PROVIDER="<provider>"
+MANA_WEB_SEARCH_API_KEY="<key>"
+MANA_WEB_SEARCH_ENDPOINT="<endpoint>"
+```
+
+`mana-agent` caches retrieved external search context under `.mana/search_memory.jsonl`.
 
 ---
 
@@ -413,6 +487,10 @@ mana-agent run --root-dir /path/to/project --plan-id mp_a672168ef9c0
 
 This command is useful when you want deterministic execution after a plan has already been reviewed or approved.
 
+> Implementation note: `run` compiles the approved `MutationPlan` into an executable
+> `MutationCommand` contract and then executes the registered mutation tools through
+> the mutation command executor (so edits remain constrained and verifiable).
+
 ---
 
 ### Useful global flag example
@@ -440,6 +518,20 @@ MutationCommand(mp_d26c0f4dd341)
 ```
 
 > You normally run the plan through `mana-agent run --plan-id ...`. The `MutationCommand(...)` form is shown only to make the executable contract explicit.
+
+### Example: executable `MutationCommand` for `mp_f8864a662ad5`
+
+Executable contract form:
+
+```text
+MutationCommand(mp_f8864a662ad5)
+```
+
+Run it via:
+
+```bash
+mana-agent run --root-dir /path/to/project --plan-id mp_f8864a662ad5
+```
 
 ---
 
