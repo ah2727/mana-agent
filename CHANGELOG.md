@@ -2,6 +2,11 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-07 (macOS release runner)
+
+- Moved the macOS x64 release binary job from the retired `macos-13` GitHub Actions runner to the supported `macos-15-intel` runner label.
+- Verification: release workflow YAML parsed with PyYAML; `rg -n "macos-13|macos-15-intel|mana-agent-macos-x64" .github/workflows/release.yml CHANGELOG.md` confirmed the active runner label and artifact references; `git diff --check -- .github/workflows/release.yml CHANGELOG.md` passed.
+
 ## 2026-07-07 (chat model routing smoke fix)
 
 - Guarded chat coding-model propagation so lightweight `AskService.ask_agent` stubs without a mutable `model` attribute no longer crash chat startup while real `AskAgent` instances still use `update_model`.

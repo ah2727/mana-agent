@@ -124,7 +124,7 @@ jobs:
           - os: ubuntu-latest
             asset_name: mana-agent-linux-x64
             pyinstaller_name: mana-agent
-          - os: macos-13
+          - os: macos-15-intel
             asset_name: mana-agent-macos-x64
             pyinstaller_name: mana-agent
           - os: macos-14
