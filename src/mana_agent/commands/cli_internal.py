@@ -150,6 +150,31 @@ def _build_project_llm_analyzer():
     )
 
 
+def _build_main_agent_routing_llm() -> Any | None:
+    """Build the lightweight LLM used by the mandatory MainAgent route."""
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    try:
+        settings = _public_symbol("Settings", Settings)()
+    except Exception as exc:  # noqa: BLE001 - missing env should not break CLI routing
+        logger.debug("MainAgent model routing disabled (settings unavailable): %s", exc)
+        return None
+    api_key = str(getattr(settings, "openai_api_key", "") or "").strip()
+    if not api_key:
+        return None
+    model = resolve_model_for_role(
+        AgentRole.HEAD_DECISION,
+        global_model=getattr(settings, "openai_chat_model", "gpt-4.1-mini"),
+    ).resolved_model
+    chat_openai_cls = _public_symbol("ChatOpenAI", ChatOpenAI)
+    return chat_openai_cls(
+        api_key=api_key,
+        model=model,
+        base_url=getattr(settings, "openai_base_url", None) or os.getenv("OPENAI_BASE_URL") or None,
+        temperature=0,
+    )
+
+
 def _split_csv(value: str | None) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
@@ -169,7 +194,10 @@ def _record_multi_agent_request(
     """Record a mandatory MainAgent route before a legacy entrypoint continues."""
     if command_scope and _SKIP_NEXT_COMMAND_ROUTE.get():
         return ""
-    result = MainAgent(root).run_user_request(request, entrypoint=entrypoint)
+    result = MainAgent(root, routing_llm=_build_main_agent_routing_llm()).run_user_request(
+        request,
+        entrypoint=entrypoint,
+    )
     return result.task_id
 
 

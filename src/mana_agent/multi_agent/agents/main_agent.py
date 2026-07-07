@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from mana_agent.multi_agent.agents.base_agent import BaseAgent
 from mana_agent.multi_agent.agents.coding_agent import CodingAgent
@@ -36,7 +37,7 @@ class MainAgentResult:
 
 
 class MainAgent:
-    def __init__(self, root: str | Path = ".") -> None:
+    def __init__(self, root: str | Path = ".", *, routing_llm: Any | None = None) -> None:
         self.root = Path(root).resolve()
         self.memory_service = MultiAgentMemoryService(root=self.root)
         self.memory = AgentMemoryBundle(
@@ -47,7 +48,7 @@ class MainAgent:
         self.taskboard = TaskBoard(self.root, memory_service=self.memory_service)
         self.message_bus = MessageBus(self.root)
         self.registry = AgentRegistry()
-        self.router = Router()
+        self.router = Router(llm=routing_llm)
         self.hierarchy_policy = HierarchyPolicy(self.registry, self.taskboard)
         main_node = self.registry.find_by_role(AgentRole.MAIN)
         self.agent_factory = AgentFactory(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -686,6 +687,32 @@ def test_main_agent_routes_chat_analyze_and_plan(tmp_path):
     assert MainAgent(tmp_path).run_user_request("update docs", entrypoint="plan").route_name == "planning"
 
 
+def test_main_agent_uses_routing_llm_for_head_decision(tmp_path):
+    class ModelRouter:
+        def invoke(self, _messages):  # noqa: ANN001
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "intent": "web_research",
+                        "confidence": 0.91,
+                        "selected_tools": ["web_search"],
+                        "tool_inputs": {"web_search": {"query": "openclaw description"}},
+                        "repo_context_needed": False,
+                        "web_search_needed": True,
+                        "code_editing_needed": False,
+                        "reasoning_summary": "Model selected public web research.",
+                    }
+                )
+            )
+
+    main = MainAgent(tmp_path, routing_llm=ModelRouter())
+    result = main.run_user_request("search internet and give me description about openclaw", entrypoint="chat")
+    assert result.route_name == "research"
+    decisions = list(main.decision_room.decisions.values())
+    assert decisions[-1].selected_route == "research"
+    assert decisions[-1].rationale_summary == "Model selected public web research."
+
+
 def test_main_agent_records_large_docs_subagents_and_deactivates_them(tmp_path):
     main = MainAgent(tmp_path)
     result = main.run_user_request("project architecture changed, update README.md, cannot use diff", entrypoint="chat")
@@ -790,7 +817,7 @@ def test_public_command_routes_once_when_root_dispatches_plan(monkeypatch, tmp_p
     calls: list[tuple[str, str]] = []
 
     class _FakeMainAgent:
-        def __init__(self, root):
+        def __init__(self, root, **_kwargs):
             self.root = root
 
         def run_user_request(self, request: str, *, entrypoint: str = "chat"):
@@ -808,7 +835,7 @@ def test_public_command_callbacks_route_through_main_agent(monkeypatch, tmp_path
     calls: list[tuple[str, str]] = []
 
     class _FakeMainAgent:
-        def __init__(self, root):
+        def __init__(self, root, **_kwargs):
             self.root = root
 
         def run_user_request(self, request: str, *, entrypoint: str = "chat"):
