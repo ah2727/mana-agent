@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from mana_agent.multi_agent.runtime.coding_agent import CodingAgent, FlowChecklist, FlowStep
-from mana_agent.multi_agent.runtime.tool_worker_process import ToolWorkerProcessError
+from mana_agent.multi_agent.runtime.agent_work_queue import WorkItem
+from mana_agent.multi_agent.runtime.tool_worker_process import ToolRunResponse, ToolWorkerProcessError
 from mana_agent.multi_agent.runtime.tools_manager import AutoExecuteResult
 from mana_agent.services.coding_memory_service import CodingMemoryService
 
@@ -164,6 +165,36 @@ def _fixed_checklist() -> FlowChecklist:
         ],
         next_action="Inspect target files.",
     )
+
+
+def _git_checklist(*, tools: list[str] | None = None) -> FlowChecklist:
+    return FlowChecklist(
+        objective="Run git operation",
+        requires_edit=False,
+        steps=[
+            FlowStep(
+                id="s1",
+                title="Inspect git context",
+                reason="Git operation requires repository state first",
+                status="in_progress",
+                requires_tools=tools or ["git_status"],
+            )
+        ],
+        next_action="Inspect git context.",
+    )
+
+
+class _RecordingToolWorker:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def run_tools(self, request, on_event=None):  # noqa: ANN001
+        _ = on_event
+        self.requests.append(request)
+        return ToolRunResponse(
+            answer="ok",
+            trace=[{"tool_name": request.tool_name or "", "status": "ok"}],
+        )
 
 
 def test_checklist_requires_edit_recognizes_mutation_tools() -> None:
