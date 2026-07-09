@@ -153,9 +153,13 @@ if page == "Overview":
     st.subheader("Quick Actions (safe)")
     if st.button("Run Analysis (via trigger)"):
         r = trigger_automation("analyze", root=root)
-        st.success(f"Analyze -> .mana/analyze : {r.get('ok')}")
+        llm_used = r.get("llm_used", False)
+        status = "with LLM" if llm_used else "deterministic (no key in ~/.mana/config.toml)"
+        st.success(f"Analyze -> .mana/analyze : {r.get('ok')} ({status})")
         if r.get("artifact_dir"):
-            st.caption(f"Artifacts written to: {r.get('artifact_dir')}")
+            st.caption(f"Artifacts: {r.get('artifact_dir')}")
+        if r.get("artifacts"):
+            st.write("Created:", r["artifacts"][:5])
         st.rerun()  # refresh lists in Reports etc.
 
     if st.button("Open Chat in terminal"):
@@ -220,9 +224,13 @@ elif page == "Reports":
     arts = list_analysis_artifacts(root)
     if st.button("🔄 Generate / Refresh Report", type="primary"):
         r = trigger_automation("analyze", root=root)
-        st.success(f"Real analyze on .mana route: ok={r.get('ok')}")
+        llm_used = r.get("llm_used", False)
+        status = "LLM analysis" if llm_used else "deterministic only (configure key in ~/.mana/config.toml)"
+        st.success(f"Real analyze: ok={r.get('ok')} — {status}")
         if r.get("artifact_dir"):
-            st.info(f"Report artifacts routed to: {r['artifact_dir']}")
+            st.info(f"Artifacts written to: {r['artifact_dir']}")
+        if r.get("artifacts"):
+            st.caption("Wrote: " + ", ".join(r["artifacts"][:6]))
         arts = list_analysis_artifacts(root)
         st.rerun()
 

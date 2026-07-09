@@ -14,6 +14,15 @@ All notable repository changes should be recorded here.
   - Verification: `PYTHONPATH=src venv/bin/python -m py_compile src/...` (multiple modules) passed; `PYTHONPATH=src venv/bin/mana-agent --help`, `... chat --help`, `... analyze --help`, `... dashboard --help` passed and showed new command; core imports of `mana_agent`, `mana_agent.ui`, `mana_agent.automations` succeeded without optional deps; `git status --short` inspected before/after; dashboard/app.py and helpers implement read-only views over taskboard/traces/index; no core multi_agent, routing, or decision files were modified.
 - New structure is optional and does not affect existing CLI, multi-agent runtime, or safety model.
 
+## 2026-07-09 (Dashboard: fixed analyze not creating .mana/analyze folder)
+
+- Root cause: `trigger_automation("analyze")` used `python -m mana_agent.commands.cli analyze ...`. The CLI module (`cli.py`) only sets up the Typer `app` for the console script entrypoint (`mana-agent = "mana_agent.commands.cli:app"`). It has no `if __name__` / `app()` handler, so `-m` invocation loaded the module and exited cleanly with rc=0 without ever calling `analyze_command` or `ProjectAnalyzeService`. Hence the run log showed success + correct `artifact_dir` but no folder was created.
+- Fix: Primary path in `trigger_automation` for analyze now directly calls `ProjectAnalyzeService().run(...)` (which does `out_dir.mkdir(parents=True, exist_ok=True)` + `write_artifacts`). This guarantees real `.mana/analyze` creation with `report.md`, `report.json`, `symbols.json`, `llm_summary.md`, etc.
+- Subprocess kept only as fallback.
+- Improved success messages in Overview + Reports pages to surface the created artifacts.
+- Direct service path makes "create analyze" buttons produce real output visible in the Reports section (and `list_analysis_artifacts`).
+  - Verification: tempfile test `trigger_automation("analyze")` now returns artifacts list and folder with real files (`report.md`, `symbols.json`, `llm_summary.md` etc.); `PYTHONPATH=src ./venv/bin/python -m py_compile ...`; dashboard tests pass.
+
 ## 2026-07-09 (Dashboard chat real routing + all triggers functional + real metrics + .mana analyze)
 
 - Chat embed now **real**: `run_dashboard_chat` uses `Settings` + `build_ask_service` + `ask_with_tools` (or classic ask) so prompts are routed via the same model decision / entry router / AskAgent as full `mana-agent chat` CLI. Returns actual answers, sources, tool-using routes when applicable. Multi-turn history + persistence. "ping" example now gets model-routed response instead of hardcoded preview.

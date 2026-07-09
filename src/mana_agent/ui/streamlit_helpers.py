@@ -343,29 +343,88 @@ def trigger_automation(action: str, *, root: Path | None = None, **kwargs: Any) 
             append_automation_run({"action": action}, root)
             return {"ok": True, "action": action, "note": "daily report (best-effort)"}
         elif action in {"analyze", "generate_report"}:
-            # Real analyze targeting .mana/analyze route exactly (for Reports sidebar + list)
-            import subprocess
-            import sys as _sys
-            artifact_dir = str(root / ".mana" / "analyze")
-            cmd = [
-                _sys.executable, "-m", "mana_agent.commands.cli", "analyze",
-                "--root-dir", str(root),
-                "--artifact-dir", artifact_dir,
-                "--output", "md",
-            ]
+            # Direct real call to ProjectAnalyzeService (guarantees .mana/analyze is created).
+            # This is the reliable "real functionality" path inside the dashboard process.
+            # We fall back to subprocess only if direct call fails.
+            artifact_dir = root / ".mana" / "analyze"
             try:
-                out = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, timeout=90)
-                append_automation_run({"action": action, "rc": out.returncode, "artifact_dir": artifact_dir}, root)
-                ok = out.returncode == 0
-                return {
-                    "ok": ok,
+                from mana_agent.services.project_analyze_service import (
+                    ProjectAnalyzeOptions,
+                    ProjectAnalyzeService,
+                )
+
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+
+                # Try to get a real LLM analyzer so we read OPENAI_API_KEY (and model)
+                # from ~/.mana/config.toml + secrets.toml + env, exactly like the CLI.
+                llm_analyzer = None
+                try:
+                    from mana_agent.commands.cli_internal import _build_project_llm_analyzer
+                    llm_analyzer = _build_project_llm_analyzer()
+                except Exception:
+                    # Graceful: dashboard analyze still works deterministically
+                    llm_analyzer = None
+
+                result = ProjectAnalyzeService().run(
+                    root,
+                    artifact_dir,
+                    options=ProjectAnalyzeOptions(
+                        depth="normal",
+                        output_format="both",
+                    ),
+                    llm_analyzer=llm_analyzer,
+                )
+
+                append_automation_run({
                     "action": action,
-                    "artifact_dir": artifact_dir,
-                    "stdout": (out.stdout or "")[-2500:],
-                    "stderr": (out.stderr or "")[-800:],
+                    "artifact_dir": str(artifact_dir),
+                    "artifacts_written": len(getattr(result, "artifacts", {})),
+                    "llm_used": llm_analyzer is not None,
+                }, root)
+
+                llm_note = "with LLM analysis" if llm_analyzer is not None else "deterministic (no API key or LLM disabled)"
+                return {
+                    "ok": True,
+                    "action": action,
+                    "artifact_dir": str(artifact_dir),
+                    "note": f"Direct service call (real) - {llm_note}",
+                    "llm_used": llm_analyzer is not None,
+                    "artifacts": list(getattr(result, "artifacts", {}).keys())[:8],
                 }
-            except Exception as e:
-                return {"ok": False, "action": action, "error": str(e), "artifact_dir": artifact_dir}
+            except Exception as direct_err:
+                # Fallback to subprocess (may have limited success depending on invocation)
+                import subprocess
+                import sys as _sys
+                ad_str = str(artifact_dir)
+                cmd = [
+                    _sys.executable, "-m", "mana_agent.commands.cli", "analyze",
+                    "--root-dir", str(root),
+                    "--artifact-dir", ad_str,
+                    "--format", "both",
+                ]
+                try:
+                    out = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, timeout=90)
+                    append_automation_run({
+                        "action": action,
+                        "rc": out.returncode,
+                        "artifact_dir": ad_str,
+                        "fallback": "subprocess",
+                    }, root)
+                    return {
+                        "ok": out.returncode == 0,
+                        "action": action,
+                        "artifact_dir": ad_str,
+                        "stdout": (out.stdout or "")[-2000:],
+                        "stderr": (out.stderr or "")[-800:],
+                        "direct_error": str(direct_err)[:200],
+                    }
+                except Exception as sub_e:
+                    return {
+                        "ok": False,
+                        "action": action,
+                        "artifact_dir": ad_str,
+                        "error": f"direct={direct_err}; subprocess={sub_e}",
+                    }
         else:
             append_automation_run({"action": action, "noop": True}, root)
             return {"ok": True, "action": action, "noop": True}
