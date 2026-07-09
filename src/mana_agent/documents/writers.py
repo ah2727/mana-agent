@@ -30,6 +30,79 @@ def _backup(path: Path) -> str:
     return str(backup_path)
 
 
+def _validate_workbook_create_content(path: Path, content: Any) -> dict[str, Any] | None:
+    if not isinstance(content, dict):
+        return None
+
+    if "sheet1" in content or "Sheet1" in content:
+        return {
+            "ok": False,
+            "error": "invalid_excel_schema",
+            "message": (
+                "Do not pass sheet data directly as content['sheet1'] or content['Sheet1']. "
+                "Use content['sheets'] = {'Sheet1': {'cells': [...]}}."
+            ),
+            "path": str(path),
+            "expected_schema": {
+                "sheets": {
+                    "Sheet1": {
+                        "cells": [
+                            {"cell": "A200", "value": 200},
+                            {"cell": "A300", "value": 300},
+                            {"cell": "A400", "value": 400},
+                            {"cell": "B200", "formula": "=SUM(A200,A300,A400)"},
+                        ]
+                    }
+                }
+            },
+        }
+
+    sheets = content.get("sheets")
+    if sheets is not None and not isinstance(sheets, dict):
+        return {
+            "ok": False,
+            "error": "invalid_excel_schema",
+            "message": "content['sheets'] must be a dict keyed by sheet name, not a list.",
+            "path": str(path),
+        }
+
+    return None
+
+
+def _verify_workbook_created(path: Path, *, keep_vba: bool) -> dict[str, Any]:
+    try:
+        openpyxl = _require("openpyxl", "openpyxl")
+        workbook = openpyxl.load_workbook(
+            str(path),
+            data_only=False,
+            keep_vba=keep_vba,
+        )
+
+        non_empty_cells = 0
+        formulas = 0
+
+        for worksheet in workbook.worksheets:
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    if cell.value is not None:
+                        non_empty_cells += 1
+                        if isinstance(cell.value, str) and cell.value.startswith("="):
+                            formulas += 1
+
+        return {
+            "ok": non_empty_cells > 0,
+            "sheet_count": len(workbook.sheetnames),
+            "sheets": list(workbook.sheetnames),
+            "non_empty_cells": non_empty_cells,
+            "formula_count": formulas,
+            "error": "" if non_empty_cells > 0 else "workbook_has_no_cell_content",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+        }
+
 def _atomic_save(path: Path, writer: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -83,6 +156,13 @@ def create_document(
             "created": True,
             "files_changed": [str(path)],
         }
+
+    if kind in {DocumentFileType.XLSX, DocumentFileType.XLSM}:
+        validation_error = _validate_workbook_create_content(path, content)
+        if validation_error:
+            return validation_error
+
+        return _create_workbook(path, content=content, kind=kind)
 
     return {
         "ok": False,
@@ -278,6 +358,15 @@ def _create_workbook(
 
     verification = _verify_workbook_created(path, keep_vba=kind == DocumentFileType.XLSM)
 
+    if not verification.get("ok"):
+        return {
+            "ok": False,
+            "error": "workbook_verification_failed",
+            "path": str(path),
+            "file_type": kind.value,
+            "verification": verification,
+            "files_changed": [str(path)],
+        }
     return {
         "ok": True,
         "path": str(path),
