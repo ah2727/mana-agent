@@ -723,6 +723,22 @@ Model Decision → Decision Validation → Tool Execution → Result Interpretat
 
 The tool manager may validate and execute a selected tool, but it must not independently choose the tool through fallback behavior.
 
+### 15.1 Document Tool Rules
+
+Mana-Agent exposes document capabilities through the document tool family:
+
+```text
+document_detect
+document_read
+document_analyze
+document_query
+document_create
+document_update
+document_delete
+```
+
+Use these tools only when a validated model decision selects them. Do not add chat-layer keyword routing for Word, PDF, Excel, or CSV requests. Document tools must preserve repository path safety, return structured JSON-like results, cache parsed chunks by file fingerprint, report scanned PDFs as needing OCR instead of inventing text, preserve Excel formulas unless replacement is explicit, preserve `.xlsm` macros where supported, create backups before destructive updates by default, and require explicit delete intent before removing files.
+
 ---
 
 ## 16. File Reading Rules

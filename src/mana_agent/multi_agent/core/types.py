@@ -67,6 +67,7 @@ class QueueJobType(_ValueEnum):
     GIT = "git"
     GIT_STATUS = "git_status"
     GIT_DIFF = "git_diff"
+    DOCUMENT = "document"
 
 
 class QueueJobStatus(_ValueEnum):

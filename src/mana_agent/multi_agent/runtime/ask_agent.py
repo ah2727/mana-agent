@@ -28,6 +28,7 @@ from mana_agent.config.settings import default_index_dir
 from mana_agent.services.coding_memory_service import CodingMemoryService
 from mana_agent.services.memory_service import EvidenceMemory
 from mana_agent.services.search_service import SearchService
+from mana_agent.documents.service import DocumentService
 from mana_agent.search.config import SearchConfig
 from mana_agent.search.decision import SearchDecisionEngine
 from mana_agent.search.router import SearchRouter, SearchRouterResult
@@ -174,6 +175,45 @@ class _GitLogInput(BaseModel):
 
 class _VerifyProjectInput(BaseModel):
     quick: bool = False
+
+class _DocumentDetectInput(BaseModel):
+    path: str
+    mime_type: str | None = None
+
+class _DocumentReadInput(BaseModel):
+    path: str
+    use_cache: bool = True
+    max_chunks: int = 400
+
+class _DocumentAnalyzeInput(BaseModel):
+    path: str
+
+class _DocumentQueryInput(BaseModel):
+    query: str
+    paths: list[str] | None = None
+    file_types: list[str] | None = None
+    path_filter: str = ""
+    sheet: str = ""
+    page: int | None = None
+    section: str = ""
+    limit: int = 10
+
+class _DocumentCreateInput(BaseModel):
+    path: str
+    content: dict[str, Any]
+    file_type: str | None = None
+    overwrite: bool = False
+
+class _DocumentUpdateInput(BaseModel):
+    path: str
+    operation: str
+    payload: dict[str, Any]
+    backup: bool = True
+
+class _DocumentDeleteInput(BaseModel):
+    path: str
+    explicit: bool = False
+    backup: bool = True
 
 
 class AskAgent:
@@ -1368,6 +1408,49 @@ class AskAgent:
         def tool_contracts() -> str:
             return dumps_tool_result(coding_tool_contracts_payload())
 
+        document_service = DocumentService(self.project_root)
+
+        def document_detect(path: str, mime_type: str | None = None) -> str:
+            return dumps_tool_result(document_service.detect(path, mime_type=mime_type))
+
+        def document_read(path: str, use_cache: bool = True, max_chunks: int = 400) -> str:
+            return dumps_tool_result(document_service.read(path, use_cache=use_cache, max_chunks=max_chunks))
+
+        def document_analyze(path: str) -> str:
+            return dumps_tool_result(document_service.analyze(path))
+
+        def document_query(
+            query: str,
+            paths: list[str] | None = None,
+            file_types: list[str] | None = None,
+            path_filter: str = "",
+            sheet: str = "",
+            page: int | None = None,
+            section: str = "",
+            limit: int = 10,
+        ) -> str:
+            return dumps_tool_result(
+                document_service.query(
+                    query,
+                    paths=paths,
+                    file_types=file_types,
+                    path_filter=path_filter,
+                    sheet=sheet,
+                    page=page,
+                    section=section,
+                    limit=limit,
+                )
+            )
+
+        def document_create(path: str, content: dict[str, Any], file_type: str | None = None, overwrite: bool = False) -> str:
+            return dumps_tool_result(document_service.create(path, content=content, file_type=file_type, overwrite=overwrite))
+
+        def document_update(path: str, operation: str, payload: dict[str, Any], backup: bool = True) -> str:
+            return dumps_tool_result(document_service.update(path, operation=operation, payload=payload, backup=backup))
+
+        def document_delete(path: str, explicit: bool = False, backup: bool = True) -> str:
+            return dumps_tool_result(document_service.delete(path, explicit=explicit, backup=backup))
+
         base_tools: list[BaseTool] = [
             StructuredTool.from_function(
                 func=semantic_search,
@@ -1546,6 +1629,48 @@ class AskAgent:
                 name="tool_contracts",
                 description="Return strict name/schema/output/error/safety/examples contracts for coding tools.",
                 args_schema=_ListToolsInput,
+            ),
+            StructuredTool.from_function(
+                func=document_detect,
+                name="document_detect",
+                description="Detect supported project document files by path, extension, and MIME when available.",
+                args_schema=_DocumentDetectInput,
+            ),
+            StructuredTool.from_function(
+                func=document_read,
+                name="document_read",
+                description="Read DOCX, PDF, XLSX/XLSM, or CSV files into normalized chunks with citation metadata.",
+                args_schema=_DocumentReadInput,
+            ),
+            StructuredTool.from_function(
+                func=document_analyze,
+                name="document_analyze",
+                description="Analyze document structure, key points, tables, PDF OCR needs, and workbook schemas/formulas.",
+                args_schema=_DocumentAnalyzeInput,
+            ),
+            StructuredTool.from_function(
+                func=document_query,
+                name="document_query",
+                description="Search parsed document chunks with optional file-type, path, sheet, page, or section filters.",
+                args_schema=_DocumentQueryInput,
+            ),
+            StructuredTool.from_function(
+                func=document_create,
+                name="document_create",
+                description="Create DOCX, XLSX/XLSM, CSV, or simple text PDF artifacts without overwriting by default.",
+                args_schema=_DocumentCreateInput,
+            ),
+            StructuredTool.from_function(
+                func=document_update,
+                name="document_update",
+                description="Safely update supported document files with backups unless disabled.",
+                args_schema=_DocumentUpdateInput,
+            ),
+            StructuredTool.from_function(
+                func=document_delete,
+                name="document_delete",
+                description="Delete a supported document file only when explicit delete intent is validated.",
+                args_schema=_DocumentDeleteInput,
             ),
         ]
 

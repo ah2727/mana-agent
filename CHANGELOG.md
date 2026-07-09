@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-09 (document file CRUD and query support)
+
+- Added a document tool layer for `.docx`, `.pdf`, `.xlsx`, `.xlsm`, and `.csv` detection, reading, analysis, chunk caching, querying, creation, safe update, and explicit delete operations.
+- Exposed document capabilities through model-visible tool contracts, live AskAgent tools, and the queue `ToolsManager` without adding chat-layer keyword routing.
+- Added document dependencies and focused fixtures/tests for detection, readers, query, cache invalidation, create/update/delete safety, corrupted PDF handling, and queued document tool execution.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_documents.py tests/test_tools_manager.py tests/test_repository_tools.py -q` passed with 54 tests; `tmp_home=$(mktemp -d); HOME="$tmp_home" PYTHONPATH=src .venv/bin/python -m pytest tests/test_documents.py tests/test_tools_manager.py tests/test_repository_tools.py tests/test_multi_agent_core.py -q` passed with 107 tests; `tmp_home=$(mktemp -d); HOME="$tmp_home" PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 699 tests and 18 warnings; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/documents src/mana_agent/multi_agent/__init__.py src/mana_agent/multi_agent/runtime/ask_agent.py src/mana_agent/multi_agent/tools/tool_manager.py src/mana_agent/multi_agent/core/types.py src/mana_agent/tools/contracts.py tests/test_documents.py --select F,E9` passed; `PYTHONPATH=src .venv/bin/mana-agent --help` passed.
+
 ## 2026-07-08 (TUI model-level persistence fix)
 
 - Fixed TUI model selection persistence so selected main, coding planner, and tool-worker models are saved into `MODEL_LEVEL_3_HIGH_REASONING`, `MODEL_LEVEL_2_CODING`, and `MODEL_LEVEL_1_FAST_TOOL` as actual model IDs instead of only saving role-to-level mappings.

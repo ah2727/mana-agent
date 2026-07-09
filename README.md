@@ -24,6 +24,7 @@
 * [Quick Start](#quick-start)
 * [CLI Reference](#cli-reference)
 * [External Search](#external-search)
+* [Document Files](#document-files)
 * [Model-Driven Git Tools](#model-driven-git-tools)
 * [Approved Mutation Plans](#approved-mutation-plans)
 * [Generated Artifacts](#generated-artifacts)
@@ -47,6 +48,7 @@ Use it to:
 * **Run approved mutation plans** through a controlled execution flow.
 * **Persist coding-flow state** so multi-turn tasks can continue across sessions.
 * **Control file mutation** through explicit repository tools instead of unrestricted editing.
+* **Work with project document files** through model-selected Word, PDF, Excel, and CSV tools.
 * **Use external search** only when the model decides current web or GitHub context is needed.
 
 ---
@@ -60,6 +62,7 @@ Use it to:
 | Multi-agent runtime      | Main decision lifecycle, taskboard/work queue, tool manager, workers, traces, and summaries.           |
 | Git automation           | Safety-checked Git tools for status, diff, branch, commit, push, pull, fetch, merge, rebase, and more. |
 | Mutation safety          | Plans, constrained file tools, patch application, command gates, and verification after changes.       |
+| Document files           | Capability tools for detecting, reading, querying, creating, updating, and deleting supported documents. |
 | Search memory            | Optional web/GitHub search with cached results under `.mana/search_memory.jsonl`.                      |
 | Artifacts                | JSON, Markdown, HTML, DOT, GraphML, and Mermaid outputs.                                               |
 
@@ -94,6 +97,7 @@ It supports:
 * Multi-step coding-agent loops
 * Verification after changes when supported
 * Model-selected Git tools
+* Model-selected document tools for `.docx`, `.pdf`, `.xlsx`, `.xlsm`, and `.csv`
 * Optional external web and GitHub search
 * Final summaries with changed files, checks, skipped checks, and warnings
 
@@ -439,6 +443,19 @@ mana-agent run --root-dir /path/to/project --plan-id mp_a672168ef9c0
 
 The `run` command compiles the approved plan into an internal `MutationCommand` contract, then executes it using the repository mutation tool APIs.
 
+### 5. Work with project documents
+
+Document requests are selected by the model through tool capability metadata, not by chat keyword routing. Supported files in the current project can be detected, chunked, analyzed, queried, and safely mutated:
+
+```text
+analyze docs/report.pdf
+summarize docs/report.docx
+find all invoices in Excel files
+update budget.xlsx sheet March cell B2 to 1200
+create a Word report from this summary
+query current library for payment terms
+```
+
 ---
 
 ## CLI Reference
@@ -619,6 +636,30 @@ How to get a GitHub token:
 3. Export it as `MANA_GITHUB_TOKEN`.
 
 The token is used only for GitHub API calls made by the external search tool.
+
+---
+
+## Document Files
+
+Mana-Agent exposes a document tool family to the decision agent:
+
+* `document_detect`
+* `document_read`
+* `document_analyze`
+* `document_query`
+* `document_create`
+* `document_update`
+* `document_delete`
+
+Supported formats are `.docx`, `.pdf`, `.xlsx`, `.xlsm`, and optional readable `.csv`. Parsed content is normalized into chunks with file path, file type, page/sheet/section/row metadata, text content, and stable citation fields. Parsed chunks are cached under `.mana/document_cache` using file path, mtime, size, and SHA-256 fingerprint, so unchanged files are reused and changed files are invalidated automatically.
+
+Document safety rules:
+
+* Scanned or image-only PDFs are reported as needing OCR; Mana-Agent does not fabricate text.
+* Excel formulas are preserved unless a replacement is explicitly requested.
+* `.xlsm` workbooks are loaded with macro preservation where the library supports it, with warnings for risky edits.
+* Document updates create backups by default and write atomically where possible.
+* File deletion requires explicit delete intent and remains constrained to the project root.
 
 ---
 

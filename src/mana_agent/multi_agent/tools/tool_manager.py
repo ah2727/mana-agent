@@ -9,9 +9,11 @@ from typing import Any
 from mana_agent.multi_agent.core.ids import new_message_id
 from mana_agent.multi_agent.core.types import QueueJob, QueueJobType, ToolResult
 from mana_agent.services.memory_service import MultiAgentMemoryService
+from mana_agent.documents.service import DocumentService
 from mana_agent.multi_agent.tools import git_tools
 from mana_agent.multi_agent.tools.permissions import assert_shell_allowed
-from mana_agent.tools import repo_batch_read, repo_search, safe_apply_patch
+from mana_agent.tools.apply_patch import safe_apply_patch
+from mana_agent.tools.repository import repo_batch_read, repo_search
 
 
 class ToolsManager:
@@ -82,6 +84,15 @@ class ToolsManager:
                     bool(result.get("ok")),
                     result,
                     None if result.get("ok") else str(result.get("stderr") or result.get("error") or "git tool failed"),
+                )
+            if job.job_type == QueueJobType.DOCUMENT:
+                result = self._execute_document_tool(job.payload)
+                return ToolResult(
+                    new_message_id(),
+                    job.task_id,
+                    bool(result.get("ok")),
+                    result,
+                    None if result.get("ok") else str(result.get("error") or "document tool failed"),
                 )
             if job.job_type in {QueueJobType.SHELL, QueueJobType.RUN_TESTS, QueueJobType.RUN_LINT}:
                 return self._shell(job, str(job.payload.get("command", "")))
@@ -188,6 +199,7 @@ class ToolsManager:
             QueueJobType.REPO_READ,
             QueueJobType.REPO_BATCH_READ,
             QueueJobType.REPO_SEARCH,
+            QueueJobType.DOCUMENT,
         }:
             return ""
         payload = json.dumps(job.payload, ensure_ascii=False, sort_keys=True, default=str)
@@ -212,3 +224,46 @@ class ToolsManager:
                 )
             result.result = payload
         return result
+
+    def _execute_document_tool(self, payload: dict[str, Any]) -> dict[str, Any]:
+        service = DocumentService(self.root)
+        tool_name = str(payload.get("tool") or payload.get("tool_name") or "")
+        args = payload.get("args") if isinstance(payload.get("args"), dict) else dict(payload)
+        if tool_name == "document_detect":
+            return service.detect(str(args.get("path") or ""), mime_type=args.get("mime_type"))
+        if tool_name == "document_read":
+            return service.read(str(args.get("path") or ""), use_cache=bool(args.get("use_cache", True)), max_chunks=int(args.get("max_chunks") or 400))
+        if tool_name == "document_analyze":
+            return service.analyze(str(args.get("path") or ""))
+        if tool_name == "document_query":
+            return service.query(
+                str(args.get("query") or ""),
+                paths=args.get("paths"),
+                file_types=args.get("file_types"),
+                path_filter=str(args.get("path_filter") or ""),
+                sheet=str(args.get("sheet") or ""),
+                page=args.get("page"),
+                section=str(args.get("section") or ""),
+                limit=int(args.get("limit") or 10),
+            )
+        if tool_name == "document_create":
+            return service.create(
+                str(args.get("path") or ""),
+                content=args.get("content") or {},
+                file_type=args.get("file_type"),
+                overwrite=bool(args.get("overwrite", False)),
+            )
+        if tool_name == "document_update":
+            return service.update(
+                str(args.get("path") or ""),
+                operation=str(args.get("operation") or ""),
+                payload=dict(args.get("payload") or {}),
+                backup=bool(args.get("backup", True)),
+            )
+        if tool_name == "document_delete":
+            return service.delete(
+                str(args.get("path") or ""),
+                explicit=bool(args.get("explicit", False)),
+                backup=bool(args.get("backup", True)),
+            )
+        return {"ok": False, "error": "unsupported_document_tool", "tool": tool_name}
