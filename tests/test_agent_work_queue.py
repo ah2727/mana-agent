@@ -138,6 +138,42 @@ def test_document_artifact_edit_policy_does_not_allow_helper_file_mutations(tmp_
     assert "create_file" not in request.tool_policy["allowed_tools"]
 
 
+def test_selected_discovery_item_policy_allows_only_selected_tool(tmp_path: Path) -> None:
+    request = build_tool_run_request(
+        WorkItem(
+            kind="discover",
+            tool_name="repo_search",
+            tool_args={"query": "create workbook"},
+            question="Run planner-selected repository discovery for: create workbook",
+        ),
+        repo_root=tmp_path,
+        index_dir=str(tmp_path),
+        tool_policy={"allowed_tools": ["repo_search", "ls", "list_files"], "search_budget": 1},
+    )
+
+    assert request.tool_policy is not None
+    assert request.tool_policy["allowed_tools"] == ["repo_search"]
+    assert "ls" not in request.tool_policy["allowed_tools"]
+    assert "list_files" not in request.tool_policy["allowed_tools"]
+
+
+def test_selected_list_files_item_policy_requires_explicit_selection(tmp_path: Path) -> None:
+    request = build_tool_run_request(
+        WorkItem(
+            kind="discover",
+            tool_name="list_files",
+            tool_args={"glob": "docs/*.md"},
+            question="List selected docs files",
+        ),
+        repo_root=tmp_path,
+        index_dir=str(tmp_path),
+        tool_policy={"allowed_tools": ["repo_search", "ls", "list_files"], "search_budget": 1},
+    )
+
+    assert request.tool_policy is not None
+    assert request.tool_policy["allowed_tools"] == ["list_files"]
+
+
 # --------------------------------------------------------------------------- #
 # Dependencies
 # --------------------------------------------------------------------------- #

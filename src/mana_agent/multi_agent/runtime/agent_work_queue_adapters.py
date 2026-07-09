@@ -353,6 +353,9 @@ def _policy_for_item(item: WorkItem, tool_policy: dict[str, Any] | None) -> dict
         item_policy["mutation_required"] = True
         item_policy["verify_requires_mutation"] = True
     else:
+        selected_tool = str(item.tool_name or "").strip()
+        if selected_tool:
+            item_policy["allowed_tools"] = [selected_tool]
         item_policy.pop("mutation_required", None)
         item_policy.pop("mutation_strict", None)
         item_policy.pop("verify_requires_mutation", None)
