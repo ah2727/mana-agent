@@ -65,7 +65,7 @@ def create_document(path: Path, *, content: Any, file_type: str | None = None, o
                 for col_index, value in enumerate(row):
                     table.cell(row_index, col_index).text = str(value)
         _atomic_save(path, lambda target: doc.save(str(target)))
-        return {"ok": True, "path": str(path), "file_type": kind.value, "created": True}
+        return {"ok": True, "path": str(path), "file_type": kind.value, "created": True, "files_changed": [str(path)]}
     if kind in {DocumentFileType.XLSX, DocumentFileType.XLSM}:
         openpyxl = _require("openpyxl", "openpyxl")
         workbook = openpyxl.Workbook()
@@ -81,7 +81,7 @@ def create_document(path: Path, *, content: Any, file_type: str | None = None, o
             for row in rows or []:
                 sheet.append(list(row) if isinstance(row, (list, tuple)) else [row])
         _atomic_save(path, lambda target: workbook.save(str(target)))
-        return {"ok": True, "path": str(path), "file_type": kind.value, "created": True}
+        return {"ok": True, "path": str(path), "file_type": kind.value, "created": True, "files_changed": [str(path)]}
     if kind == DocumentFileType.CSV:
         rows = content.get("rows", content) if isinstance(content, dict) else content
         def write_csv(target: Path) -> None:
@@ -95,11 +95,11 @@ def create_document(path: Path, *, content: Any, file_type: str | None = None, o
                 else:
                     writer.writerows(rows or [])
         _atomic_save(path, write_csv)
-        return {"ok": True, "path": str(path), "file_type": kind.value, "created": True}
+        return {"ok": True, "path": str(path), "file_type": kind.value, "created": True, "files_changed": [str(path)]}
     if kind == DocumentFileType.PDF:
         text = content.get("text", "") if isinstance(content, dict) else str(content)
         _write_simple_text_pdf(path, text)
-        return {"ok": True, "path": str(path), "file_type": kind.value, "created": True}
+        return {"ok": True, "path": str(path), "file_type": kind.value, "created": True, "files_changed": [str(path)]}
     return {"ok": False, "error": "unsupported_file_type", "path": str(path), "file_type": kind.value}
 
 
@@ -124,7 +124,7 @@ def update_document(path: Path, *, operation: str, payload: dict[str, Any], back
                 writer.write(handle)
 
         _atomic_save(path, write_pdf)
-        return {"ok": True, "path": str(path), "operation": operation, "backup_path": backup_path}
+        return {"ok": True, "path": str(path), "operation": operation, "backup_path": backup_path, "files_changed": [str(path)]}
     return {"ok": False, "error": "unsupported_update_operation", "path": str(path), "operation": operation, "backup_path": backup_path}
 
 
@@ -135,7 +135,7 @@ def delete_document(path: Path, *, explicit: bool = False, backup: bool = True) 
         return {"ok": False, "error": "file_not_found", "path": str(path)}
     backup_path = _backup(path) if backup else ""
     path.unlink()
-    return {"ok": True, "path": str(path), "deleted": True, "backup_path": backup_path}
+    return {"ok": True, "path": str(path), "deleted": True, "backup_path": backup_path, "files_changed": [str(path)]}
 
 
 def _update_docx(path: Path, *, operation: str, payload: dict[str, Any], backup_path: str) -> dict[str, Any]:
@@ -177,7 +177,7 @@ def _update_docx(path: Path, *, operation: str, payload: dict[str, Any], backup_
     else:
         return {"ok": False, "error": "unsupported_docx_operation", "path": str(path), "backup_path": backup_path}
     _atomic_save(path, lambda target: doc.save(str(target)))
-    return {"ok": True, "path": str(path), "operation": operation, "backup_path": backup_path}
+    return {"ok": True, "path": str(path), "operation": operation, "backup_path": backup_path, "files_changed": [str(path)]}
 
 
 def _update_workbook(path: Path, *, operation: str, payload: dict[str, Any], backup_path: str, keep_vba: bool) -> dict[str, Any]:
@@ -216,6 +216,7 @@ def _update_workbook(path: Path, *, operation: str, payload: dict[str, Any], bac
         "path": str(path),
         "operation": operation,
         "backup_path": backup_path,
+        "files_changed": [str(path)],
         "warning": "Macros preserved with keep_vba=True; verify workbook macros after editing." if keep_vba else "",
     }
 

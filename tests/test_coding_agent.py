@@ -184,6 +184,23 @@ def _git_checklist(*, tools: list[str] | None = None) -> FlowChecklist:
     )
 
 
+def _tool_checklist(*, tools: list[str], requires_edit: bool = True) -> FlowChecklist:
+    return FlowChecklist(
+        objective="Run selected tools",
+        requires_edit=requires_edit,
+        steps=[
+            FlowStep(
+                id="s1",
+                title="Execute selected tool step",
+                reason="Planner selected the required tool capability",
+                status="in_progress",
+                requires_tools=tools,
+            )
+        ],
+        next_action="Execute selected tool step.",
+    )
+
+
 class _RecordingToolWorker:
     def __init__(self) -> None:
         self.requests = []
@@ -349,12 +366,34 @@ def test_work_queue_seed_git_add_commit_push_starts_with_git_context(tmp_path: P
 
 def test_work_queue_seed_broad_code_request_can_use_repo_search(tmp_path: Path, monkeypatch) -> None:
     agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+    monkeypatch.setattr(
+        agent,
+        "_plan_checklist",
+        lambda request, flow_context=None: (_tool_checklist(tools=["repo_search"]), []),
+    )
 
     seeds = agent._seed_items_for_request("fix bug in router")
 
     assert seeds
     assert seeds[0].tool_name == "repo_search"
     assert "Locate files relevant to" in seeds[0].question
+
+
+def test_work_queue_seed_document_create_does_not_discover_without_planner_search(tmp_path: Path, monkeypatch) -> None:
+    agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+    monkeypatch.setattr(
+        agent,
+        "_plan_checklist",
+        lambda request, flow_context=None: (_tool_checklist(tools=["document_create"]), []),
+    )
+
+    seeds = agent._seed_items_for_request("create an excel with row 200,300,400 and sum")
+
+    assert seeds
+    assert seeds[0].gate == "tool_manager_decision"
+    assert seeds[0].tool_name == ""
+    assert all(seed.tool_name not in {"repo_search", "list_files", "ls"} for seed in seeds)
+    assert all("Locate files relevant to" not in seed.question for seed in seeds)
 
 
 def test_work_queue_seed_exact_target_file_reads_without_broad_repo_search(tmp_path: Path, monkeypatch) -> None:
@@ -624,6 +663,8 @@ def test_coding_agent_tool_policy_includes_full_read_preferences(tmp_path: Path,
     assert policy["read_full_file_max_chars"] == 250000
     assert policy["read_cache_scope"] == "flow"
     assert "create_file" in policy["allowed_tools"]
+    assert "document_create" in policy["allowed_tools"]
+    assert "document_update" in policy["allowed_tools"]
 
 
 def test_coding_agent_tool_policy_treats_dotgitignore_as_single_file_edit(tmp_path: Path, monkeypatch) -> None:

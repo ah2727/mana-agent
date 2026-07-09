@@ -706,7 +706,7 @@ def _infer_trace_row_success(row: dict[str, Any]) -> bool:
             return False
         if normalized_status in ("ok", "success"):
             tool_name = str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
-            if tool_name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}:
+            if tool_name in _MUTATION_TOOL_NAMES:
                 changed = []
                 for key in ("files_changed", "changed_files", "modified_files"):
                     value = row.get(key)
@@ -794,7 +794,7 @@ def _infer_trace_row_success(row: dict[str, Any]) -> bool:
 
 def _infer_trace_row_mutation_success(row: dict[str, Any]) -> bool:
     tool_name = str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
-    if tool_name not in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}:
+    if tool_name not in _MUTATION_TOOL_NAMES:
         return False
     if not _infer_trace_row_success(row):
         return False
@@ -817,7 +817,7 @@ def _mutation_failure_error(trace_rows: list[dict[str, Any]]) -> tuple[str, str]
     mutation_rows = [
         row for row in trace_rows
         if str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
-        in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}
+        in _MUTATION_TOOL_NAMES
     ]
     if not mutation_rows:
         return "mutation_not_attempted", "mutation phase ended without attempting a mutation tool"
@@ -913,6 +913,20 @@ class ToolWorkerProcessError(RuntimeError):
 
 
 _CLIENT_RETRYABLE_CODES = frozenset({"worker_io_error", "worker_dead", "model_not_found", "init_failed", "worker_startup_failed"})
+_MUTATION_TOOL_NAMES = frozenset(
+    {
+        "edit_file",
+        "multi_edit_file",
+        "apply_patch",
+        "apply_patch_batch",
+        "write_file",
+        "create_file",
+        "delete_file",
+        "document_create",
+        "document_update",
+        "document_delete",
+    }
+)
 
 
 def _should_retry_run_tools_exception(exc: BaseException) -> bool:

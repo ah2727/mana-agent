@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 _FORCED_WRITE_INSTRUCTION = (
     "You have gathered enough evidence from the repository. Do NOT read, search, "
     "or list anything else. Right now, in this step, call exactly one mutation "
-    "tool (edit_file, multi_edit_file, apply_patch, apply_patch_batch, write_file, create_file, or delete_file) to apply the required "
+    "tool (edit_file, multi_edit_file, apply_patch, apply_patch_batch, write_file, create_file, delete_file, document_create, document_update, or document_delete) to apply the required "
     "project-level change with its full, final, project-specific content. Update "
     "all required imports, exports, registries, routers, commands, call sites, tests, "
     "and docs, and remove stale references. Do not answer in prose and do not emit "
@@ -696,7 +696,7 @@ class AskAgent:
         unique_read_files: set[str],
     ) -> list[str]:
         targets: list[str] = []
-        if name in {"edit_file", "multi_edit_file", "write_file", "create_file", "delete_file"}:
+        if name in {"edit_file", "multi_edit_file", "write_file", "create_file", "delete_file", "document_create", "document_update", "document_delete"}:
             raw_path = str(args.get("path", "")).strip()
             if raw_path:
                 try:
@@ -732,7 +732,7 @@ class AskAgent:
         when the payload omits a list. Returns ``[]`` for non-mutation tools or
         when the call did not succeed.
         """
-        if name not in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"}:
+        if name not in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file", "document_create", "document_update", "document_delete"}:
             return []
         if name == "apply_patch":
             if self._is_apply_patch_failure(content):
@@ -1794,7 +1794,18 @@ class AskAgent:
         mutation_required = bool(policy.get("mutation_required") or policy.get("mutation_strict"))
         mutation_tool_names = [
             name
-            for name in ("edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file")
+            for name in (
+                "edit_file",
+                "multi_edit_file",
+                "apply_patch",
+                "apply_patch_batch",
+                "write_file",
+                "create_file",
+                "delete_file",
+                "document_create",
+                "document_update",
+                "document_delete",
+            )
             if name in tool_map and (not allowed_tools or name in allowed_tools)
         ]
         bound_mutation = None
@@ -1981,7 +1992,7 @@ class AskAgent:
                         {
                             "error": (
                                 f"duplicate tool call blocked: {name}. "
-                                "Use a different step (repo_batch_read/read_file/edit_file/multi_edit_file/apply_patch/apply_patch_batch/write_file/create_file) instead of repeating."
+                                "Use a different step (repo_batch_read/read_file/edit_file/multi_edit_file/apply_patch/apply_patch_batch/write_file/create_file/document_create) instead of repeating."
                             )
                         }
                     )
@@ -2054,7 +2065,7 @@ class AskAgent:
                             persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
-                    if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"} and require_read_files > 0:
+                    if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file", "document_create", "document_update", "document_delete"} and require_read_files > 0:
                         if len(unique_read_files) < require_read_files:
                             content = json.dumps(
                                 {
@@ -2066,7 +2077,7 @@ class AskAgent:
                             persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
-                    if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"}:
+                    if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file", "document_create", "document_update", "document_delete"}:
                         unread_targets = self._mutation_unread_targets(
                             name=name,
                             args=args if isinstance(args, dict) else {},
@@ -2167,7 +2178,7 @@ class AskAgent:
                                 unique_read_files.add(file_path)
                         if not bool(payload.get("cache_hit", False)) and not read_failed:
                             disk_read_count += 1
-                if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"}:
+                if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file", "document_create", "document_update", "document_delete"}:
                     changed_paths = self._mutation_changed_files(
                         name=name,
                         args=args if isinstance(args, dict) else {},

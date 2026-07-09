@@ -17,6 +17,9 @@ RegisteredMutationTool = Literal[
     "apply_patch",
     "apply_patch_batch",
     "delete_file",
+    "document_create",
+    "document_update",
+    "document_delete",
 ]
 EditType = Literal["docs_update", "code_change", "config_change", "test_change", "unknown"]
 
@@ -28,6 +31,9 @@ REGISTERED_MUTATION_TOOLS = {
     "apply_patch",
     "apply_patch_batch",
     "delete_file",
+    "document_create",
+    "document_update",
+    "document_delete",
 }
 
 
@@ -464,18 +470,25 @@ def validate_mutation_command(command: MutationCommand | dict[str, Any]) -> list
     errors: list[str] = []
     if command.tool_name not in REGISTERED_MUTATION_TOOLS:
         errors.append("unregistered mutation tool")
-    if command.tool_name in {"write_file", "create_file"}:
+    if command.tool_name in {"write_file", "create_file", "document_create"}:
         if not command.tool_args.get("path"):
             errors.append("missing path")
         if not command.tool_args.get("content"):
             errors.append("missing content")
+    if command.tool_name == "document_update":
+        if not command.tool_args.get("path"):
+            errors.append("missing path")
+        if not command.tool_args.get("operation"):
+            errors.append("missing operation")
+        if not isinstance(command.tool_args.get("payload"), dict):
+            errors.append("missing payload")
     if command.tool_name == "apply_patch":
         if not command.tool_args.get("patch"):
             errors.append("missing patch")
     if command.tool_name == "apply_patch_batch":
         if not command.tool_args.get("patches"):
             errors.append("missing patches")
-    if command.tool_name == "delete_file" and not command.tool_args.get("path"):
+    if command.tool_name in {"delete_file", "document_delete"} and not command.tool_args.get("path"):
         errors.append("missing path")
     if not command.plan_id:
         errors.append("missing mutation plan id")

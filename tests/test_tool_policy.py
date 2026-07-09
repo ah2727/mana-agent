@@ -24,7 +24,18 @@ def test_real_tool_names_pass_through_unchanged() -> None:
 def test_edit_alias_includes_create_and_delete_file() -> None:
     expanded, unknown = expand_tool_aliases(["edit"])
     assert unknown == []
-    assert {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "delete_file", "write_file"} <= set(expanded)
+    assert {
+        "edit_file",
+        "multi_edit_file",
+        "apply_patch",
+        "apply_patch_batch",
+        "create_file",
+        "delete_file",
+        "write_file",
+        "document_create",
+        "document_update",
+        "document_delete",
+    } <= set(expanded)
 
 
 def test_unknown_alias_is_reported() -> None:

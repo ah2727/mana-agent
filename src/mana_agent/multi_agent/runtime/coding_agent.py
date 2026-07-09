@@ -64,6 +64,7 @@ logger = logging.getLogger(__name__)
 _as_jsonable = as_jsonable
 
 if TYPE_CHECKING:
+    from mana_agent.multi_agent.runtime.agent_work_queue import WorkItem
     from mana_agent.multi_agent.runtime.tool_worker_process import ToolRunResponse
 
 
@@ -716,7 +717,7 @@ class CodingAgent:
                 for idx, path in enumerate(dict.fromkeys(target_files))
             ]
 
-        if decision.needs_repo_search or self._checklist_requests_discovery(checklist):
+        if self._checklist_requests_discovery(checklist):
             return [
                 WorkItem(
                     kind="discover",
@@ -1368,7 +1369,20 @@ class CodingAgent:
 
     # Mutation tools whose presence in a planned step means the run must end in
     # an actual edit (and verify), not just discovery/reads.
-    _MUTATION_TOOLS = frozenset({"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"})
+    _MUTATION_TOOLS = frozenset(
+        {
+            "edit_file",
+            "multi_edit_file",
+            "apply_patch",
+            "apply_patch_batch",
+            "create_file",
+            "write_file",
+            "delete_file",
+            "document_create",
+            "document_update",
+            "document_delete",
+        }
+    )
 
     @classmethod
     def _checklist_requires_edit(cls, checklist: "FlowChecklist | None") -> bool:
@@ -1694,6 +1708,13 @@ class CodingAgent:
                 "git_diff",
                 "verify_project",
                 "tool_contracts",
+                "document_detect",
+                "document_read",
+                "document_analyze",
+                "document_query",
+                "document_create",
+                "document_update",
+                "document_delete",
                 "edit_file",
                 "multi_edit_file",
                 "apply_patch",
@@ -1810,7 +1831,7 @@ class CodingAgent:
         mutation_tools_seen = {str(row.get("tool_name", "")) for row in combined_trace_rows}
         attempted_apply_patch = "apply_patch" in mutation_tools_seen
         attempted_write_file = "write_file" in mutation_tools_seen
-        attempted_mutation = bool(mutation_tools_seen.intersection({"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}))
+        attempted_mutation = bool(mutation_tools_seen.intersection(self._MUTATION_TOOLS))
 
         if edit_intent and not changed and attempted_apply_patch:
             warnings.append("mutation_noop_after_apply_patch")

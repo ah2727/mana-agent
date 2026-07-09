@@ -48,7 +48,20 @@ GATE_TO_PHASE: dict[str, str] = {
 # the active gate.
 WRAPPER_TOOLS: frozenset[str] = frozenset({"toolsmanager_request"})
 
-MUTATION_TOOLS: frozenset[str] = frozenset({"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"})
+MUTATION_TOOLS: frozenset[str] = frozenset(
+    {
+        "edit_file",
+        "multi_edit_file",
+        "apply_patch",
+        "apply_patch_batch",
+        "write_file",
+        "create_file",
+        "delete_file",
+        "document_create",
+        "document_update",
+        "document_delete",
+    }
+)
 VERIFICATION_TOOLS: frozenset[str] = frozenset({"run_command", "run_script_once", "verify_project"})
 
 

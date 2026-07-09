@@ -49,6 +49,9 @@ MUTATION_ONLY_TOOLS = [
     "write_file",
     "create_file",
     "delete_file",
+    "document_create",
+    "document_update",
+    "document_delete",
 ]
 
 
@@ -100,6 +103,9 @@ _AGENTIC_EDIT_TOOLS = [
     "write_file",
     "create_file",
     "delete_file",
+    "document_create",
+    "document_update",
+    "document_delete",
 ]
 
 
@@ -181,7 +187,7 @@ def classify_result(item: WorkItem, response: ToolRunResponse, *, repo_root: Pat
             trace=list(response.trace),
         )
 
-    if tool in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file", "move_file"}:
+    if tool in {*_AGENTIC_EDIT_TOOLS, "move_file"}:
         changed = sorted(paths)
         for row in response.trace:
             if isinstance(row, dict):
@@ -590,7 +596,7 @@ class CodingAgentSniffer:
                 "Using the file evidence already gathered in this run, carry out "
                 f"the user's request: {self._request}. "
                 "Apply concrete changes with "
-                "edit_file/multi_edit_file/apply_patch/create_file/write_file/delete_file and report the changed files. "
+                "edit_file/multi_edit_file/apply_patch/create_file/write_file/delete_file/document_create/document_update/document_delete and report the changed files. "
                 "Before mutating, use bounded exact path/name/symbol evidence to account for "
                 "related importers, exports, registries, routers, commands, call sites, tests, "
                 "and stale docs/config references; update or remove each one required for the "
