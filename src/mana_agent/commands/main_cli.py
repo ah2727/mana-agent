@@ -104,6 +104,7 @@ def main(
                     MenuOption("chat", "Chat with repo (mana-agent chat)", ("1", "c")),
                     MenuOption("analyze", "Analyze repo", ("2", "a")),
                     MenuOption("plan", "Create implementation plan", ("3", "p")),
+                    MenuOption("dashboard", "Launch Web Dashboard (Streamlit)", ("d", "dash")),
                     MenuOption("settings", "Settings", ("s",)),
                     MenuOption("exit", "Exit", ("4", "5", "q", "quit")),
                 ],
@@ -119,6 +120,9 @@ def main(
             _invoke_with_multi_agent_route(ctx, "analyze", ["--repo", str(root)], root=root, request="root menu analyze", entrypoint="root")
         elif choice in {"plan", "3", "p"}:
             _invoke_with_multi_agent_route(ctx, "plan", ["--repo", str(root)], root=root, request="root menu plan", entrypoint="root")
+        elif choice in {"dashboard", "d", "dash"}:
+            # Dashboard is UI layer; no forced multi-agent route decision needed here
+            _invoke("dashboard", ["--root-dir", str(root)])
         elif choice in {"settings", "4", "s"}:
             settings_menu(console=console)
         else:

@@ -563,6 +563,64 @@ def api_command(
     uvicorn.run("mana_agent.api.app:app", host=host, port=port, reload=reload)
 
 
+@app.command("dashboard")
+def dashboard_command(
+    root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root to pass to dashboard."),
+    port: int = typer.Option(8501, "--port", help="Streamlit server port."),
+    headless: bool = typer.Option(True, "--headless/--no-headless", help="Run Streamlit in headless mode (default for servers)."),
+) -> None:
+    """Launch the Mana Agent Web Dashboard (Streamlit).
+
+    Requires the optional extra: pip install "mana-agent[dashboard]"
+
+    This command is a thin, lazy wrapper. The real UI lives in
+    dashboard/app.py and uses read-only views over .mana/ + runtime artifacts.
+    """
+    import sys
+    from pathlib import Path
+
+    repo_root = _resolve_repo(root)
+    # Lazy import guard so core package never requires streamlit
+    try:
+        import streamlit  # noqa: F401 - presence check
+    except ImportError:
+        console.print("[red]Dashboard requires optional dependencies.[/red]")
+        console.print("Install with: pip install 'mana-agent[dashboard]'")
+        console.print("Then run: mana-agent dashboard  or  streamlit run dashboard/app.py")
+        raise typer.Exit(code=1)
+
+    # Build streamlit invocation
+    # We prefer launching via the module so it inherits our PYTHONPATH/src layout.
+    cmd = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(Path("dashboard/app.py").resolve()),
+        "--server.port",
+        str(port),
+        "--server.headless",
+        "true" if headless else "false",
+        "--",
+        # Pass root via env for the app to pick up
+    ]
+    env = os.environ.copy()
+    env["MANA_DASHBOARD_ROOT"] = str(repo_root)
+    # Also set for helpers
+    os.environ["MANA_DASHBOARD_ROOT"] = str(repo_root)
+
+    console.print(f"[cyan]Launching dashboard for[/cyan] {repo_root}")
+    console.print(f"[dim]streamlit run dashboard/app.py --server.port {port}[/dim]")
+
+    # Execute (blocking)
+    import subprocess
+
+    try:
+        subprocess.run(cmd, env=env, check=False)
+    except KeyboardInterrupt:
+        console.print("\nDashboard stopped.")
+
+
 @app.command(
     "git",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},

@@ -210,6 +210,7 @@ Mana-Agent should provide:
 * Efficient token usage.
 * Reliable patching and verification.
 * Extensible architecture for future agents, tools, and workflows.
+* Optional UI (dashboard/) and automation layers are lazy-loaded and must never affect core CLI or model-decision paths.
 
 Mana-Agent must not depend on hardcoded keyword behavior or fallback functionality.
 

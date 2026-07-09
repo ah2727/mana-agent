@@ -54,6 +54,27 @@ dev = [
   "pytest>=8.0,<9.0",
 ]
 
+# Grok Build: optional dashboard + automations extras (Phase 1)
+# These keep the core CLI + multi-agent runtime dependency-free.
+# Install examples:
+#   pip install "mana-agent[dashboard]"
+#   pip install "mana-agent[automations]"
+#   pip install "mana-agent[full]"
+dashboard = [
+  "streamlit>=1.38,<2.0",
+  "plotly>=5.22,<6",
+  "pandas>=2.2,<3",
+]
+automations = [
+  "apscheduler>=3.10,<4",
+]
+full = [
+  "streamlit>=1.38,<2.0",
+  "plotly>=5.22,<6",
+  "pandas>=2.2,<3",
+  "apscheduler>=3.10,<4",
+]
+
 [project.scripts]
 mana-agent = "mana_agent.commands.cli:app"
 

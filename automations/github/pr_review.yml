@@ -1,0 +1,24 @@
+# mana-agent GitHub PR review automation template (Grok Build example)
+# Copy/adapt into .github/workflows/ as needed.
+name: mana-agent-pr-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mana-agent (with automations if desired)
+        run: pip install "mana-agent[automations]"
+      - name: Run analysis + comment summary (placeholder)
+        run: |
+          echo "Would run: mana-agent analyze . --output json > analysis.json"
+          echo "Then post PR comment via GitHub integration."
+        # Real impl uses src/mana_agent/automations/github_integration + model decisions.

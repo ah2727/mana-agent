@@ -124,6 +124,17 @@ mana-agent run --root-dir /path/to/project --plan-id mp_a672168ef9c0
 
 This separates planning and approval from actual mutation execution.
 
+### Web Dashboard (optional)
+
+```bash
+pip install "mana-agent[dashboard]"
+mana-agent dashboard --root-dir .
+# or
+streamlit run dashboard/app.py
+```
+
+Beautiful practical UI powered by the same multi-agent runtime. Sidebar navigation, overview, live taskboard/traces from `.mana/`, reports, metrics. Read-only MVP with safe trigger buttons. See `dashboard/app.py` and `src/mana_agent/ui/streamlit_helpers.py`.
+
 ---
 
 ## Interface Preview
@@ -821,6 +832,7 @@ Available repository tools include:
 ```text
 src/mana_agent/
   analysis/       Static analysis and chunking
+  automations/    (optional) Scheduler, self-improvement, GitHub integration
   commands/       CLI commands, chat input, and output rendering
   config/         Settings and environment handling
   dependencies/   Dependency graph support
@@ -830,12 +842,19 @@ src/mana_agent/
   renderers/      HTML report rendering
   services/       Index, ask, analyze, report, structure, and security services
   tools/          Agent tools for repository access and mutation
+  ui/             Banner + streamlit_helpers (for optional dashboard)
   utils/          Discovery, IO, logging, guards, and tool-run helpers
   vector_store/   FAISS vector-store wrapper
 
+dashboard/        (optional) Streamlit web dashboard (run with `streamlit run dashboard/app.py`)
+automations/      (optional) GitHub workflow templates, scheduler examples
 tests/            Pytest suite
 docs/             User and developer documentation
 .github/          CI workflow configuration
+```
+
+New top-level optional packages (`dashboard/`, `automations/`) and `src` modules are lazy-loaded.
+Install via `pip install "mana-agent[dashboard]"` or `[automations]` or `[full]`.
 ```
 
 ---
