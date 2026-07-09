@@ -93,6 +93,54 @@ def test_xlsx_create_read_formula_safety_and_delete(tmp_path: Path) -> None:
     assert not (tmp_path / "budget.xlsx").exists()
 
 
+def test_xlsx_create_writes_explicit_cells_and_sum_formula(tmp_path: Path) -> None:
+    service = DocumentService(tmp_path)
+    created = service.create(
+        "cell_sum.xlsx",
+        content={
+            "sheets": {
+                "Sheet1": {
+                    "cells": [
+                        {"cell": "A1", "value": 100},
+                        {"cell": "A2", "value": 200},
+                        {"cell": "A3", "value": 300},
+                        {"cell": "A4", "formula": "=SUM(A1:A3)"},
+                    ]
+                }
+            }
+        },
+    )
+
+    assert created["ok"] is True
+    assert created["verification"]["non_empty_cells"] == 4
+    assert created["verification"]["formula_count"] == 1
+
+    read = service.read("cell_sum.xlsx")
+    assert read["ok"] is True
+    assert read["analysis"]["formula_count"] == 1
+    assert any("=SUM(A1:A3)" in chunk["content"] for chunk in read["chunks"])
+
+
+def test_xlsx_create_rejects_blank_or_malformed_content(tmp_path: Path) -> None:
+    service = DocumentService(tmp_path)
+
+    blank = service.create(
+        "blank.xlsx",
+        content={"description": "Excel workbook with numbers 100, 200, 300 and their sum"},
+    )
+    assert blank["ok"] is False
+    assert blank["error"] == "invalid_excel_schema"
+    assert not (tmp_path / "blank.xlsx").exists()
+
+    list_sheets = service.create(
+        "list_sheets.xlsx",
+        content={"sheets": [{"name": "Sheet1", "cells": [{"cell": "A1", "value": 100}]}]},
+    )
+    assert list_sheets["ok"] is False
+    assert list_sheets["error"] == "invalid_excel_schema"
+    assert not (tmp_path / "list_sheets.xlsx").exists()
+
+
 def test_pdf_create_read_and_corrupt_failure(tmp_path: Path) -> None:
     service = DocumentService(tmp_path)
     created = service.create("summary.pdf", content={"text": "Payment terms Net 30"})

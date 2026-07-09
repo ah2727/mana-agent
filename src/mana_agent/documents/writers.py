@@ -66,42 +66,32 @@ def _validate_workbook_create_content(path: Path, content: Any) -> dict[str, Any
             "path": str(path),
         }
 
-    return None
-
-
-def _verify_workbook_created(path: Path, *, keep_vba: bool) -> dict[str, Any]:
-    try:
-        openpyxl = _require("openpyxl", "openpyxl")
-        workbook = openpyxl.load_workbook(
-            str(path),
-            data_only=False,
-            keep_vba=keep_vba,
-        )
-
-        non_empty_cells = 0
-        formulas = 0
-
-        for worksheet in workbook.worksheets:
-            for row in worksheet.iter_rows():
-                for cell in row:
-                    if cell.value is not None:
-                        non_empty_cells += 1
-                        if isinstance(cell.value, str) and cell.value.startswith("="):
-                            formulas += 1
-
-        return {
-            "ok": non_empty_cells > 0,
-            "sheet_count": len(workbook.sheetnames),
-            "sheets": list(workbook.sheetnames),
-            "non_empty_cells": non_empty_cells,
-            "formula_count": formulas,
-            "error": "" if non_empty_cells > 0 else "workbook_has_no_cell_content",
-        }
-    except Exception as exc:
+    workbook_payload = _normalize_workbook_payload(content)
+    if not _workbook_payload_has_writable_content(workbook_payload):
         return {
             "ok": False,
-            "error": str(exc),
+            "error": "invalid_excel_schema",
+            "message": (
+                "Excel content must include at least one writable row, table, cell, or formula. "
+                "Use content['sheets'] = {'Sheet1': {'cells': [...]}} for explicit cells."
+            ),
+            "path": str(path),
+            "expected_schema": {
+                "sheets": {
+                    "Sheet1": {
+                        "cells": [
+                            {"cell": "A1", "value": 100},
+                            {"cell": "A2", "value": 200},
+                            {"cell": "A3", "value": 300},
+                            {"cell": "A4", "formula": "=SUM(A1:A3)"},
+                        ]
+                    }
+                }
+            },
         }
+
+    return None
+
 
 def _atomic_save(path: Path, writer: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +131,10 @@ def create_document(
         return _create_docx(path, content=content, kind=kind)
 
     if kind in {DocumentFileType.XLSX, DocumentFileType.XLSM}:
+        validation_error = _validate_workbook_create_content(path, content)
+        if validation_error:
+            return validation_error
+
         return _create_workbook(path, content=content, kind=kind)
 
     if kind == DocumentFileType.CSV:
@@ -156,13 +150,6 @@ def create_document(
             "created": True,
             "files_changed": [str(path)],
         }
-
-    if kind in {DocumentFileType.XLSX, DocumentFileType.XLSM}:
-        validation_error = _validate_workbook_create_content(path, content)
-        if validation_error:
-            return validation_error
-
-        return _create_workbook(path, content=content, kind=kind)
 
     return {
         "ok": False,
@@ -542,6 +529,46 @@ def _normalize_sheet_blocks(blocks: list[Any]) -> dict[str, Any]:
     return normalized
 
 
+def _workbook_payload_has_writable_content(workbook_payload: dict[str, Any]) -> bool:
+    sheets = workbook_payload.get("sheets")
+    if not isinstance(sheets, dict) or not sheets:
+        return False
+
+    return any(_sheet_spec_has_writable_content(sheet_spec) for sheet_spec in sheets.values())
+
+
+def _sheet_spec_has_writable_content(sheet_spec: Any) -> bool:
+    spec = _normalize_sheet_spec(sheet_spec)
+
+    rows = spec.get("rows")
+    if isinstance(rows, list) and bool(rows):
+        return True
+
+    tables = spec.get("tables")
+    if isinstance(tables, list):
+        for table in tables:
+            if not isinstance(table, dict):
+                continue
+            columns = table.get("columns") or table.get("headers") or []
+            rows = table.get("rows") or []
+            if columns or rows:
+                return True
+
+    cells = spec.get("cells")
+    if isinstance(cells, list):
+        for cell in cells:
+            if isinstance(cell, dict) and str(cell.get("cell") or "").strip():
+                return True
+
+    formulas = spec.get("formulas")
+    if isinstance(formulas, list):
+        for formula in formulas:
+            if isinstance(formula, dict) and _normalize_formula_block(formula):
+                return True
+
+    return False
+
+
 def _write_sheet(worksheet: Any, sheet_spec: Any) -> None:
     spec = _normalize_sheet_spec(sheet_spec)
 
@@ -712,10 +739,24 @@ def _verify_workbook_created(path: Path, *, keep_vba: bool) -> dict[str, Any]:
             keep_vba=keep_vba,
         )
 
+        non_empty_cells = 0
+        formulas = 0
+
+        for worksheet in workbook.worksheets:
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    if cell.value is not None:
+                        non_empty_cells += 1
+                        if isinstance(cell.value, str) and cell.value.startswith("="):
+                            formulas += 1
+
         return {
-            "ok": True,
+            "ok": non_empty_cells > 0,
             "sheet_count": len(workbook.sheetnames),
             "sheets": list(workbook.sheetnames),
+            "non_empty_cells": non_empty_cells,
+            "formula_count": formulas,
+            "error": "" if non_empty_cells > 0 else "workbook_has_no_cell_content",
         }
     except Exception as exc:
         return {
