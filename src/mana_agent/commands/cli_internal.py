@@ -30,6 +30,7 @@ from mana_agent.config.settings import (
     default_logs_dir,
     mana_root_dir,
 )
+from mana_agent.config.user_config import load_effective_settings
 from mana_agent.vector_store.embeddings import build_embeddings
 from mana_agent.commands import ui_helpers as _ui_helpers
 from mana_agent.commands.ui_helpers import *  # noqa: F401,F403
@@ -134,25 +135,26 @@ def _index_has_search_data(index_dir: str | Path) -> bool:
 
 
 def _build_project_llm_analyzer():
-    """Build the LLM analyzer from settings, or ``None`` when unavailable.
+    """Build the analyzer from persisted Mana configuration, or ``None``.
 
-    Returns ``None`` (deterministic-only analyze) when settings cannot be loaded
-    or no API key is configured, so analyze never fails just because the LLM is
-    unavailable.
+    Analyze deliberately does not load a repository ``.env``.  Its connection
+    settings are the user-level ``~/.mana/config.toml`` and ``secrets.toml`` so
+    a target repository cannot silently change the model used for its report.
+    Returns ``None`` (deterministic-only analyze) when no API key is configured.
     """
     try:
-        settings = _public_symbol("Settings", Settings)()
-    except Exception as exc:  # noqa: BLE001 - missing env should not break analyze
-        logger.warning("Project analyze LLM disabled (settings unavailable): %s", exc)
+        config = load_effective_settings(include_env=False)
+    except Exception as exc:  # noqa: BLE001 - unavailable configuration should not break analyze
+        logger.warning("Project analyze LLM disabled (user configuration unavailable): %s", exc)
         return None
-    api_key = str(getattr(settings, "openai_api_key", "") or "").strip()
+    api_key = str(config.get("OPENAI_API_KEY", "") or "").strip()
     if not api_key:
         return None
     return build_llm_analyzer(
         ModelConfig(
             api_key=api_key,
-            model=getattr(settings, "openai_chat_model", "gpt-4.1-mini"),
-            base_url=getattr(settings, "openai_base_url", None) or os.getenv("OPENAI_BASE_URL") or None,
+            model=str(config.get("OPENAI_CHAT_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini"),
+            base_url=str(config.get("OPENAI_BASE_URL", "") or "").strip() or None,
         )
     )
 

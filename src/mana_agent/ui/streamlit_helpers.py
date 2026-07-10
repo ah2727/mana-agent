@@ -410,8 +410,8 @@ def trigger_automation(action: str, *, root: Path | None = None, **kwargs: Any) 
 
                 artifact_dir.mkdir(parents=True, exist_ok=True)
 
-                # Try to get a real LLM analyzer so we read OPENAI_API_KEY (and model)
-                # from ~/.mana/config.toml + secrets.toml + env, exactly like the CLI.
+                # Use the same persisted ~/.mana configuration as the CLI.
+                # Analyze must not let the target repository's .env choose its model.
                 llm_analyzer = None
                 try:
                     from mana_agent.commands.cli_internal import _build_project_llm_analyzer
