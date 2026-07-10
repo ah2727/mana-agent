@@ -40,6 +40,12 @@ __all__ = [
     "append_automation_run",
     "trigger_automation",
     "run_dashboard_chat",
+    "list_schedules",
+    "create_schedule",
+    "schedule_status",
+    "delete_schedule",
+    "set_schedule_enabled",
+    "run_schedule_now",
 ]
 
 
@@ -280,25 +286,84 @@ def get_metrics_summary(root: Path | None = None) -> dict[str, Any]:
 def load_automations(root: Path | None = None) -> dict[str, Any]:
     """Load persisted automation definitions + run history (CRUD source of truth)."""
     root = find_mana_root(root)
-    p = root / ".mana" / "automations" / "config.json"
-    data = safe_read_json(p)
-    if isinstance(data, dict):
-        data.setdefault("automations", [])
-        data.setdefault("runs", [])
-        return data
-    return {"automations": [], "runs": [], "root": str(root)}
+    from mana_agent.automations.service import load_config
+
+    try:
+        data = load_config(root)
+    except ValueError:
+        return {"automations": [], "schedules": [], "runs": [], "root": str(root)}
+    data["root"] = str(root)
+    return data
 
 
 def save_automations(data: dict[str, Any], root: Path | None = None) -> bool:
     """Persist automations config. Creates dirs. Returns success."""
     root = find_mana_root(root)
-    p = root / ".mana" / "automations" / "config.json"
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+        from mana_agent.automations.service import save_config
+        save_config(root, data)
         return True
-    except Exception:
+    except (OSError, ValueError):
         return False
+
+
+def list_schedules(root: Path | None = None) -> list[dict[str, Any]]:
+    """Return typed persistent schedules for dashboard rendering."""
+    root = find_mana_root(root)
+    from mana_agent.automations.service import list_schedules as _list_schedules
+
+    try:
+        return [schedule.to_dict() for schedule in _list_schedules(root)]
+    except ValueError:
+        return []
+
+
+def create_schedule(
+    *,
+    name: str,
+    action: str,
+    cron: str,
+    targets: list[str],
+    command: str | None = None,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Create and immediately deploy an explicitly requested schedule."""
+    root = find_mana_root(root)
+    from mana_agent.automations.service import ScheduleDefinition, deploy_schedule
+
+    schedule = ScheduleDefinition.create(name=name, action=action, cron=cron, targets=targets, command=command)
+    return deploy_schedule(schedule, root).to_dict()
+
+
+def schedule_status(schedule_id: str, root: Path | None = None) -> dict[str, Any]:
+    root = find_mana_root(root)
+    from mana_agent.automations.service import deployment_status, get_schedule
+
+    return deployment_status(get_schedule(root, schedule_id), root)
+
+
+def delete_schedule(schedule_id: str, root: Path | None = None) -> None:
+    root = find_mana_root(root)
+    from mana_agent.automations.service import delete_schedule as _delete, remove_deployment
+
+    schedule = _delete(root, schedule_id)
+    remove_deployment(schedule, root)
+
+
+def set_schedule_enabled(schedule_id: str, enabled: bool, root: Path | None = None) -> dict[str, Any]:
+    root = find_mana_root(root)
+    from mana_agent.automations.service import deploy_schedule, get_schedule
+
+    schedule = get_schedule(root, schedule_id)
+    schedule.enabled = enabled
+    return deploy_schedule(schedule, root).to_dict()
+
+
+def run_schedule_now(schedule_id: str, root: Path | None = None) -> dict[str, Any]:
+    root = find_mana_root(root)
+    from mana_agent.automations.service import get_schedule, run_schedule_now as _run_schedule_now
+
+    return _run_schedule_now(get_schedule(root, schedule_id), root)
 
 
 def append_automation_run(run: dict[str, Any], root: Path | None = None) -> bool:
@@ -328,22 +393,10 @@ def trigger_automation(action: str, *, root: Path | None = None, **kwargs: Any) 
             append_automation_run({"action": action, "result": {"skills": len(result)}}, root)
             return {"ok": True, "action": action, "created": len(result), "detail": result}
         elif action in {"daily_report", "report"}:
-            from mana_agent.automations.scheduler import schedule_job  # type: ignore
-            # Use src example if available; otherwise just schedule a no-op marker
-            ran = False
-            try:
-                from automations.scheduler.daily_report import run_daily_report  # type: ignore[attr-defined]
-                schedule_job(lambda: run_daily_report(str(root)), trigger="date")
-                run_daily_report(str(root))
-                ran = True
-            except Exception:
-                pass
-            if not ran:
-                # Fallback marker
-                (root / ".mana" / "automations").mkdir(parents=True, exist_ok=True)
-                (root / ".mana" / "automations" / "last_daily.txt").write_text("triggered\n", encoding="utf-8")
-            append_automation_run({"action": action}, root)
-            return {"ok": True, "action": action, "note": "daily report (best-effort)"}
+            # Daily report is the explicit report-generation action; it uses the
+            # same validated analysis service as the CLI rather than a transient
+            # in-process scheduler or marker-file fallback.
+            return trigger_automation("analyze", root=root, **kwargs)
         elif action in {"analyze", "generate_report"}:
             # Direct real call to ProjectAnalyzeService (guarantees .mana/analyze is created).
             # This is the reliable "real functionality" path inside the dashboard process.
@@ -357,8 +410,8 @@ def trigger_automation(action: str, *, root: Path | None = None, **kwargs: Any) 
 
                 artifact_dir.mkdir(parents=True, exist_ok=True)
 
-                # Try to get a real LLM analyzer so we read OPENAI_API_KEY (and model)
-                # from ~/.mana/config.toml + secrets.toml + env, exactly like the CLI.
+                # Use the same persisted ~/.mana configuration as the CLI.
+                # Analyze must not let the target repository's .env choose its model.
                 llm_analyzer = None
                 try:
                     from mana_agent.commands.cli_internal import _build_project_llm_analyzer
@@ -394,39 +447,12 @@ def trigger_automation(action: str, *, root: Path | None = None, **kwargs: Any) 
                     "artifacts": list(getattr(result, "artifacts", {}).keys())[:8],
                 }
             except Exception as direct_err:
-                # Fallback to subprocess (may have limited success depending on invocation)
-                import subprocess
-                import sys as _sys
-                ad_str = str(artifact_dir)
-                cmd = [
-                    _sys.executable, "-m", "mana_agent.commands.cli", "analyze",
-                    "--root-dir", str(root),
-                    "--artifact-dir", ad_str,
-                    "--format", "both",
-                ]
-                try:
-                    out = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, timeout=90)
-                    append_automation_run({
-                        "action": action,
-                        "rc": out.returncode,
-                        "artifact_dir": ad_str,
-                        "fallback": "subprocess",
-                    }, root)
-                    return {
-                        "ok": out.returncode == 0,
-                        "action": action,
-                        "artifact_dir": ad_str,
-                        "stdout": (out.stdout or "")[-2000:],
-                        "stderr": (out.stderr or "")[-800:],
-                        "direct_error": str(direct_err)[:200],
-                    }
-                except Exception as sub_e:
-                    return {
-                        "ok": False,
-                        "action": action,
-                        "artifact_dir": ad_str,
-                        "error": f"direct={direct_err}; subprocess={sub_e}",
-                    }
+                return {
+                    "ok": False,
+                    "action": action,
+                    "artifact_dir": str(artifact_dir),
+                    "error": f"Model decision failed: analyze execution. No fallback action was executed. Reason: {direct_err}",
+                }
         else:
             append_automation_run({"action": action, "noop": True}, root)
             return {"ok": True, "action": action, "noop": True}

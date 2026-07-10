@@ -41,16 +41,22 @@ except ImportError as e:
 try:
     from mana_agent.ui.streamlit_helpers import (
         append_automation_run,
+        create_schedule,
+        delete_schedule,
         find_mana_root,
         get_index_stats,
         get_last_analysis_summary,
         get_metrics_summary,
         list_analysis_artifacts,
         load_automations,
+        list_schedules,
         load_recent_traces,
         load_taskboard_state,
         safe_read_json,
         save_automations,
+        run_schedule_now,
+        schedule_status,
+        set_schedule_enabled,
         trigger_automation,
         run_dashboard_chat,
     )
@@ -82,24 +88,22 @@ st.markdown(
 root = find_mana_root()
 st.caption(f"Repository root: `{root}`")
 
-# --- Sidebar (nicer UX + Automation Triggers) ---
+# --- Sidebar (button navigation + automation triggers) ---
 st.sidebar.markdown("## 🧠 Mana Agent")
 st.sidebar.caption(f"Root: `{root.name}`")
-
+st.markdown("""<style>
+div[data-testid="stSidebar"] button[kind="secondary"] {text-align:left; border:0; border-radius:8px;}
+</style>""", unsafe_allow_html=True)
+pages = ["Overview", "Chat", "Reports", "Taskboard & Traces", "Metrics", "Automations", "Cron Jobs"]
+if "dashboard_page" not in st.session_state:
+    st.session_state.dashboard_page = "Overview"
 st.sidebar.markdown("### Navigation")
-page = st.sidebar.radio(
-    "Go to",
-    [
-        "Overview",
-        "Chat",
-        "Reports",
-        "Taskboard & Traces",
-        "Metrics",
-        "Automations",
-    ],
-    index=0,
-    label_visibility="collapsed",
-)
+for item in pages:
+    prefix = "● " if st.session_state.dashboard_page == item else "○ "
+    if st.sidebar.button(prefix + item, key=f"nav_{item}", use_container_width=True):
+        st.session_state.dashboard_page = item
+        st.rerun()
+page = st.session_state.dashboard_page
 
 st.sidebar.divider()
 st.sidebar.markdown("### ⚡ Automation Triggers")
@@ -371,7 +375,59 @@ elif page == "Automations":
         st.write("No runs logged yet.")
 
     st.divider()
-    st.write("Root templates available in `automations/` (copy to .github/workflows as needed).")
+    st.subheader("Scheduled jobs")
+    schedules = list_schedules(root)
+    if schedules:
+        for schedule in schedules:
+            cols = st.columns([3, 1, 1, 1])
+            cols[0].write(f"**{schedule['name']}** · `{schedule['cron']}` · {', '.join(schedule['targets'])}")
+            if cols[1].button("Status", key=f"auto_status_{schedule['id']}"):
+                st.json(schedule_status(schedule["id"], root))
+            if cols[2].button("Disable" if schedule["enabled"] else "Enable", key=f"auto_toggle_{schedule['id']}"):
+                set_schedule_enabled(schedule["id"], not schedule["enabled"], root)
+                st.rerun()
+            if cols[3].button("Remove", key=f"auto_remove_{schedule['id']}"):
+                delete_schedule(schedule["id"], root)
+                st.rerun()
+        st.caption("GitHub schedules use UTC and become active after the generated pull request merges to the default branch.")
+    else:
+        st.info("No scheduled jobs yet. Create one in Cron Jobs.")
+
+elif page == "Cron Jobs":
+    st.header("Cron Jobs")
+    st.caption("Create once, deploy immediately. Local cron uses the system timezone; GitHub Actions uses UTC.")
+    with st.form("create_schedule", clear_on_submit=True):
+        name = st.text_input("Name", placeholder="Nightly repository analysis")
+        cron = st.text_input("POSIX cron", value="0 2 * * *", help="minute hour day-of-month month day-of-week")
+        action = st.selectbox("Action", ["analyze", "daily_report", "self_improvement", "custom"])
+        command = st.text_input("Custom command", disabled=action != "custom", help="Single-line command; required only for custom jobs.")
+        targets = st.multiselect("Deploy to", ["local", "github"], default=["local", "github"])
+        submitted = st.form_submit_button("Create and deploy", type="primary")
+        if submitted:
+            try:
+                schedule = create_schedule(name=name, action=action, cron=cron, targets=targets, command=command or None, root=root)
+                st.success(f"Created {schedule['id']} and started deployment.")
+                st.json(schedule.get("deployment", {}))
+            except ValueError as exc:
+                st.error(str(exc))
+
+    st.subheader("Deployment status")
+    schedules = list_schedules(root)
+    if not schedules:
+        st.info("No cron jobs deployed.")
+    for schedule in schedules:
+        status = schedule_status(schedule["id"], root)
+        with st.expander(f"{schedule['name']} · {schedule['cron']}"):
+            st.json(status)
+            left, middle, right = st.columns(3)
+            if left.button("Run now", key=f"cron_run_{schedule['id']}"):
+                st.json(run_schedule_now(schedule["id"], root))
+            if middle.button("Disable" if schedule["enabled"] else "Enable", key=f"cron_toggle_{schedule['id']}"):
+                set_schedule_enabled(schedule["id"], not schedule["enabled"], root)
+                st.rerun()
+            if right.button("Remove job", key=f"cron_remove_{schedule['id']}"):
+                delete_schedule(schedule["id"], root)
+                st.rerun()
 
 st.divider()
 st.caption("© mana-agent • All decisions go through the validated model decision layer. No fallbacks.")

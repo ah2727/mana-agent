@@ -15,6 +15,8 @@
 * [Why mana-agent?](#why-mana-agent)
 * [Highlights](#highlights)
 * [Features](#features)
+* [Web Dashboard](#web-dashboard)
+* [Automations and Cron Jobs](#automations-and-cron-jobs)
 * [Interface Preview](#interface-preview)
 * [How It Works](#how-it-works)
 * [Requirements](#requirements)
@@ -124,16 +126,101 @@ mana-agent run --root-dir /path/to/project --plan-id mp_a672168ef9c0
 
 This separates planning and approval from actual mutation execution.
 
-### Web Dashboard (optional)
+## Web Dashboard
+
+Install the dashboard extra and start the UI from any repository:
 
 ```bash
 pip install "mana-agent[dashboard]"
 mana-agent dashboard --root-dir .
-# or
-streamlit run dashboard/app.py
 ```
 
-Beautiful practical UI powered by the same multi-agent runtime. Sidebar navigation, overview, live taskboard/traces from `.mana/`, reports, metrics. Read-only MVP with safe trigger buttons. See `dashboard/app.py` and `src/mana_agent/ui/streamlit_helpers.py`.
+The dashboard uses the same repository context, services, and multi-agent runtime
+as the CLI. Its sidebar is a navigation menu rather than a group of mode
+checkboxes, so each capability has a stable page and URL state.
+
+Dashboard pages include:
+
+* **Overview** — repository status, index health, recent activity, and quick actions.
+* **Chat** — repository-grounded questions and coding-agent workflows.
+* **Analysis** — run analysis and inspect generated reports and diagrams.
+* **Taskboard** — active and completed agent tasks, workers, and execution state.
+* **Traces** — tool calls, decisions, verification results, and runtime events.
+* **Automations** — create and manage persistent scheduled actions.
+* **Cron Jobs** — inspect deployment state, enable or disable schedules, and remove deployments.
+* **Settings** — provider, model-role, search, and runtime configuration.
+
+Dashboard actions use the same validation and safety rules as their CLI
+equivalents. Destructive operations are never implied by page navigation or
+selection state.
+
+For dashboard development, the Streamlit entry point can also be run directly:
+
+```bash
+streamlit run dashboard/app.py -- --root-dir .
+```
+
+---
+
+## Automations and Cron Jobs
+
+Schedules are stored in `.mana/automations/config.json` and are created only by
+an explicit CLI or dashboard request. Each schedule has a stable ID, action,
+cron expression, deployment target, enabled state, and deployment metadata.
+
+A schedule can target:
+
+* **Local cron** — runs on the current machine under the user who deployed it.
+* **GitHub Actions** — runs in the repository through a managed workflow.
+* **Both** — maintains local and GitHub deployments from one Mana-Agent schedule.
+
+Install automation dependencies when they are not already included:
+
+```bash
+pip install "mana-agent[automations]"
+```
+
+Create a schedule and deploy it immediately:
+
+```bash
+mana-agent automation create \
+  --name "Nightly analysis" \
+  --action analyze \
+  --cron "0 2 * * *" \
+  --target local \
+  --target github \
+  --deploy
+
+mana-agent automation list
+mana-agent automation status sch_<id>
+```
+
+Common lifecycle commands:
+
+```bash
+mana-agent automation enable sch_<id>
+mana-agent automation disable sch_<id>
+mana-agent automation deploy sch_<id>
+mana-agent automation run sch_<id>
+mana-agent automation remove sch_<id>
+```
+
+Local cron uses the host system timezone. GitHub Actions schedules use UTC.
+Mana-Agent generates one managed workflow per GitHub-targeted schedule. The
+workflow installs the package with the extras required by the selected action,
+runs that action, uploads `.mana/` results as workflow artifacts, and exposes
+`workflow_dispatch` for manual runs.
+
+When GitHub deployment requires repository changes, Mana-Agent creates or
+updates the managed workflow on the current feature branch. It must show the
+planned file and Git operations before commit or push, and it must not silently
+modify the default branch. The workflow becomes active when the change reaches
+the repository's default branch.
+
+The dashboard provides the same create, list, status, deploy, run, enable,
+disable, and remove lifecycle. Deployment state is derived from the actual
+target—not only from the local schedule configuration—so missing or drifted
+cron entries and workflows are visible.
 
 ---
 
@@ -142,7 +229,7 @@ Beautiful practical UI powered by the same multi-agent runtime. Sidebar navigati
 Example chat startup layout:
 
 ```text
-Mana-Agent v0.1.0
+Mana-Agent v0.0.12
 repo: /path/to/project
 index: .mana/index ready
 mode: chat
@@ -585,6 +672,65 @@ mana-agent git --allow-protected -- clean -fd
 
 Use protected Git operations only when the risk is intentional and understood.
 
+### `mana-agent dashboard`
+
+Starts the web dashboard for a repository.
+
+```bash
+mana-agent dashboard --root-dir .
+```
+
+Common options:
+
+| Option       | Purpose                                      |
+| ------------ | -------------------------------------------- |
+| `--root-dir` | Repository used by dashboard pages/actions.  |
+| `--host`     | Dashboard bind host.                        |
+| `--port`     | Dashboard listen port.                      |
+| `--no-open`  | Do not open a browser automatically.        |
+
+The command validates the optional dashboard dependencies and prints the exact
+installation command if they are unavailable.
+
+### `mana-agent automation`
+
+Creates and manages persistent scheduled actions from the CLI.
+
+```bash
+mana-agent automation create \
+  --name "Nightly analysis" \
+  --action analyze \
+  --cron "0 2 * * *" \
+  --target local \
+  --target github \
+  --deploy
+```
+
+Command groups:
+
+| Command                         | Purpose                                                   |
+| ------------------------------- | --------------------------------------------------------- |
+| `automation create`             | Validate and save a new schedule.                         |
+| `automation list`               | List schedules and their configured targets.              |
+| `automation show <id>`          | Show one schedule's complete configuration.               |
+| `automation status <id>`        | Compare configured and deployed state.                    |
+| `automation deploy <id>`        | Reconcile all configured deployment targets.              |
+| `automation run <id>`           | Trigger the action immediately without changing its cron.  |
+| `automation enable <id>`        | Enable the schedule and reconcile its targets.             |
+| `automation disable <id>`       | Disable execution while preserving configuration.         |
+| `automation remove <id>`        | Remove deployments and then delete the saved schedule.     |
+
+Supported actions are discovered from the installed action registry. Use help
+to see the actions and options available in the current installation:
+
+```bash
+mana-agent automation create --help
+```
+
+Cron input is validated before the schedule is saved. GitHub-targeted schedules
+must also validate the repository, remote, current branch, workflow path, and
+required package extras before deployment.
+
 ### Useful global flag example
 
 ```bash
@@ -855,7 +1001,6 @@ docs/             User and developer documentation
 
 New top-level optional packages (`dashboard/`, `automations/`) and `src` modules are lazy-loaded.
 Install via `pip install "mana-agent[dashboard]"` or `[automations]` or `[full]`.
-```
 
 ---
 

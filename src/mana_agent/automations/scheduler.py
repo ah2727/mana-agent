@@ -1,8 +1,8 @@
-"""Simple scheduler facade (Grok Build).
+"""Compatibility boundary for the retired in-process scheduler.
 
-Wraps APScheduler when the optional extra is installed.
-Provides hooks that the multi-agent runtime or CLI can call
-after a validated model decision.
+Persistent automations are deployed through :mod:`mana_agent.automations.service`
+to OS cron or a managed GitHub Actions workflow.  A background scheduler would
+stop with the dashboard/CLI process, so it is intentionally not a fallback.
 """
 from __future__ import annotations
 
@@ -11,31 +11,18 @@ from typing import Callable
 __all__ = ["get_scheduler", "schedule_job", "list_jobs_stub"]
 
 
-def get_scheduler():
-    """Return an APScheduler instance if available, else a no-op stub."""
-    try:
-        from apscheduler.schedulers.background import BackgroundScheduler  # type: ignore
-
-        return BackgroundScheduler()
-    except Exception:
-        class _NoopScheduler:
-            def add_job(self, *a, **k): pass
-            def start(self): pass
-            def shutdown(self): pass
-        return _NoopScheduler()
+def get_scheduler() -> None:
+    raise RuntimeError(
+        "In-process scheduling was retired. Create an explicit persistent schedule with "
+        "`mana-agent automation create`."
+    )
 
 
-def schedule_job(func: Callable, trigger: str = "interval", **trigger_args) -> None:
-    """Schedule a job (best effort, graceful if no apscheduler)."""
-    sched = get_scheduler()
-    try:
-        sched.add_job(func, trigger, **trigger_args)
-        sched.start()
-    except Exception:
-        # Dashboard/automation optional; never break core
-        pass
+def schedule_job(func: Callable[..., object], trigger: str = "cron", **trigger_args: object) -> None:
+    _ = (func, trigger, trigger_args)
+    get_scheduler()
 
 
 def list_jobs_stub() -> list[str]:
-    """Return known job names (stub; real scheduler would inspect)."""
-    return ["daily_report", "self_improvement_check"]
+    """Retained for import compatibility; persistent jobs live in config.json."""
+    return []

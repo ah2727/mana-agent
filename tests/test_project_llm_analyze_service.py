@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from mana_agent.commands import cli_internal
 from mana_agent.services.project_analyze_service import ProjectAnalyzeOptions, ProjectAnalyzeService
 from mana_agent.services.project_llm_analyze_service import (
     AnalyzeEvidence,
@@ -129,6 +132,37 @@ def test_build_llm_analyzer_returns_none_without_key() -> None:
     assert build_llm_analyzer(None) is None
     assert build_llm_analyzer(ModelConfig(api_key="  ", model="x")) is None
     assert build_llm_analyzer(ModelConfig(api_key="sk-test", model="x")) is not None
+
+
+def test_cli_analyze_uses_user_config_instead_of_repository_dotenv(monkeypatch) -> None:
+    captured: dict[str, ModelConfig] = {}
+
+    monkeypatch.setattr(
+        cli_internal,
+        "load_effective_settings",
+        lambda *, include_env: (
+            {
+            "OPENAI_API_KEY": "user-config-key",
+            "OPENAI_CHAT_MODEL": "gpt-5.4-mini",
+            "OPENAI_BASE_URL": "https://user-config.example/v1",
+            }
+            if include_env is False
+            else pytest.fail("Analyze must not load environment or repository .env settings")
+        ),
+    )
+    monkeypatch.setattr(
+        cli_internal,
+        "build_llm_analyzer",
+        lambda config: captured.setdefault("config", config),
+    )
+
+    cli_internal._build_project_llm_analyzer()
+
+    assert captured["config"] == ModelConfig(
+        api_key="user-config-key",
+        model="gpt-5.4-mini",
+        base_url="https://user-config.example/v1",
+    )
 
 
 def test_architecture_is_project_derived_not_static_template(tmp_path: Path) -> None:

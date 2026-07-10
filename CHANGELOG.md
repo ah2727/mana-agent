@@ -2,6 +2,20 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-10
+
+- Updated CLI and dashboard project analysis to resolve its LLM connection from persisted `~/.mana/config.toml` and `~/.mana/secrets.toml`, preventing a target repository `.env` from overriding the selected analyzer model.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_project_llm_analyze_service.py tests/test_dashboard_helpers.py -q`.
+
+## 2026-07-09 (Persistent dashboard automations and cron deployment)
+
+- Replaced the dashboard's radio navigation with active-state sidebar buttons and added a Cron Jobs page.
+- Added typed persistent schedule definitions with explicit POSIX cron validation, built-in/custom action validation, local crontab reconciliation, drift status, and immediate deployment through CLI and dashboard.
+- Added `mana-agent automation` and `mana-agent cron` lifecycle commands for create, list, status, deploy, enable, disable, remove, and built-in execution.
+- Generated GitHub Actions workflows now include manual dispatch and `.mana/` artifact uploads; GitHub deployment stages only the managed workflow, pushes the feature branch, and opens a PR against the discovered default branch.
+- Retired the non-persistent APScheduler/no-op path; invalid execution now reports an error instead of silently selecting a fallback action.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_automation_service.py tests/test_dashboard_helpers.py -q` passed.
+
 ## 2026-07-09 (Web Dashboard + Automations Layer + New Project Structure)
 
 - Added top-level `dashboard/` (Streamlit MVP) and `automations/` directories plus `src/mana_agent/ui/streamlit_helpers.py`, `src/mana_agent/automations/` (scheduler, self_improvement, github_integration).
