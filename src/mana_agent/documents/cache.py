@@ -6,12 +6,15 @@ from pathlib import Path
 from typing import Any
 
 from mana_agent.utils.io import ensure_dir
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 
 
 class DocumentCache:
     def __init__(self, repo_root: Path, cache_dir: Path | None = None) -> None:
         self.repo_root = repo_root.resolve()
-        self.cache_dir = ensure_dir(cache_dir or (self.repo_root / ".mana" / "document_cache"))
+        self.cache_dir = ensure_dir(
+            cache_dir or (repository_dir(repository_id_for_path(self.repo_root)) / "document_cache")
+        )
 
     def fingerprint(self, path: Path) -> dict[str, Any]:
         stat = path.stat()

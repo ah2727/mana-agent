@@ -11,6 +11,7 @@ from enum import Enum
 import json
 import re
 from pathlib import Path
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 from typing import Any
 
 
@@ -274,7 +275,8 @@ def tool_allowed_for_mode(tool_name: str, mode: AutoChatMode | str | None) -> bo
 
 
 def compact_auto_state_path(root: str | Path) -> Path:
-    return Path(root) / ".mana" / "chat" / "auto_state.json"
+    resolved = Path(root).resolve()
+    return repository_dir(repository_id_for_path(resolved)) / "chat" / "auto_state.json"
 
 
 def load_auto_chat_state(root: str | Path) -> AutoChatSessionState:

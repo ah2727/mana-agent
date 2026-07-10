@@ -4,6 +4,7 @@ import os
 import sys
 import logging
 import tempfile
+import shutil
 import hashlib
 import json
 from pathlib import Path
@@ -66,6 +67,8 @@ from mana_agent.tui.wizard import ensure_setup
 from mana_agent.ui.banner import render_mode_header
 from mana_agent.multi_agent import MainAgent
 from .output import build_output_sink, get_shared_console
+from .workspace_cli import impact_command, repo_app, search_command, session_app, workspace_app
+from mana_agent.workspaces.paths import repository_analysis_dir, repository_dir, repository_id_for_path
 
 logger = logging.getLogger(__name__)
 console = get_shared_console()
@@ -75,6 +78,11 @@ automation_app = typer.Typer(help="Create, deploy, inspect, and run persistent a
 app.add_typer(skills_app, name="skills")
 app.add_typer(automation_app, name="automation")
 app.add_typer(automation_app, name="cron")
+app.add_typer(workspace_app, name="workspace")
+app.add_typer(repo_app, name="repo")
+app.add_typer(session_app, name="session")
+app.command("search")(search_command)
+app.command("impact")(impact_command)
 
 OUTPUT_DIR: Path | None = None
 CLI_VERBOSE_MODE = False
@@ -199,11 +207,15 @@ def _record_multi_agent_request(
     *,
     entrypoint: str,
     command_scope: bool = False,
+    session_id: str | None = None,
 ) -> str:
     """Record a mandatory MainAgent route before a legacy entrypoint continues."""
     if command_scope and _SKIP_NEXT_COMMAND_ROUTE.get():
         return ""
-    result = MainAgent(root, routing_llm=_build_main_agent_routing_llm()).run_user_request(
+    main_kwargs: dict[str, Any] = {"routing_llm": _build_main_agent_routing_llm()}
+    if session_id:
+        main_kwargs["session_id"] = session_id
+    result = MainAgent(root, **main_kwargs).run_user_request(
         request,
         entrypoint=entrypoint,
     )
@@ -308,7 +320,11 @@ def _analyze_report_markdown(result, *, root: Path, focus: str | None = None) ->
 
 
 def _write_analyze_report(result, *, root: Path, output: str | None, focus: str | None) -> Path:
-    target = Path(output).expanduser().resolve() if output else root / ".mana" / "reports" / "analyze.md"
+    target = (
+        Path(output).expanduser().resolve()
+        if output
+        else repository_dir(repository_id_for_path(root)) / "reports" / "analyze.md"
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(_analyze_report_markdown(result, root=root, focus=focus), encoding="utf-8")
     return target
@@ -452,7 +468,11 @@ def analyze_command(
         entrypoint="analyze",
         command_scope=True,
     )
-    out_dir = Path(artifact_dir).expanduser().resolve() if artifact_dir else (root / ".mana" / "analyze")
+    out_dir = (
+        Path(artifact_dir).expanduser().resolve()
+        if artifact_dir
+        else repository_analysis_dir(repository_id_for_path(root))
+    )
     render_mode_header("Analyze", "Scanning repository and generating report", console)
     result = ProjectAnalyzeService().run(
         root,
@@ -529,7 +549,11 @@ def plan_command(
     console.print(plan_text)
     plan_path: Path | None = None
     if save:
-        plan_path = Path(output).expanduser().resolve() if output else root / ".mana" / "plans" / f"{_slug(task)}.md"
+        plan_path = (
+            Path(output).expanduser().resolve()
+            if output
+            else repository_dir(repository_id_for_path(root)) / "plans" / f"{_slug(task)}.md"
+        )
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_text(plan_text, encoding="utf-8")
         console.print(f"[green]Saved:[/green] {plan_path}")
@@ -594,14 +618,21 @@ def dashboard_command(
         console.print("Then run: mana-agent dashboard  or  streamlit run dashboard/app.py")
         raise typer.Exit(code=1)
 
-    # Build streamlit invocation
-    # We prefer launching via the module so it inherits our PYTHONPATH/src layout.
+    import importlib.util
+
+    dashboard_spec = importlib.util.find_spec("mana_agent.dashboard.app")
+    if dashboard_spec is None or not dashboard_spec.origin:
+        console.print("[red]Installed dashboard entrypoint was not found.[/red]")
+        raise typer.Exit(code=1)
+    dashboard_path = Path(dashboard_spec.origin).resolve()
+
+    # Launch the dashboard from the installed package, independent of cwd.
     cmd = [
         sys.executable,
         "-m",
         "streamlit",
         "run",
-        str(Path("dashboard/app.py").resolve()),
+        str(dashboard_path),
         "--server.port",
         str(port),
         "--server.headless",
@@ -615,7 +646,7 @@ def dashboard_command(
     os.environ["MANA_DASHBOARD_ROOT"] = str(repo_root)
 
     console.print(f"[cyan]Launching dashboard for[/cyan] {repo_root}")
-    console.print(f"[dim]streamlit run dashboard/app.py --server.port {port}[/dim]")
+    console.print(f"[dim]streamlit run {dashboard_path} --server.port {port}[/dim]")
 
     # Execute (blocking)
     import subprocess
@@ -893,8 +924,13 @@ def continue_command(
 ) -> None:
     """Resume a persisted auto-execute run from .mana/runs/<run_id>."""
     root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
+    pre_registration_id = repository_id_for_path(root)
     _record_multi_agent_request(root, f"continue run {run_id}", entrypoint="continue", command_scope=True)
-    store_dir = root / ".mana" / "runs" / str(run_id).strip()
+    store_dir = repository_dir(repository_id_for_path(root)) / "runs" / str(run_id).strip()
+    legacy_global_dir = repository_dir(pre_registration_id) / "runs" / str(run_id).strip()
+    if not store_dir.exists() and legacy_global_dir.exists():
+        store_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(legacy_global_dir, store_dir)
     state_path = store_dir / "state.json"
     if not state_path.exists():
         raise typer.BadParameter(f"Run state not found: {state_path}")
@@ -1192,7 +1228,7 @@ def _resolve_output_file(
 
 def _resolve_analyze_artifact_paths(path: str | Path) -> tuple[Path, Path, Path]:
     root = Path(path).resolve()
-    out_dir = root / ".mana"
+    out_dir = repository_dir(repository_id_for_path(root))
     return out_dir / "analyze.json", out_dir / "analyze.md", out_dir / "analyze.html"
 
 

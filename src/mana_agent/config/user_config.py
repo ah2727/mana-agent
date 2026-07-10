@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any
 
 
-CONFIG_DIR = Path.home() / ".mana"
+from mana_agent.workspaces.paths import mana_home
+
+CONFIG_DIR = mana_home()
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 SECRETS_FILE = CONFIG_DIR / "secrets.toml"
 MODEL_CACHE_FILE = CONFIG_DIR / "model_cache.json"
@@ -20,6 +22,7 @@ SECRET_KEYS = {
     "OPENAI_API_KEY",
     "MANA_GITHUB_TOKEN",
     "MANA_WEB_SEARCH_API_KEY",
+    "MANA_API_TOKEN",
 }
 
 
@@ -57,6 +60,8 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "MANA_WEB_SEARCH_BASE_URL": "",
     "MANA_WEB_SEARCH_ENDPOINT": "",
     "MANA_WEB_SEARCH_QUERY_PARAM": "q",
+    "MANA_WORKSPACE_ALLOWED_ROOTS": "",
+    "MANA_API_TOKEN": "",
 }
 
 
@@ -83,6 +88,8 @@ FIELD_NAME_BY_ENV: dict[str, str] = {
     "MANA_WEB_SEARCH_BASE_URL": "mana_web_search_base_url",
     "MANA_WEB_SEARCH_ENDPOINT": "mana_web_search_endpoint",
     "MANA_MODEL_TOOL_WORKER": "mana_model_tool_worker",
+    "MANA_WORKSPACE_ALLOWED_ROOTS": "mana_workspace_allowed_roots",
+    "MANA_API_TOKEN": "mana_api_token",
 }
 
 CONFIG_WRITE_ORDER = [

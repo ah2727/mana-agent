@@ -52,6 +52,7 @@ from mana_agent.multi_agent.routing.router import Router
 from mana_agent.multi_agent.taskboard.taskboard import TaskBoard
 from mana_agent.multi_agent.tools.permissions import assert_shell_allowed
 from mana_agent.services.memory_service import MultiAgentMemoryService
+from mana_agent.workspaces.paths import mana_home
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -630,7 +631,7 @@ def test_trace_writer_persists_execution_identity(tmp_path):
     )
 
     assert event.subagent_id == "subagent_tool_worker_0001"
-    saved = (tmp_path / ".mana" / "traces" / f"{event.trace_id}.json").read_text(encoding="utf-8")
+    saved = (mana_home() / "traces" / f"{event.trace_id}.json").read_text(encoding="utf-8")
     assert '"subagent_id": "subagent_tool_worker_0001"' in saved
     assert '"queue_job_id": "queue_job_1"' in saved
 

@@ -23,6 +23,7 @@ from mana_agent.dependencies.dependency_service import DependencyService
 from mana_agent.renderers.html_report import render_analyze_html, render_report_html
 from mana_agent.services.project_analyze_service import ProjectAnalyzeOptions, ProjectAnalyzeService
 from mana_agent.services.report_service import ReportService
+from mana_agent.workspaces.paths import repository_analysis_dir, repository_id_for_path
 from mana_agent.services.structure_service import StructureService
 from mana_agent.services.vulnerability_service import VulnerabilityService
 from mana_agent.analysis.checks import PythonStaticAnalyzer
@@ -530,7 +531,11 @@ def handle_analyze_command(
         )
 
     root = Path(root_dir).resolve()
-    out_dir = Path(output_dir) if output_dir is not None else (root / ".mana" / "analyze")
+    out_dir = (
+        Path(output_dir)
+        if output_dir is not None
+        else repository_analysis_dir(repository_id_for_path(root))
+    )
 
     try:
         formats = parse_analyze_formats(args)

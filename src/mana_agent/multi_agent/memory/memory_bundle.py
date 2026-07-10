@@ -48,7 +48,7 @@ class AgentMemoryBundle:
         if text and text not in self.repo_context.facts:
             self.repo_context.facts.append(text)
             if self.service is not None:
-                self.service.project_memory.append({"fact": text})
+                self.service.remember_repository_fact(text)
 
     def scoped_bundle(
         self,

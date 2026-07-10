@@ -46,6 +46,10 @@ class TaskBoard:
         related_files: list[str] | None = None,
         action_type: str = "task",
         expected_output: str = "",
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        repository_ids: list[str] | None = None,
+        primary_repository_id: str | None = None,
     ) -> TaskBoardItem:
         task_id = new_task_id()
         goal = normalized_goal or user_request.strip()
@@ -57,6 +61,7 @@ class TaskBoard:
             target_files=related_files or [],
             expected_output=expected_output,
             root=self.store.root,
+            repository_ids=repository_ids or [self.store.repository_id],
         )
         if self.memory_service is not None:
             memory_goal, fingerprint = self.memory_service.normalize_task(
@@ -64,6 +69,7 @@ class TaskBoard:
                 action_type=action_type,
                 target_files=related_files or [],
                 expected_output=expected_output,
+                repository_ids=repository_ids or [self.store.repository_id],
             )
             record = self.memory_service.register_task(
                 task_id=task_id,
@@ -71,6 +77,7 @@ class TaskBoard:
                 fingerprint=fingerprint,
                 assigned_agent_id=owner_agent_id or "",
                 related_files=related_files or [],
+                repository_ids=repository_ids or [self.store.repository_id],
             )
             duplicate_of = record.duplicate_of
             bundle = self.memory_service.build_bundle(
@@ -90,6 +97,10 @@ class TaskBoard:
             status=TaskStatus.SKIPPED if duplicate_of else TaskStatus.NEW,
             priority=priority,
             risk_level=risk_level,
+            workspace_id=workspace_id or self.store.workspace_id,
+            session_id=session_id or "",
+            primary_repository_id=primary_repository_id or self.store.repository_id,
+            repository_ids=list(repository_ids or [self.store.repository_id]),
             owner_agent_id=owner_agent_id,
             supervisor_agent_id=owner_agent_id,
             delegated_by_agent_id=owner_agent_id,
@@ -126,6 +137,10 @@ class TaskBoard:
             status=TaskStatus.NEW,
             priority=parent.priority,
             risk_level=parent.risk_level,
+            workspace_id=parent.workspace_id,
+            session_id=parent.session_id,
+            primary_repository_id=parent.primary_repository_id,
+            repository_ids=list(parent.repository_ids),
             owner_agent_id=owner_agent_id,
             memory_status={
                 "duplicate_checked": False,

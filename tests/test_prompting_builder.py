@@ -10,6 +10,7 @@ from mana_agent.prompting.builder import (
     get_or_build_stable_prompt,
     render_ephemeral_context,
 )
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 from mana_agent.prompting.layers import PROMPT_LAYER_ORDER, PromptLayer, compose_layers
 
 
@@ -43,8 +44,9 @@ def test_coding_prompt_builder_composes_stable_layers(tmp_path: Path) -> None:
         "SECRET FULL BODY SHOULD ONLY BE EPHEMERAL.\n",
         encoding="utf-8",
     )
-    (tmp_path / ".mana").mkdir()
-    (tmp_path / ".mana" / "memory.md").write_text("Known command: pytest -q\n", encoding="utf-8")
+    memory_dir = repository_dir(repository_id_for_path(tmp_path))
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "memory.md").write_text("Known command: pytest -q\n", encoding="utf-8")
 
     prompt = build_coding_system_prompt(
         base_prompt="Core Identity",

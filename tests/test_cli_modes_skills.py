@@ -4,6 +4,7 @@ from typer.testing import CliRunner
 
 from mana_agent.commands.cli import app
 from mana_agent.skills.manager import SkillManager, build_default_skill_registry_text, read_skill
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 
 runner = CliRunner()
 
@@ -23,7 +24,7 @@ def test_plan_mode_loads_matching_skills_and_saves(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "Loaded skills: cli, testing" in result.output
     assert "# Implementation Plan" in result.output
-    assert (tmp_path / ".mana" / "plans" / "add-cli-smoke-test.md").exists()
+    assert (repository_dir(repository_id_for_path(tmp_path)) / "plans" / "add-cli-smoke-test.md").exists()
 
 
 def test_skills_init_list_show_uses_root_directory(tmp_path: Path) -> None:

@@ -399,6 +399,9 @@ class WorkItem(BaseModel):
     files_discovered: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=_utc_now)
     updated_at: str = Field(default_factory=_utc_now)
+    workspace_id: str = ""
+    session_id: str = ""
+    repository_id: str = ""
 
     def model_post_init(self, _ctx: Any) -> None:  # noqa: D401 - pydantic hook
         if not self.fingerprint:
@@ -901,10 +904,16 @@ class QueueManager:
         coding_memory_service: CodingMemoryService | None = None,
         todo_service: TodoService | None = None,
         decision_provider: Any = None,
+        workspace_id: str | None = None,
+        repository_id: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         _ = (api_key, model, base_url, decision_provider)
         self.worker_client = worker_client
         self.repo_root = Path(repo_root).resolve()
+        self.workspace_id = workspace_id
+        self.repository_id = repository_id
+        self.session_id = session_id
         self.execution_config = execution_config or ToolsExecutionConfig()
         self.executor = executor
         self.coding_memory_service = coding_memory_service
@@ -1578,6 +1587,8 @@ class QueueManager:
             index_dirs=index_dirs,
             tool_policy=resolved_tool_policy,
             execution_backend=execution_backend,
+            workspace_id=self.workspace_id,
+            repository_id=self.repository_id,
         )
         if self.executor is not None:
             base_execute = make_batch_executor(

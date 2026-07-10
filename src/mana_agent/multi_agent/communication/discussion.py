@@ -6,12 +6,17 @@ from pathlib import Path
 from mana_agent.multi_agent.core.ids import new_discussion_id
 from mana_agent.multi_agent.core.types import DiscussionStatus, DiscussionThread, to_jsonable, utc_now
 from mana_agent.multi_agent.taskboard.store import discussion_from_dict
+from mana_agent.workspaces.paths import workspace_dir
+from mana_agent.workspaces.service import WorkspaceService
 
 
 class DiscussionStore:
     def __init__(self, root: str | Path = ".") -> None:
         self.root = Path(root).resolve()
-        self.path = self.root / ".mana" / "taskboard" / "discussions.json"
+        service = WorkspaceService()
+        repo = service.register_repository(self.root)
+        workspace = service.workspace_for_repository(repo.repository_id)
+        self.path = workspace_dir(workspace.workspace_id) / "taskboard" / "discussions.json"
         self.discussions: dict[str, DiscussionThread] = {}
         self.load()
 

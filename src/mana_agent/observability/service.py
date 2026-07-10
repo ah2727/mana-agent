@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
+from mana_agent.workspaces.paths import mana_home
+
 _SECRET_KEY = re.compile(r"(?:api[_-]?key|token|password|secret|authorization|cookie|credential)", re.I)
 _SECRET_VALUE = re.compile(r"(?:sk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+|ghp_[A-Za-z0-9]{12,})", re.I)
 _MAX_SUMMARY = 2_000
@@ -84,7 +86,7 @@ class ObservabilityStore:
     def __init__(self, root: Path | str, config: ObservabilityConfig | None = None) -> None:
         self.root = Path(root).resolve()
         self.config = config or ObservabilityConfig.from_environment()
-        self.directory = self.root / ".mana" / "observability"
+        self.directory = mana_home() / "observability"
         self.path = self.directory / "telemetry.sqlite"
         self.directory.mkdir(parents=True, exist_ok=True)
         self._initialize()

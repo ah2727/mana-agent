@@ -11,6 +11,8 @@ from typing import Any, Container, Literal, Sequence, TypeVar
 
 from pydantic import BaseModel, Field
 
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
+
 from mana_agent.multi_agent.runtime.gate_command import (
     GateCommand,
     PolicyDecision,
@@ -202,7 +204,7 @@ class RunStateStore:
     def __init__(self, *, repo_root: Path, run_id: str | None = None) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.run_id = str(run_id or uuid.uuid4().hex[:12]).strip()
-        self.run_dir = self.repo_root / ".mana" / "runs" / self.run_id
+        self.run_dir = repository_dir(repository_id_for_path(self.repo_root)) / "runs" / self.run_id
 
     @staticmethod
     def utc_now() -> str:

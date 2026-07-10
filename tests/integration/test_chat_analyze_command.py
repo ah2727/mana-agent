@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from mana_agent.workspaces.paths import repository_analysis_dir, repository_id_for_path
+
+
+def _analysis(project: Path) -> Path:
+    return repository_analysis_dir(repository_id_for_path(project))
 
 import pytest
 
@@ -36,29 +41,29 @@ def test_empty_analyze_opens_menu_and_uses_input(project: Path) -> None:
     outcome = handle_analyze_command("", root_dir=project, input_func=fake_input)
     assert seen_prompts == []
     assert outcome.status == "generated"
-    assert (project / ".mana" / "analyze" / "report.json").exists()
+    assert (_analysis(project) / "report.json").exists()
 
 
 def test_menu_choice_one_creates_json(project: Path) -> None:
     outcome = handle_analyze_command("", root_dir=project, input_func=lambda _p: "1")
     assert outcome.status == "generated"
-    assert (project / ".mana" / "analyze" / "report.json").exists()
-    assert (project / ".mana" / "analyze" / "report.md").exists()
+    assert (_analysis(project) / "report.json").exists()
+    assert (_analysis(project) / "report.md").exists()
 
 
 def test_menu_choice_two_creates_markdown(project: Path) -> None:
     handle_analyze_command("", root_dir=project, input_func=lambda _p: "2")
-    assert (project / ".mana" / "analyze" / "report.md").exists()
+    assert (_analysis(project) / "report.md").exists()
 
 
 def test_menu_choice_three_creates_html(project: Path) -> None:
     handle_analyze_command("html", root_dir=project)
-    assert (project / ".mana" / "analyze" / "analyze.html").exists()
+    assert (_analysis(project) / "analyze.html").exists()
 
 
 def test_menu_choice_all_creates_every_artifact(project: Path) -> None:
     handle_analyze_command("all", root_dir=project)
-    mana = project / ".mana" / "analyze"
+    mana = _analysis(project)
     for name in [
         "report.json",
         "report.md",
@@ -74,7 +79,7 @@ def test_menu_choice_all_creates_every_artifact(project: Path) -> None:
 def test_direct_form_all(project: Path) -> None:
     outcome = handle_analyze_command("all", root_dir=project)
     assert outcome.status == "generated"
-    assert (project / ".mana" / "analyze" / "diagram.mmd").exists()
+    assert (_analysis(project) / "diagram.mmd").exists()
 
 
 def test_direct_form_format_flag(project: Path) -> None:

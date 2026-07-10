@@ -24,6 +24,14 @@ import json
 import os  # used for MANA_DASHBOARD_ROOT env and safe paths
 from pathlib import Path
 from typing import Any
+from mana_agent.workspaces.paths import (
+    repository_analysis_dir,
+    repository_dir,
+    repository_id_for_path,
+    repository_index_dir,
+    workspace_dir,
+)
+from mana_agent.workspaces.service import WorkspaceService
 
 __all__ = [
     "DEFAULT_ROOT",
@@ -85,7 +93,10 @@ def safe_read_json(path: Path) -> dict[str, Any] | list[Any] | None:
 def load_taskboard_state(root: Path | None = None) -> dict[str, Any]:
     """Load .mana/taskboard/state.json if present (read-only)."""
     root = find_mana_root(root)
-    path = root / ".mana" / "taskboard" / "state.json"
+    service = WorkspaceService()
+    repo = service.register_repository(root)
+    workspace = service.workspace_for_repository(repo.repository_id)
+    path = workspace_dir(workspace.workspace_id) / "taskboard" / "state.json"
     data = safe_read_json(path)
     if isinstance(data, dict):
         return data
@@ -98,7 +109,11 @@ def load_recent_traces(root: Path | None = None, limit: int = 5) -> list[dict[st
     Most recent first. Graceful on parse errors.
     """
     root = find_mana_root(root)
-    traces_dir = root / ".mana" / "traces"
+    service = WorkspaceService()
+    repo = service.register_repository(root)
+    sessions = [item for item in service.store.list_sessions() if item.primary_repository_id == repo.repository_id]
+    trace_dirs = [service.store.home / "sessions" / item.session_id / "traces" for item in sessions]
+    traces_dir = next((item for item in trace_dirs if item.exists()), service.store.home / "traces")
     if not traces_dir.exists():
         return []
     # Support both formats produced by runtime
@@ -129,7 +144,7 @@ def load_recent_traces(root: Path | None = None, limit: int = 5) -> list[dict[st
 def get_index_stats(root: Path | None = None) -> dict[str, Any]:
     """Basic index stats from .mana/index if available."""
     root = find_mana_root(root)
-    idx = root / ".mana" / "index"
+    idx = repository_index_dir(repository_id_for_path(root))
     manifest = safe_read_json(idx / "manifest.json") or {}
     chunks_path = idx / "chunks.jsonl"
     chunk_count = 0
@@ -150,11 +165,11 @@ def get_last_analysis_summary(root: Path | None = None) -> dict[str, Any]:
     """Try to surface recent analysis artifacts (docs/analyze/ or similar)."""
     root = find_mana_root(root)
     candidates = [
-        root / ".mana" / "analyze" / "llm_summary.md",
-        root / ".mana" / "analyze" / "report.md",
+        repository_analysis_dir(repository_id_for_path(root)) / "llm_summary.md",
+        repository_analysis_dir(repository_id_for_path(root)) / "report.md",
         root / "docs" / "analyze" / "llm_summary.md",
         root / "docs" / "analyze" / "report.md",
-        root / ".mana" / "last_analysis.json",
+        repository_dir(repository_id_for_path(root)) / "last_analysis.json",
     ]
     for c in candidates:
         if c.exists():
@@ -172,9 +187,9 @@ def list_analysis_artifacts(root: Path | None = None) -> list[dict[str, Any]]:
     """Discover real analysis/report artifacts under .mana/analyze, docs/analyze, .mana/reports."""
     root = find_mana_root(root)
     candidates = [
-        root / ".mana" / "analyze",
+        repository_analysis_dir(repository_id_for_path(root)),
         root / "docs" / "analyze",
-        root / ".mana" / "reports",
+        repository_dir(repository_id_for_path(root)) / "reports",
     ]
     arts: list[dict[str, Any]] = []
     seen = set()
@@ -360,7 +375,7 @@ def trigger_automation(action: str, *, root: Path | None = None, **kwargs: Any) 
             # Direct real call to ProjectAnalyzeService (guarantees .mana/analyze is created).
             # This is the reliable "real functionality" path inside the dashboard process.
             # We fall back to subprocess only if direct call fails.
-            artifact_dir = root / ".mana" / "analyze"
+            artifact_dir = repository_analysis_dir(repository_id_for_path(root))
             try:
                 from mana_agent.services.project_analyze_service import (
                     ProjectAnalyzeOptions,
@@ -453,7 +468,7 @@ def run_dashboard_chat(prompt: str, root: Path | None = None, k: int = 6) -> dic
         service = build_ask_service(settings, None, project_root=root)
 
         # Default index
-        idx_dir = root / ".mana" / "index"
+        idx_dir = repository_index_dir(repository_id_for_path(root))
         if not (idx_dir / "chunks.jsonl").exists():
             # Try to let service handle or give useful message
             pass

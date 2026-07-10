@@ -4,6 +4,7 @@ from pathlib import Path
 
 from mana_agent.services.dependency_service import DependencyService
 from mana_agent.services.describe_service import DescribeService
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 
 
 class _FailingArchitectureChain:
@@ -98,4 +99,4 @@ def test_describe_service_caches_unchanged_files(tmp_path: Path) -> None:
 
     assert first.metrics["selected_files"] > 0
     assert second.metrics["cache_hits"] > 0
-    assert (tmp_path / ".mana_cache" / "describe_cache.json").exists()
+    assert (repository_dir(repository_id_for_path(tmp_path)) / "describe_cache.json").exists()

@@ -39,6 +39,7 @@ class SearchService:
             logger.info("Falling back to lexical chunk search: index_dir=%s", resolved_index)
             hits = self._lexical_search(resolved_index, query=query, k=k)
 
+        hits = self._decorate_hits(resolved_index, hits)
         logger.info("Semantic search completed: hits=%d", len(hits))
         return hits
 
@@ -84,7 +85,10 @@ class SearchService:
                     merged.extend(hits)
 
         deduped = sorted(
-            {(item.file_path, item.start_line, item.end_line, item.symbol_name): item for item in merged}.values(),
+            {
+                (item.repository_id, item.relative_path or item.file_path, item.start_line, item.end_line, item.symbol_name): item
+                for item in merged
+            }.values(),
             key=lambda item: (-item.score, item.file_path, item.start_line, item.end_line, item.symbol_name),
         )
         return deduped[:k], warnings
@@ -126,6 +130,10 @@ class SearchService:
                     end_line=int(row.get("end_line", 1)),
                     symbol_name=str(row.get("symbol_name", "unknown")),
                     snippet=text[:500],
+                    repository_id=str(row.get("repository_id", "")),
+                    repository_name=str(row.get("repository_name", "")),
+                    relative_path=str(row.get("relative_path", "")),
+                    qualified_path=str(row.get("qualified_path", "")),
                 )
             )
 
@@ -133,6 +141,29 @@ class SearchService:
             scored,
             key=lambda item: (-item.score, item.file_path, item.start_line, item.end_line, item.symbol_name),
         )[:k]
+
+    @staticmethod
+    def _decorate_hits(index_dir: Path, hits: list[SearchHit]) -> list[SearchHit]:
+        manifest = {}
+        try:
+            import json
+
+            manifest = json.loads((index_dir / "manifest.json").read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        repository_id = str(manifest.get("repository_id") or "")
+        repository_name = str(manifest.get("repository_name") or index_dir.parent.name)
+        repository_root = Path(str(manifest.get("repository_root") or index_dir.parent)).resolve()
+        for hit in hits:
+            hit.repository_id = hit.repository_id or repository_id
+            hit.repository_name = hit.repository_name or repository_name
+            if not hit.relative_path:
+                try:
+                    hit.relative_path = Path(hit.file_path).resolve().relative_to(repository_root).as_posix()
+                except ValueError:
+                    hit.relative_path = Path(hit.file_path).as_posix()
+            hit.qualified_path = hit.qualified_path or f"{hit.repository_name}::{hit.relative_path}"
+        return hits
 
     def _collect_search_results(
         self,
@@ -164,7 +195,8 @@ class SearchService:
             "k": k,
             "results": [
                 {
-                    "file": r.file_path,
+                    "file": r.qualified_path or r.file_path,
+                    "repository_id": r.repository_id,
                     "start": r.start_line,
                     "end": r.end_line,
                     "score": float(r.score),
@@ -188,7 +220,8 @@ class SearchService:
             "warnings": warnings,
             "results": [
                 {
-                    "file": r.file_path,
+                    "file": r.qualified_path or r.file_path,
+                    "repository_id": r.repository_id,
                     "start": r.start_line,
                     "end": r.end_line,
                     "score": float(r.score),

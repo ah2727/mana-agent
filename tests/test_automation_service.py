@@ -60,7 +60,8 @@ def test_generated_workflow_has_schedule_dispatch_and_artifact_upload() -> None:
     assert 'cron: "0 2 * * *"' in workflow
     assert "workflow_dispatch:" in workflow
     assert "actions/upload-artifact@v4" in workflow
-    assert "path: .mana/" in workflow
+    assert "MANA_HOME: ${{ runner.temp }}/mana" in workflow
+    assert "path: ${{ runner.temp }}/mana/" in workflow
 
 
 def test_custom_command_is_rendered_only_after_explicit_validation(tmp_path: Path) -> None:

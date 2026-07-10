@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from mana_agent.workspaces.paths import mana_home
 from typing import Any
 
 from mana_agent.multi_agent.core.ids import new_trace_id
@@ -11,7 +12,7 @@ from mana_agent.multi_agent.core.types import ExecutionContext, TraceEvent, enri
 class TraceWriter:
     def __init__(self, root: str | Path = ".") -> None:
         self.root = Path(root).resolve()
-        self.dir = self.root / ".mana" / "traces"
+        self.dir = mana_home() / "traces"
 
     def emit(
         self,

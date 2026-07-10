@@ -19,6 +19,8 @@ from mana_agent.cli.renderers import EventRenderer
 from mana_agent.telemetry.session_trace import SessionTrace
 from mana_agent.telemetry.tokens import TokenUsageTracker
 from mana_agent.observability import ObservabilityStore
+from mana_agent.workspaces.paths import session_dir
+from mana_agent.workspaces.service import WorkspaceService
 
 
 def git_branch(root: Path) -> str:
@@ -64,6 +66,8 @@ class ChatUIState:
     trace_path: Path | None = None
     session_path: Path | None = None
     session_id: str = field(default_factory=lambda: f"sess-{uuid.uuid4().hex}")
+    workspace_id: str = ""
+    repository_id: str = ""
     tracker: TokenUsageTracker = field(default_factory=TokenUsageTracker)
     trace: SessionTrace | None = None
     observability: ObservabilityStore | None = None
@@ -83,13 +87,25 @@ class ChatUIState:
 
     def __post_init__(self) -> None:
         self.repo_root = Path(self.repo_root).resolve()
+        service = WorkspaceService()
+        try:
+            context = service.context_for_session(self.session_id)
+            if context.primary_root != self.repo_root:
+                raise ValueError(
+                    f"session {self.session_id} belongs to {context.primary_root}; relaunch chat with that --root-dir"
+                )
+            session = context.session
+        except FileNotFoundError:
+            session = service.create_session(self.repo_root, session_id=self.session_id)
+        self.workspace_id = session.workspace_id
+        self.repository_id = session.primary_repository_id
         self.ui_mode = EventRenderer.normalize_mode(self.ui_mode)
         self.trace_mode = EventRenderer.normalize_trace_mode(self.trace_mode)
         if self.trace_path is None:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.trace_path = self.repo_root / ".mana" / "traces" / f"session_{stamp}.jsonl"
+            self.trace_path = session_dir(self.session_id) / "traces" / f"session_{stamp}.jsonl"
         if self.session_path is None:
-            self.session_path = self.repo_root / ".mana" / "sessions" / f"{self.session_id}.jsonl"
+            self.session_path = session_dir(self.session_id) / "events.jsonl"
         if self.trace is None:
             self.trace = SessionTrace(
                 session_id=self.session_id,
@@ -114,6 +130,32 @@ class ChatUIState:
             self.observability.record_event(stored)
         self._sync_event_collections(stored)
         return stored
+
+    def activate_session(self, session_id: str) -> None:
+        """Switch the UI to another isolated session for the same repository."""
+
+        context = WorkspaceService().context_for_session(session_id)
+        if context.primary_root != self.repo_root:
+            raise ValueError(
+                f"session {session_id} belongs to {context.primary_root}; relaunch chat with that --root-dir"
+            )
+        self.session_id = context.session.session_id
+        self.workspace_id = context.session.workspace_id
+        self.repository_id = context.session.primary_repository_id
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.trace_path = session_dir(self.session_id) / "traces" / f"session_{stamp}.jsonl"
+        self.session_path = session_dir(self.session_id) / "events.jsonl"
+        self.trace = SessionTrace(session_id=self.session_id, trace_mode=self.trace_mode, path=self.trace_path)
+        self.tracker = TokenUsageTracker()
+        self.events.clear()
+        self.events_by_id.clear()
+        self.event_order.clear()
+        self.tool_runs.clear()
+        self.subagent_events.clear()
+        self.file_events.clear()
+        self.test_runs.clear()
+        self.log_events.clear()
+        self.conversation.clear()
 
     @property
     def normalized_events(self) -> list[ChatEvent]:

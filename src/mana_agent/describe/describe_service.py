@@ -4,6 +4,7 @@ import ast
 import json
 from datetime import datetime
 from pathlib import Path
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 from typing import Any
 
 from mana_agent.analysis.models import CodeDescription, DescribeReport
@@ -52,7 +53,7 @@ class DescribeService:
             modified_since=modified_since,
         )
 
-        cache_path = project_root / ".mana_cache" / "describe_cache.json"
+        cache_path = repository_dir(repository_id_for_path(project_root)) / "describe_cache.json"
         cache = self._load_cache(cache_path) if use_cache else {}
         next_cache: dict[str, Any] = {}
         descriptions: list[CodeDescription] = []

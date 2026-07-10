@@ -10,6 +10,8 @@ from mana_agent.multi_agent.core.ids import new_decision_id
 from mana_agent.multi_agent.core.types import DecisionRecord, DecisionStatus, MessageType, to_jsonable
 from mana_agent.multi_agent.taskboard.store import decision_from_dict
 from mana_agent.multi_agent.taskboard.taskboard import TaskBoard
+from mana_agent.workspaces.paths import workspace_dir
+from mana_agent.workspaces.service import WorkspaceService
 
 
 class DecisionRoom:
@@ -18,7 +20,10 @@ class DecisionRoom:
         self.taskboard = taskboard
         self.message_bus = message_bus
         self.discussions = DiscussionStore(root)
-        self.path = self.root / ".mana" / "taskboard" / "decisions.json"
+        service = WorkspaceService()
+        repo = service.register_repository(self.root)
+        workspace = service.workspace_for_repository(repo.repository_id)
+        self.path = workspace_dir(workspace.workspace_id) / "taskboard" / "decisions.json"
         self.decisions: dict[str, DecisionRecord] = {}
         self.load()
 

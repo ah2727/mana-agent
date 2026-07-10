@@ -26,6 +26,8 @@ from mana_agent.multi_agent.memory.memory_bundle import AgentMemoryBundle
 from mana_agent.multi_agent.memory.repo_context import RepoContext
 from mana_agent.multi_agent.memory.task_memory import TaskMemory
 from mana_agent.services.memory_service import MultiAgentMemoryService
+from mana_agent.workspaces.routing import RepositoryScopeDecisionEngine, ScopeDecisionError
+from mana_agent.workspaces.service import WorkspaceService
 
 @dataclass
 class MainAgentResult:
@@ -35,12 +37,36 @@ class MainAgentResult:
     answer: str
     required_agents: list[str]
     required_subagents: list[str]
+    repository_ids: list[str] | None = None
 
 
 class MainAgent:
-    def __init__(self, root: str | Path = ".", *, routing_llm: Any | None = None) -> None:
+    def __init__(
+        self,
+        root: str | Path = ".",
+        *,
+        routing_llm: Any | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         self.root = Path(root).resolve()
-        self.memory_service = MultiAgentMemoryService(root=self.root)
+        self.workspace_service = WorkspaceService()
+        try:
+            self.workspace_context = self.workspace_service.context_for_session(str(session_id)) if session_id else None
+        except (FileNotFoundError, ValueError):
+            self.workspace_context = None
+        if self.workspace_context is None:
+            session = self.workspace_service.create_session(
+                self.root, workspace_id=workspace_id, session_id=session_id
+            )
+            self.workspace_context = self.workspace_service.context_for_session(session.session_id)
+        self.scope_engine = RepositoryScopeDecisionEngine(routing_llm)
+        self.memory_service = MultiAgentMemoryService(
+            root=self.root,
+            workspace_id=self.workspace_context.workspace.workspace_id,
+            repository_id=self.workspace_context.session.primary_repository_id,
+            session_id=self.workspace_context.session.session_id,
+        )
         self.memory = AgentMemoryBundle(
             repo_context=RepoContext(root=str(self.root)),
             task_memory=TaskMemory(),
@@ -69,6 +95,10 @@ class MainAgent:
 
     def run_user_request(self, user_request: str, *, entrypoint: str = "chat") -> MainAgentResult:
         request = str(user_request or "").strip()
+        try:
+            scope = self.scope_engine.decide(request=request, context=self.workspace_context)
+        except ScopeDecisionError as exc:
+            return MainAgentResult("", "blocked", "scope_error", str(exc), [], [], [])
         self.memory.remember_task(f"User request received via {entrypoint}: {request[:500]}")
         self.memory.remember_repo_fact(f"Repository root: {self.root}")
         title = request[:80] or entrypoint
@@ -91,6 +121,10 @@ class MainAgent:
             user_request=request,
             normalized_goal=f"{entrypoint}: {request}",
             owner_agent_id=main_node.agent_id,
+            workspace_id=scope.workspace_id,
+            session_id=scope.session_id,
+            primary_repository_id=scope.primary_repository_id,
+            repository_ids=scope.repository_ids,
         )
         self.taskboard.record_budget(
             task.task_id,
@@ -111,7 +145,7 @@ class MainAgent:
             )
             answer = f"Skipped duplicate task; reused existing task {duplicate_of}."
             self.memory.remember_task(answer)
-            return MainAgentResult(task.task_id, "skipped", "duplicate", answer, [], [])
+            return MainAgentResult(task.task_id, "skipped", "duplicate", answer, [], [], scope.repository_ids)
         self.memory_service.record_decision(
             agent_id=main_node.agent_id,
             task_id=task.task_id,
@@ -161,6 +195,15 @@ class MainAgent:
             worker_ids = self._ensure_tool_workers(task.task_id, target_count=1)
             if worker_ids:
                 self.queue_manager.default_worker_agent_id = worker_ids[0]
+        if len(scope.repository_ids) > 1:
+            if not worker_ids:
+                worker_ids = self._ensure_tool_workers(task.task_id, target_count=1)
+            self._run_multi_repository_context(
+                task.task_id,
+                request,
+                scope.repository_ids,
+                worker_ids[0] if worker_ids else self.queue_manager.default_worker_agent_id,
+            )
         head = self._agent(AgentRole.HEAD_DECISION, HeadDecisionAgent)
         head.decide(task.task_id, route, self.decision_room)
         self.memory.remember_agent(
@@ -219,7 +262,15 @@ class MainAgent:
             self.taskboard.update_status(task.task_id, TaskStatus.BLOCKED, reason="Reviewer rejected weak or incomplete hierarchy evidence.")
             answer = self._agent(AgentRole.SUMMARIZER, SummarizerAgent).summarize(task.task_id)
         self.memory.remember_task(f"Final summary produced for task {task.task_id}: {answer[:500]}")
-        return MainAgentResult(task.task_id, route.route_name, route.task_size, answer, route.required_agents, route.required_subagents)
+        return MainAgentResult(
+            task.task_id,
+            route.route_name,
+            route.task_size,
+            answer,
+            route.required_agents,
+            route.required_subagents,
+            scope.repository_ids,
+        )
 
     def _create_required_subagents(self, task_id: str, subagent_names: list[str]) -> list[str]:
         if not subagent_names:
@@ -232,6 +283,62 @@ class MainAgent:
             created.append(node.agent_id)
             self.taskboard.add_evidence(task_id, f"MainAgent created {node.agent_id} for {name}.")
         return created
+
+    def _run_multi_repository_context(
+        self,
+        parent_task_id: str,
+        request: str,
+        repository_ids: list[str],
+        worker_agent_id: str,
+    ) -> None:
+        """Fan out one repository-scoped context run per model-selected repo."""
+
+        coding = self._agent(AgentRole.CODING, CodingAgent)
+        for repository_id in repository_ids:
+            repo = self.workspace_context.repositories[repository_id]
+            child = self.taskboard.create_child_task(
+                parent_task_id,
+                title=f"Repository context: {repo.name}",
+                user_request=request,
+                owner_agent_id=coding.agent_id,
+            )
+            child.primary_repository_id = repository_id
+            child.repository_ids = [repository_id]
+            child.workspace_id = self.workspace_context.workspace.workspace_id
+            child.session_id = self.workspace_context.session.session_id
+            self.taskboard.save()
+            self.taskboard.update_status(child.task_id, TaskStatus.ROUTED, reason="Model-selected repository scope.")
+            self.taskboard.update_status(child.task_id, TaskStatus.IN_PROGRESS, reason="Repository worker is collecting context.")
+            manager = QueueManager(
+                Path(repo.canonical_path),
+                taskboard=self.taskboard,
+                memory_service=MultiAgentMemoryService(
+                    root=repo.canonical_path,
+                    workspace_id=self.workspace_context.workspace.workspace_id,
+                    repository_id=repository_id,
+                    session_id=self.workspace_context.session.session_id,
+                ),
+                hierarchy_policy=self.hierarchy_policy,
+                default_worker_agent_id=worker_agent_id,
+            )
+            job = manager.enqueue(
+                task_id=child.task_id,
+                requested_by_agent_id=coding.agent_id,
+                approved_by_agent_id=self.registry.find_by_role(AgentRole.MAIN).agent_id,
+                job_type=QueueJobType.REPO_SEARCH,
+                payload={"query": request[:120], "limit": 5, "repository_id": repository_id},
+                purpose=f"Collect model-selected context from repository {repo.name}.",
+            )
+            manager.run_next(worker_agent_id=worker_agent_id)
+            completed = manager.get_job(job.job_id)
+            if completed.status == QueueJobStatus.DONE:
+                self.taskboard.update_status(child.task_id, TaskStatus.DONE, reason="Repository context run completed.")
+            else:
+                self.taskboard.update_status(
+                    child.task_id,
+                    TaskStatus.FAILED,
+                    reason=completed.error or "Repository context run failed.",
+                )
 
     def _ensure_tool_workers(self, task_id: str, *, target_count: int) -> list[str]:
         coding = self.registry.find_by_role(AgentRole.CODING)

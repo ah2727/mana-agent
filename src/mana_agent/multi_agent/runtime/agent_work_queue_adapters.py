@@ -73,6 +73,9 @@ def _execution_context_for_item(item: WorkItem, *, run_id: str | None, flow_id: 
         task_id=flow_id or run_id,
         root_task_id=flow_id or run_id,
         delegation_path=["agent_coding_0001", worker_id],
+        workspace_id=item.workspace_id or None,
+        session_id=item.session_id or None,
+        repository_id=item.repository_id or None,
     ).normalized()
 
 
@@ -398,6 +401,8 @@ def build_tool_run_request(
             if isinstance(execution_context, ExecutionContext)
             else ExecutionContext.from_mapping(execution_context).as_dict()
         ),
+        workspace_id=item.workspace_id or None,
+        repository_id=item.repository_id or None,
     )
 
 
@@ -428,6 +433,8 @@ def make_batch_executor(
             tool_policy=session.tool_policy,
             execution_context=context,
         )
+        request.workspace_id = session.workspace_id
+        request.repository_id = session.repository_id
         results = executor.run_batch(
             run_id=session.run_id,
             requests=[BatchToolRequest(request_index=0, request=request)],

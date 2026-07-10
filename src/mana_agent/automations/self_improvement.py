@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
+
 from mana_agent.ui.streamlit_helpers import (
     find_mana_root,
     load_taskboard_state,
@@ -64,7 +66,7 @@ def extract_skill_from_trace(trace: dict[str, Any], root: Path | None = None) ->
 def persist_skill(skill: dict[str, Any], root: Path | None = None) -> Path | None:
     """Persist skill under the project skills location (or .mana)."""
     root = find_mana_root(root) if root is not None else Path(".") if root is not None else Path(".")
-    skills_dir = root / ".mana" / "skills"
+    skills_dir = repository_dir(repository_id_for_path(root)) / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     name = skill.get("name", "unnamed") + ".md"
     path = skills_dir / name
@@ -121,7 +123,7 @@ def run_self_improvement_loop(root: Path | None = None, limit: int = 5) -> list[
             rec = {"name": skill["name"], "path": str(p), "source": cand.get("_file") or cand.get("task_id")}
             created.append(rec)
             # Also log an improvement record
-            log_dir = root / ".mana" / "automations"
+            log_dir = repository_dir(repository_id_for_path(root)) / "automations"
             log_dir.mkdir(parents=True, exist_ok=True)
             logf = log_dir / "self_improvement_runs.jsonl"
             try:

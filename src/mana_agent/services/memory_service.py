@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from mana_agent.multi_agent.core.types import AgentRole
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
+from mana_agent.workspaces.paths import session_dir, workspace_dir
+from mana_agent.workspaces.service import WorkspaceService
+from mana_agent.workspaces.store import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,7 @@ def task_fingerprint(
     target_files: list[str] | None = None,
     expected_output: str = "",
     root: str | Path | None = None,
+    repository_ids: list[str] | None = None,
 ) -> str:
     return stable_hash(
         {
@@ -70,6 +75,7 @@ def task_fingerprint(
             "action_type": normalize_text(action_type),
             "target_files": sorted(normalize_file_path(item, root=root) for item in target_files or [] if str(item).strip()),
             "expected_output": normalize_text(expected_output),
+            "repository_ids": sorted(str(item) for item in repository_ids or []),
         }
     )
 
@@ -93,6 +99,9 @@ class TaskMemoryRecord:
     result_summary: str = ""
     duplicate_of: str | None = None
     reuse_allowed: bool = True
+    workspace_id: str = ""
+    session_id: str = ""
+    repository_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -167,6 +176,9 @@ class ScopedMemoryBundle:
     completed_related_tasks: list[dict[str, Any]] = field(default_factory=list)
     routing_hints: list[str] = field(default_factory=list)
     verification_history: list[dict[str, Any]] = field(default_factory=list)
+    workspace_id: str = ""
+    session_id: str = ""
+    repository_ids: list[str] = field(default_factory=list)
 
     def to_prompt_block(self) -> str:
         payload = asdict(self)
@@ -179,7 +191,11 @@ class EvidenceMemory:
     def __init__(self, *, repo_root: Path, run_id: str | None) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.run_id = str(run_id or "").strip()
-        self.run_dir = self.repo_root / ".mana" / "runs" / self.run_id if self.run_id else None
+        self.run_dir = (
+            repository_dir(repository_id_for_path(self.repo_root)) / "runs" / self.run_id
+            if self.run_id
+            else None
+        )
         self.path = self.run_dir / "read_evidence.jsonl" if self.run_dir else None
         self._index: dict[str, list[dict[str, Any]]] = {}
         self._loaded = False
@@ -395,14 +411,87 @@ class EvidenceMemory:
 
 
 class MultiAgentMemoryService:
-    def __init__(self, *, root: str | Path = ".") -> None:
+    def __init__(
+        self,
+        *,
+        root: str | Path = ".",
+        workspace_id: str | None = None,
+        repository_id: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
         self.root = Path(root).resolve()
+        service = WorkspaceService()
+        repo = service.register_repository(self.root)
+        workspace = service.workspace_for_repository(repo.repository_id)
+        self.workspace_id = workspace_id or workspace.workspace_id
+        self.repository_id = repository_id or repo.repository_id
+        self.session_id = str(session_id or "")
+        self._repo_memory_path = repository_dir(self.repository_id) / "memory.json"
+        self._workspace_memory_path = workspace_dir(self.workspace_id) / "memory.json"
+        self._session_memory_path = (
+            session_dir(self.session_id) / "memory.json"
+            if self.session_id
+            else repository_dir(self.repository_id) / "runtime-memory.json"
+        )
         self.task_records: dict[str, TaskMemoryRecord] = {}
         self.tool_executions: dict[str, ToolExecutionMemoryRecord] = {}
         self.agent_decisions: list[AgentDecisionMemoryRecord] = []
         self.verifications: list[VerificationMemoryRecord] = []
         self.queue_fingerprints: dict[str, str] = {}
         self.project_memory: list[dict[str, Any]] = []
+        self.workspace_memory: list[dict[str, Any]] = []
+        self._load_persisted()
+
+    @staticmethod
+    def _read_payload(path: Path) -> dict[str, Any]:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _load_persisted(self) -> None:
+        repo_payload = self._read_payload(self._repo_memory_path)
+        workspace_payload = self._read_payload(self._workspace_memory_path)
+        session_payload = self._read_payload(self._session_memory_path)
+        self.project_memory = list(repo_payload.get("facts") or [])
+        self.workspace_memory = list(workspace_payload.get("facts") or [])
+        for item in session_payload.get("tasks") or []:
+            try:
+                record = TaskMemoryRecord(**item)
+            except TypeError:
+                continue
+            self.task_records[record.task_id] = record
+        for item in session_payload.get("tools") or []:
+            try:
+                record = ToolExecutionMemoryRecord(**item)
+            except TypeError:
+                continue
+            self.tool_executions[record.normalized_args_hash] = record
+        self.agent_decisions = [AgentDecisionMemoryRecord(**item) for item in session_payload.get("decisions") or []]
+        self.verifications = [VerificationMemoryRecord(**item) for item in session_payload.get("verifications") or []]
+
+    def _persist(self) -> None:
+        atomic_write_json(
+            self._repo_memory_path,
+            {"schema_version": 1, "repository_id": self.repository_id, "facts": self.project_memory},
+        )
+        atomic_write_json(
+            self._workspace_memory_path,
+            {"schema_version": 1, "workspace_id": self.workspace_id, "facts": self.workspace_memory},
+        )
+        atomic_write_json(
+            self._session_memory_path,
+            {
+                "schema_version": 1,
+                "workspace_id": self.workspace_id,
+                "session_id": self.session_id,
+                "repository_id": self.repository_id,
+                "tasks": [asdict(item) for item in self.task_records.values()],
+                "tools": [asdict(item) for item in self.tool_executions.values()],
+                "decisions": [asdict(item) for item in self.agent_decisions],
+                "verifications": [asdict(item) for item in self.verifications],
+            },
+        )
 
     def normalize_task(
         self,
@@ -411,6 +500,7 @@ class MultiAgentMemoryService:
         action_type: str = "task",
         target_files: list[str] | None = None,
         expected_output: str = "",
+        repository_ids: list[str] | None = None,
     ) -> tuple[str, str]:
         normalized_goal = normalize_text(goal)
         return normalized_goal, task_fingerprint(
@@ -419,7 +509,20 @@ class MultiAgentMemoryService:
             target_files=target_files,
             expected_output=expected_output,
             root=self.root,
+            repository_ids=repository_ids,
         )
+
+    def remember_repository_fact(self, fact: str) -> None:
+        payload = {"fact": _summary(fact, max_chars=1200), "repository_id": self.repository_id}
+        if payload["fact"] and payload not in self.project_memory:
+            self.project_memory.append(payload)
+            self._persist()
+
+    def remember_workspace_fact(self, fact: str) -> None:
+        payload = {"fact": _summary(fact, max_chars=1200), "workspace_id": self.workspace_id}
+        if payload["fact"] and payload not in self.workspace_memory:
+            self.workspace_memory.append(payload)
+            self._persist()
 
     def find_duplicate_task(self, fingerprint: str) -> TaskMemoryRecord | None:
         for record in self.task_records.values():
@@ -436,6 +539,7 @@ class MultiAgentMemoryService:
         assigned_agent_id: str = "",
         parent_agent_id: str = "",
         related_files: list[str] | None = None,
+        repository_ids: list[str] | None = None,
     ) -> TaskMemoryRecord:
         duplicate = self.find_duplicate_task(fingerprint)
         record = TaskMemoryRecord(
@@ -447,8 +551,12 @@ class MultiAgentMemoryService:
             parent_agent_id=parent_agent_id,
             related_files=[normalize_file_path(item, root=self.root) for item in related_files or []],
             duplicate_of=duplicate.task_id if duplicate else None,
+            workspace_id=self.workspace_id,
+            session_id=self.session_id,
+            repository_ids=list(repository_ids or [self.repository_id]),
         )
         self.task_records[task_id] = record
+        self._persist()
         logger.info("[memory] duplicate_task_hit task_id=%s duplicate_of=%s", task_id, record.duplicate_of or "")
         return record
 
@@ -461,6 +569,7 @@ class MultiAgentMemoryService:
         if result_summary:
             record.result_summary = _summary(result_summary)
         record.updated_at = utc_iso()
+        self._persist()
 
     def register_queue_item(self, *, queue_item_id: str, fingerprint: str) -> tuple[bool, str | None]:
         existing = self.queue_fingerprints.get(fingerprint)
@@ -563,6 +672,7 @@ class MultiAgentMemoryService:
             result=stored_result,
         )
         self.tool_executions[key] = record
+        self._persist()
         return record
 
     @staticmethod
@@ -600,6 +710,7 @@ class MultiAgentMemoryService:
                 reason=_summary(reason),
             )
         )
+        self._persist()
 
     def record_verification(
         self,
@@ -620,6 +731,7 @@ class MultiAgentMemoryService:
             findings=list(findings or []),
         )
         self.verifications.append(record)
+        self._persist()
         return record
 
     def build_bundle(
@@ -646,7 +758,11 @@ class MultiAgentMemoryService:
         ]
         completed = [asdict(item) for item in self.task_records.values() if item.status == "completed"]
 
-        project_memory = list(self.project_memory[-8:]) if privilege in {"full", "planner"} else []
+        project_memory = (
+            list(self.workspace_memory[-4:]) + list(self.project_memory[-8:])
+            if privilege in {"full", "planner"}
+            else []
+        )
         task_memory = [asdict(item) for item in self.task_records.values() if item.task_id in {task_id, parent_task_id}]
         if privilege in {"coding", "tool"}:
             active = []
@@ -669,6 +785,9 @@ class MultiAgentMemoryService:
             completed_related_tasks=completed,
             routing_hints=[f"duplicate_of:{current.duplicate_of}"] if current and current.duplicate_of else [],
             verification_history=[asdict(item) for item in self.verifications if item.task_id == task_id],
+            workspace_id=self.workspace_id,
+            session_id=self.session_id,
+            repository_ids=[self.repository_id],
         )
         logger.info("[memory] scoped_bundle_created bundle_id=%s agent_id=%s role=%s", bundle.bundle_id, agent_id, role)
         return bundle

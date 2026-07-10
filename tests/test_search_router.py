@@ -7,6 +7,7 @@ from mana_agent.search.memory import SearchMemoryStore
 from mana_agent.search.models import SearchDecision, SearchQuery, SearchResult
 from mana_agent.search.providers import SearchProviders
 from mana_agent.search.router import SearchRouter
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 
 
 class _RouterModel:
@@ -95,7 +96,7 @@ def test_router_deduplicates_results_and_stores_memory(tmp_path) -> None:  # noq
     assert web.calls == 1
     assert len(result.results) == 1
     assert "External Search Context" in result.context_block()
-    assert (tmp_path / ".mana" / "search_memory.jsonl").exists()
+    assert (repository_dir(repository_id_for_path(tmp_path)) / "search_memory.jsonl").exists()
 
 
 def test_router_memory_hit_skips_provider(tmp_path) -> None:  # noqa: ANN001

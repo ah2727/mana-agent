@@ -61,7 +61,9 @@ def _load_analysis_context(root) -> str | None:
     import json
     from pathlib import Path as _Path
 
-    ctx_path = _Path(root) / ".mana" / "analyze" / "agent_context.json"
+    from mana_agent.workspaces.paths import repository_analysis_dir, repository_id_for_path
+
+    ctx_path = repository_analysis_dir(repository_id_for_path(root)) / "agent_context.json"
     if not ctx_path.exists():
         return None
     try:
@@ -370,6 +372,11 @@ def chat(
         "--repo",
         help="Project root used for tool execution and default index paths.",
     ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session",
+        help="Resume an isolated session whose primary repository matches --root-dir.",
+    ),
     max_indexes: int = typer.Option(
         0,
         "--max-indexes",
@@ -573,6 +580,7 @@ def chat(
             "k": k,
             "dir_mode": dir_mode,
             "root_dir": root_dir,
+            "session_id": session_id,
             "max_indexes": max_indexes,
             "auto_index_missing": auto_index_missing,
             "agent_tools": agent_tools,
@@ -686,11 +694,11 @@ def chat(
     root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
     if root.is_file():
         root = root.parent
-    _record_multi_agent_request(root, "chat command", entrypoint="chat", command_scope=True)
+    _record_multi_agent_request(root, "chat command", entrypoint="chat", command_scope=True, session_id=session_id)
 
     recorded_initial_prompt = False
     if prompt:
-        _record_multi_agent_request(root, prompt, entrypoint="chat")
+        _record_multi_agent_request(root, prompt, entrypoint="chat", session_id=session_id)
         recorded_initial_prompt = True
         direct_edit_result = handle_small_direct_edit(root, prompt)
         if direct_edit_result.handled:
@@ -777,6 +785,7 @@ def chat(
         diagram_rendering=f"{'on' if diagram_render_images else 'off'} ({diagram_format})",
         tool_worker_backend=resolved_tool_exec_backend,
         log_path=chat_log_path,
+        session_id=session_id or f"sess-{uuid.uuid4().hex}",
     )
 
     def _build_tools_executor(worker_client: ToolWorkerClient):
@@ -806,6 +815,7 @@ def chat(
                 project_root=root,
                 max_turns=settings.coding_flow_max_turns,
                 max_tasks=settings.coding_flow_max_tasks,
+                session_id=chat_ui_state.session_id,
             )
         if hasattr(ask_service.ask_agent, "update_model"):
             ask_service.ask_agent.update_model(coding_model_assignment.resolved_model)
@@ -822,6 +832,8 @@ def chat(
                 allowed_prefixes=None,
                 tools_only_strict=tool_worker_strict,
                 model_level=tool_worker_model_assignment.model_level,
+                workspace_id=chat_ui_state.workspace_id,
+                repository_id=chat_ui_state.repository_id,
             )
 
         # ✅ IMPORTANT: allow_prefixes=None => unrestricted under repo_root
@@ -854,6 +866,9 @@ def chat(
             execution_config=tools_execution_config,
             executor=tools_executor_instance,
             coding_memory_service=coding_memory_service,
+            workspace_id=chat_ui_state.workspace_id,
+            repository_id=chat_ui_state.repository_id,
+            session_id=chat_ui_state.session_id,
         )
         if hasattr(coding_agent_instance, "set_tools_manager_orchestrator"):
             coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
@@ -1254,6 +1269,8 @@ def chat(
                     allowed_prefixes=None,
                     tools_only_strict=tool_worker_strict,
                     model_level=tool_worker_model_assignment.model_level,
+                    workspace_id=chat_ui_state.workspace_id,
+                    repository_id=chat_ui_state.repository_id,
                 )
             try:
                 start = getattr(tool_worker_client, "start", None)
@@ -1281,6 +1298,9 @@ def chat(
                     if coding_agent_instance is not None
                     else None
                 ),
+                workspace_id=chat_ui_state.workspace_id,
+                repository_id=chat_ui_state.repository_id,
+                session_id=chat_ui_state.session_id,
             )
             if coding_agent_instance is not None and hasattr(coding_agent_instance, "set_tools_manager_orchestrator"):
                 coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
@@ -1895,6 +1915,70 @@ def chat(
                 else:
                     console.print("[green]Started new chat topic.[/green]")
                 continue
+            if question.strip().startswith("/session"):
+                from mana_agent.workspaces.service import WorkspaceService
+
+                service = WorkspaceService()
+                parts = question.strip().split()
+                action = parts[1].lower() if len(parts) > 1 else "show"
+                if action == "list":
+                    rows = [
+                        item
+                        for item in service.store.list_sessions()
+                        if item.workspace_id == chat_ui_state.workspace_id
+                    ]
+                    if not rows:
+                        console.print("[yellow]No workspace sessions found.[/yellow]")
+                    for item in rows[:30]:
+                        marker = "*" if item.session_id == chat_ui_state.session_id else " "
+                        console.print(f"{marker} {item.session_id}  {item.status}  {item.cwd}")
+                    continue
+                if action == "show":
+                    console.print_json(
+                        json.dumps(service.store.get_session(chat_ui_state.session_id).model_dump(mode="json"))
+                    )
+                    continue
+                if action == "new":
+                    created = service.create_session(root)
+                    chat_ui_state.activate_session(created.session_id)
+                    session_turns.clear()
+                    active_flow_id = None
+                    pending_conflict_question = None
+                    console.print(f"[green]New isolated session:[/green] {created.session_id}")
+                    continue
+                if action == "switch" and len(parts) > 2:
+                    try:
+                        chat_ui_state.activate_session(parts[2])
+                    except (FileNotFoundError, ValueError) as exc:
+                        console.print(f"[red]{exc}[/red]")
+                        continue
+                    session_turns.clear()
+                    active_flow_id = None
+                    pending_conflict_question = None
+                    console.print(f"[green]Switched session:[/green] {chat_ui_state.session_id}")
+                    continue
+                if action == "archive":
+                    archived = service.archive_session(chat_ui_state.session_id)
+                    console.print(f"[green]Archived session:[/green] {archived.session_id}")
+                    continue
+                console.print("[yellow]Use /session new|list|show|switch <id>|archive.[/yellow]")
+                continue
+            if question.strip() == "/workspace show":
+                from mana_agent.workspaces.service import WorkspaceService
+
+                service = WorkspaceService()
+                console.print_json(
+                    json.dumps(service.store.get_workspace(chat_ui_state.workspace_id).model_dump(mode="json"))
+                )
+                continue
+            if question.strip() == "/repo list":
+                from mana_agent.workspaces.service import WorkspaceService
+
+                context = WorkspaceService().context_for_session(chat_ui_state.session_id)
+                for item in context.repositories.values():
+                    marker = "*" if item.repository_id == chat_ui_state.repository_id else " "
+                    console.print(f"{marker} {item.repository_id}  {item.name}  {item.canonical_path}")
+                continue
             current_turn_id = f"turn-{len(session_turns) + 1}-{uuid.uuid4().hex[:8]}"
             chat_ui_state.start_turn(current_turn_id)
             if question.lower() == "/help":
@@ -1906,7 +1990,7 @@ def chat(
             if recorded_initial_prompt and question == prompt:
                 recorded_initial_prompt = False
             else:
-                _record_multi_agent_request(root, question, entrypoint="chat")
+                _record_multi_agent_request(root, question, entrypoint="chat", session_id=chat_ui_state.session_id)
 
             # -----------------------------
             # /analyze slash command (read-only; writes only .mana/ artifacts).

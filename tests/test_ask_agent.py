@@ -12,6 +12,7 @@ from mana_agent.services.coding_memory_service import CodingMemoryService
 from mana_agent.search.config import SearchConfig
 from mana_agent.search.memory import SearchMemoryStore
 from mana_agent.search.models import SearchResult
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 
 
 class _FakeSearchService:
@@ -488,7 +489,9 @@ def test_ask_agent_read_file_hits_run_evidence_memory_on_repeat(tmp_path: Path) 
     read_file2 = [item for item in tools2 if item.name == "read_file"][0]
     second_payload = json.loads(read_file2.invoke({"path": str(source_file), "mode": "full"}))
 
-    rows = (tmp_path / ".mana" / "runs" / "run-cache-1" / "read_evidence.jsonl").read_text(encoding="utf-8").splitlines()
+    rows = (
+        repository_dir(repository_id_for_path(tmp_path)) / "runs" / "run-cache-1" / "read_evidence.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
     read_rows = [json.loads(row) for row in rows if row.strip() and json.loads(row).get("event") == "read"]
     assert first_payload["cache_hit"] is False
     assert first_payload["source"] == "tool"
@@ -509,7 +512,9 @@ def test_ask_agent_read_file_relative_and_absolute_share_run_memory_entry(tmp_pa
     first_payload = json.loads(read_file.invoke({"path": "pkg/mod.py", "mode": "full"}))
     second_payload = json.loads(read_file.invoke({"path": str(source_file), "mode": "full"}))
 
-    rows = (tmp_path / ".mana" / "runs" / "run-cache-abs-rel" / "read_evidence.jsonl").read_text(encoding="utf-8").splitlines()
+    rows = (
+        repository_dir(repository_id_for_path(tmp_path)) / "runs" / "run-cache-abs-rel" / "read_evidence.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
     read_rows = [json.loads(row) for row in rows if row.strip() and json.loads(row).get("event") == "read"]
     assert first_payload["cache_hit"] is False
     assert second_payload["cache_hit"] is True

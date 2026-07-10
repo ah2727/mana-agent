@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 from mana_agent.utils.logging import setup_logging
+from mana_agent.workspaces.paths import mana_home
 
 
 def test_setup_logging_writes_file_only(tmp_path: Path, monkeypatch) -> None:
@@ -26,7 +27,7 @@ def test_setup_logging_uses_date_project_name(tmp_path: Path, monkeypatch) -> No
     project.mkdir()
     monkeypatch.chdir(project)
     log_file = setup_logging(verbose=False)
-    assert log_file.parent == (project / ".mana" / "logs")
+    assert log_file.parent == (mana_home() / "logs")
     assert log_file.name.endswith("-demo-project.log")
 
     handlers = logging.getLogger().handlers

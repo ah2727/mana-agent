@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
+
 
 ScheduleTarget = Literal["local", "github"]
 BUILTIN_ACTIONS = frozenset({"analyze", "daily_report", "self_improvement"})
@@ -119,7 +121,7 @@ def validate_custom_command(command: str | None) -> None:
 
 
 def config_path(root: Path) -> Path:
-    return root / ".mana" / "automations" / "config.json"
+    return repository_dir(repository_id_for_path(root)) / "automations" / "config.json"
 
 
 def load_config(root: Path) -> dict[str, Any]:
@@ -245,6 +247,8 @@ def render_workflow(schedule: ScheduleDefinition) -> str:
             "jobs:",
             "  run:",
             "    runs-on: ubuntu-latest",
+            "    env:",
+            "      MANA_HOME: ${{ runner.temp }}/mana",
             "    steps:",
             "      - uses: actions/checkout@v4",
             "      - uses: actions/setup-python@v5",
@@ -260,7 +264,7 @@ def render_workflow(schedule: ScheduleDefinition) -> str:
             "        uses: actions/upload-artifact@v4",
             "        with:",
             f"          name: mana-agent-{schedule.id}-${{{{ github.run_id }}}}",
-            "          path: .mana/",
+            "          path: ${{ runner.temp }}/mana/",
             "          if-no-files-found: ignore",
             "",
         ]

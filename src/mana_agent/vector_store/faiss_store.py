@@ -62,6 +62,10 @@ class FaissStore:
                     "symbol_name": chunk.symbol_name,
                     "symbol_kind": chunk.symbol_kind,
                     "chunk_id": chunk.id,
+                    "repository_id": chunk.repository_id,
+                    "repository_name": chunk.repository_name,
+                    "relative_path": chunk.relative_path,
+                    "qualified_path": chunk.qualified_path,
                 }
                 for chunk in chunks
             ]
@@ -158,6 +162,10 @@ class FaissStore:
                     end_line=int(meta.get("end_line", 1)),
                     symbol_name=str(meta.get("symbol_name", "unknown")),
                     snippet=document.page_content[:500],
+                    repository_id=str(meta.get("repository_id", "")),
+                    repository_name=str(meta.get("repository_name", "")),
+                    relative_path=str(meta.get("relative_path", "")),
+                    qualified_path=str(meta.get("qualified_path", "")),
                 )
             )
         logger.info("Returning %d search hits", len(hits))

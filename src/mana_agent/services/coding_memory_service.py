@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from mana_agent.config.settings import default_index_dir
+from mana_agent.workspaces.paths import session_dir
 
 _PLAN_TRIGGER_REQUEST_RE = re.compile(
     r"(?i)\b(?:implement|execute|run|apply|trigger)\s+(?:the\s+|last\s+|that\s+|current\s+)?plan\b"
@@ -60,12 +61,18 @@ class CodingMemoryService:
         project_root: str | Path,
         max_turns: int = 5,
         max_tasks: int = 20,
+        session_id: str | None = None,
     ) -> None:
         """Initialize persistence under ``project_root/.mana/index``."""
         self.project_root = Path(project_root).resolve()
         self.max_turns = max(1, int(max_turns))
         self.max_tasks = max(1, int(max_tasks))
-        self.db_path = default_index_dir(self.project_root) / "chat_memory.sqlite3"
+        self.session_id = str(session_id or "")
+        self.db_path = (
+            session_dir(self.session_id) / "memory.sqlite3"
+            if self.session_id
+            else default_index_dir(self.project_root) / "chat_memory.sqlite3"
+        )
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 

@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from mana_agent.analysis.chunker import CodeChunker
 from mana_agent.analysis.models import CodeChunk
+from mana_agent.analysis.models import CodeSymbol
 from mana_agent.parsers.python_parser import PythonParser
 from mana_agent.utils.io import (
     ensure_dir,
@@ -20,6 +21,9 @@ from mana_agent.utils.io import (
     write_jsonl,
 )
 from mana_agent.vector_store.faiss_store import FaissStore
+from mana_agent.workspaces.service import WorkspaceService
+from mana_agent.workspaces.paths import mana_home
+from mana_agent.workspaces.store import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +63,24 @@ class IndexService:
     def _build_chunks_for_file(self, file_path: str) -> tuple[str, list[CodeChunk]]:
         logger.debug("Gathering chunks for %s via thread pool", file_path)
         try:
-            symbols = self.parser.parse_file(file_path)
+            digest = sha256_file(Path(file_path))
+            parser_key = self.parser.__class__.__name__.lower()
+            cache_path = mana_home() / "cache" / "parsed-chunks" / f"{parser_key}-{digest}.json"
+            symbols: list[CodeSymbol]
+            if cache_path.exists():
+                rows = read_json(cache_path).get("symbols", [])
+                symbols = [CodeSymbol(**{**row, "file_path": file_path}) for row in rows]
+            else:
+                symbols = self.parser.parse_file(file_path)
+                atomic_write_json(
+                    cache_path,
+                    {
+                        "schema_version": 1,
+                        "content_hash": digest,
+                        "parser": parser_key,
+                        "symbols": [symbol.to_dict() for symbol in symbols],
+                    },
+                )
             file_chunks = self.chunker.build_chunks(symbols)
             return file_path, file_chunks
         except Exception as exc:  # pragma: no cover - best effort logging
@@ -72,8 +93,13 @@ class IndexService:
         index_dir: str | Path,
         rebuild: bool = False,
         vectors: bool = True,  # ✅ NEW: allow chunks-only indexing (no embeddings/FAISS)
+        repository_id: str | None = None,
+        repository_name: str | None = None,
     ) -> dict:
         target = Path(target_path).resolve()
+        registered = WorkspaceService().register_repository(target)
+        repository_id = repository_id or registered.repository_id
+        repository_name = repository_name or registered.name
         index_root = ensure_dir(index_dir)
         logger.info(
             "Starting index run: target=%s index_dir=%s rebuild=%s vectors=%s",
@@ -97,6 +123,14 @@ class IndexService:
         current_files = iter_source_files(target)
         logger.info("Discovered %d source files", len(current_files))
         current_hashes = {str(path): sha256_file(path) for path in current_files}
+        manifest.update(
+            {
+                "schema_version": 2,
+                "repository_id": repository_id,
+                "repository_name": repository_name,
+                "repository_root": str(target),
+            }
+        )
         known_files = set(manifest["files"].keys())
         existing_files = set(current_hashes.keys())
 
@@ -133,6 +167,13 @@ class IndexService:
                     if not file_chunks:
                         logger.warning("No chunks built for %s", file_path)
                         continue
+                    relative_path = Path(file_path).resolve().relative_to(target).as_posix()
+                    for chunk in file_chunks:
+                        chunk.repository_id = str(repository_id or "")
+                        chunk.repository_name = str(repository_name or "")
+                        chunk.relative_path = relative_path
+                        chunk.qualified_path = f"{repository_name}::{relative_path}"
+                        chunk.id = f"{repository_id}:{chunk.id}"
                     new_chunks.extend(file_chunks)
                     for chunk in file_chunks:
                         chunk_map[chunk.id] = chunk
@@ -183,6 +224,8 @@ class IndexService:
             "new_chunks": len(new_chunks),
             "removed_chunks": len(remove_chunk_ids),
             "index_dir": str(index_root),
+            "repository_id": repository_id,
+            "repository_name": repository_name,
             # ✅ NEW fields
             "vectors": wrote_vectors,
             "vector_error": vector_error,

@@ -1,6 +1,7 @@
 import json
 from io import StringIO
 from pathlib import Path
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 
 from typer.testing import CliRunner
 
@@ -70,7 +71,7 @@ def test_analyze_command_is_public() -> None:
 
 
 def test_continue_command_uses_root_dir_and_loops_until_complete(monkeypatch, tmp_path: Path) -> None:
-    run_dir = tmp_path / ".mana" / "runs" / "abc123"
+    run_dir = repository_dir(repository_id_for_path(tmp_path)) / "runs" / "abc123"
     run_dir.mkdir(parents=True)
     (run_dir / "state.json").write_text('{"goal": "finish", "flow_id": "flow"}\n')
 
@@ -573,7 +574,9 @@ def test_chat_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tm
         input="tell me about this code\nquit\n",
     )
     assert result.exit_code == 0
-    assert _FakeCodingAgent.seen_index_dir == str((tmp_path / ".mana/index").resolve())
+    assert _FakeCodingAgent.seen_index_dir == str(
+        (repository_dir(repository_id_for_path(tmp_path)) / "index").resolve()
+    )
 
 
 def test_chat_transparency_uses_trace_steps_in_agent_tools_mode(monkeypatch, tmp_path: Path) -> None:

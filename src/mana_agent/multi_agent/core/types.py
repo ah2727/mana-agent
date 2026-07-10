@@ -186,6 +186,10 @@ class TaskBoardItem:
     status: TaskStatus
     priority: int
     risk_level: RiskLevel
+    workspace_id: str = ""
+    session_id: str = ""
+    primary_repository_id: str = ""
+    repository_ids: list[str] = field(default_factory=list)
     owner_agent_id: str | None = None
     supervisor_agent_id: str | None = None
     assigned_agent_ids: list[str] = field(default_factory=list)
@@ -238,6 +242,10 @@ class QueueJob:
     requested_by_agent_id: str
     job_type: QueueJobType
     payload: dict[str, Any]
+    workspace_id: str = ""
+    session_id: str = ""
+    primary_repository_id: str = ""
+    repository_ids: list[str] = field(default_factory=list)
     root_task_id: str | None = None
     parent_task_id: str | None = None
     assigned_worker_agent_id: str | None = None
@@ -363,6 +371,9 @@ class TraceEvent:
     resolved_model: str | None = None
     root_task_id: str | None = None
     delegation_path: list[str] = field(default_factory=list)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    repository_id: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
 
@@ -380,6 +391,9 @@ class ExecutionContext:
     task_id: str | None = None
     root_task_id: str | None = None
     delegation_path: list[str] = field(default_factory=list)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    repository_id: str | None = None
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any] | None) -> "ExecutionContext":
@@ -396,6 +410,9 @@ class ExecutionContext:
             task_id=_clean_optional(data.get("task_id")),
             root_task_id=_clean_optional(data.get("root_task_id")),
             delegation_path=[str(item) for item in data.get("delegation_path") or [] if str(item or "").strip()],
+            workspace_id=_clean_optional(data.get("workspace_id")),
+            session_id=_clean_optional(data.get("session_id")),
+            repository_id=_clean_optional(data.get("repository_id")),
         ).normalized()
 
     def normalized(self) -> "ExecutionContext":
@@ -416,6 +433,9 @@ class ExecutionContext:
             task_id=self.task_id,
             root_task_id=self.root_task_id or self.task_id,
             delegation_path=delegation,
+            workspace_id=self.workspace_id,
+            session_id=self.session_id,
+            repository_id=self.repository_id,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -432,6 +452,9 @@ class ExecutionContext:
             "task_id": ctx.task_id,
             "root_task_id": ctx.root_task_id,
             "delegation_path": list(ctx.delegation_path),
+            "workspace_id": ctx.workspace_id,
+            "session_id": ctx.session_id,
+            "repository_id": ctx.repository_id,
         }
 
 

@@ -29,6 +29,10 @@ class CodeChunk:
     end_line: int
     symbol_name: str
     symbol_kind: str
+    repository_id: str = ""
+    repository_name: str = ""
+    relative_path: str = ""
+    qualified_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -57,9 +61,17 @@ class SearchHit:
     end_line: int
     symbol_name: str
     snippet: str
+    repository_id: str = ""
+    repository_name: str = ""
+    relative_path: str = ""
+    qualified_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["raw_file_path"] = self.file_path
+        if self.qualified_path:
+            payload["file_path"] = self.qualified_path
+        return payload
 
 
 @dataclass(slots=True)
@@ -67,11 +79,15 @@ class SourceGroup:
     index_dir: str
     subproject_root: str
     sources: list[SearchHit]
+    repository_id: str = ""
+    repository_name: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "index_dir": self.index_dir,
             "subproject_root": self.subproject_root,
+            "repository_id": self.repository_id,
+            "repository_name": self.repository_name,
             "sources": [item.to_dict() for item in self.sources],
         }
 

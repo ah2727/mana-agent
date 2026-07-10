@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from mana_agent.workspaces.paths import repository_analysis_dir, repository_id_for_path
 
 import pytest
 
@@ -190,7 +191,7 @@ def test_handle_analyze_menu_choice_seven_creates_all(sample_project: Path) -> N
 def test_handle_analyze_menu_blank_cancels(sample_project: Path) -> None:
     outcome = handle_analyze_command("", root_dir=sample_project, input_func=lambda _p: "")
     assert outcome.status == "generated"
-    assert (sample_project / ".mana" / "analyze" / "report.md").exists()
+    assert (repository_analysis_dir(repository_id_for_path(sample_project)) / "report.md").exists()
 
 
 def test_handle_analyze_menu_invalid_does_not_crash(sample_project: Path) -> None:

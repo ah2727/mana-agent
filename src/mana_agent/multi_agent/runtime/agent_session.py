@@ -28,6 +28,8 @@ class AgentSession(BaseModel):
     flow_id: str | None = None
     run_id: str
     repo_root: str
+    workspace_id: str | None = None
+    repository_id: str | None = None
     index_dir: str | None = None
     index_dirs: list[str] | None = None
     tool_policy: dict[str, Any] = Field(default_factory=dict)
@@ -50,6 +52,8 @@ class AgentSession(BaseModel):
         memory_snapshot: str | None = None,
         task_memory: Sequence[str] | None = None,
         repo_facts: Sequence[str] | None = None,
+        workspace_id: str | None = None,
+        repository_id: str | None = None,
     ) -> "AgentSession":
         return cls(
             memory_snapshot=memory_snapshot,
@@ -58,6 +62,8 @@ class AgentSession(BaseModel):
             flow_id=flow_id or None,
             run_id=str(run_id),
             repo_root=str(Path(repo_root).resolve()),
+            workspace_id=workspace_id,
+            repository_id=repository_id,
             index_dir=str(Path(index_dir).resolve()) if index_dir is not None else None,
             index_dirs=[str(Path(item).resolve()) for item in (index_dirs or []) if str(item).strip()] or None,
             tool_policy=dict(tool_policy or {}),

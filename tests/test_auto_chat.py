@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 
 from mana_agent.multi_agent.runtime.auto_chat import (
     AUTO_MAX_CANDIDATE_FILES,
@@ -119,4 +120,6 @@ def test_auto_chat_state_roundtrip(tmp_path) -> None:
 
     assert loaded.last_mode == "edit"
     assert loaded.relevant_files == ["a.py"]
-    assert json.loads((tmp_path / ".mana" / "chat" / "auto_state.json").read_text())["summary"] == "done"
+    assert json.loads(
+        (repository_dir(repository_id_for_path(tmp_path)) / "chat" / "auto_state.json").read_text()
+    )["summary"] == "done"

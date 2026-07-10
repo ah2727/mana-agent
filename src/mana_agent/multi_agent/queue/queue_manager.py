@@ -50,6 +50,11 @@ class QueueManager:
             )
             kwargs.setdefault("root_task_id", self._root_task_id(task_id))
             kwargs.setdefault("parent_task_id", self._parent_task_id(task_id))
+            task_scope = self._task_scope(task_id)
+            kwargs.setdefault("workspace_id", task_scope["workspace_id"])
+            kwargs.setdefault("session_id", task_scope["session_id"])
+            kwargs.setdefault("primary_repository_id", task_scope["primary_repository_id"])
+            kwargs.setdefault("repository_ids", task_scope["repository_ids"])
             kwargs.setdefault("parent_agent_id", kwargs.get("requested_by_agent_id"))
             kwargs.setdefault("agent_role", "tool_worker")
             kwargs.setdefault("args_summary", self._args_summary(kwargs.get("payload") or {}))
@@ -141,7 +146,9 @@ class QueueManager:
             queue_job_id=job.job_id,
             assigned_worker_agent_id=job.assigned_worker_agent_id,
         )
-        lock_key = job.lock_key or ("repo" if job.requires_write_lock else f"job:{job.job_id}")
+        lock_key = job.lock_key or (
+            f"repository:{job.primary_repository_id}" if job.requires_write_lock else f"job:{job.job_id}"
+        )
         lock = self.locks.lock_for(lock_key)
         with lock:
             job.status = QueueJobStatus.RUNNING
@@ -212,6 +219,7 @@ class QueueManager:
                 "tool": tool,
                 "payload": kwargs.get("payload") or {},
                 "related_files": kwargs.get("related_files") or self._related_files_from_kwargs(kwargs),
+                "repository_ids": kwargs.get("repository_ids") or [],
             }
         )
 
@@ -222,6 +230,7 @@ class QueueManager:
                 "tool": job.job_type.value,
                 "payload": job.payload,
                 "related_files": job.related_files or self._related_files_for_payload(job.job_type, job.payload),
+                "repository_ids": job.repository_ids,
             }
         )
 
@@ -276,6 +285,18 @@ class QueueManager:
         except KeyError:
             return None
 
+    def _task_scope(self, task_id: str) -> dict[str, Any]:
+        try:
+            task = self.taskboard.get_task(task_id)
+        except KeyError:
+            return {"workspace_id": "", "session_id": "", "primary_repository_id": "", "repository_ids": []}
+        return {
+            "workspace_id": task.workspace_id,
+            "session_id": task.session_id,
+            "primary_repository_id": task.primary_repository_id,
+            "repository_ids": list(task.repository_ids),
+        }
+
     def _approver_for_task(self, task_id: str) -> str | None:
         try:
             task = self.taskboard.get_task(task_id)
@@ -324,6 +345,9 @@ class QueueManager:
                     if item
                 )
             ),
+            workspace_id=job.workspace_id or None,
+            session_id=job.session_id or None,
+            repository_id=job.primary_repository_id or None,
         )
         event = self.hierarchy_policy.approve_tool_event(
             enrich_event_identity(

@@ -134,7 +134,7 @@ def repo_search(
     matches: list[dict[str, Any]] = []
     for path in sorted(_iter_files(root), key=lambda item: item.relative_to(root).as_posix()):
         rel = path.relative_to(root).as_posix()
-        if not (fnmatch.fnmatch(rel, glob) or fnmatch.fnmatch(path.name, glob)):
+        if not _matches_file_glob(rel, glob):
             continue
         if _is_binary(path):
             continue

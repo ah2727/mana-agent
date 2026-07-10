@@ -11,6 +11,17 @@ from mana_agent.config.user_config import settings_source_for_pydantic
 
 MANA_ROOT_DIRNAME = ".mana"
 
+
+def mana_home() -> Path:
+    """Return Mana-Agent's user-level state directory.
+
+    Repository source trees are deliberately not used as state stores.  Tests
+    and managed installations can isolate state with ``MANA_HOME``.
+    """
+
+    configured = str(os.getenv("MANA_HOME") or "").strip()
+    return Path(configured).expanduser().resolve() if configured else (Path.home() / MANA_ROOT_DIRNAME).resolve()
+
 # Default embedding models per provider. The chat and embedding endpoints share a
 # single base URL, so when no embedding model is configured explicitly we pick a
 # provider-appropriate default based on that URL (an OpenAI embedding model does
@@ -68,6 +79,8 @@ class Settings(BaseSettings):
     mana_web_search_base_url: str = Field(default="", alias="MANA_WEB_SEARCH_BASE_URL")
     mana_web_search_engine_id: str = Field(default="", alias="MANA_WEB_SEARCH_ENGINE_ID")
     mana_web_search_max_results: int = Field(default=8, alias="MANA_WEB_SEARCH_MAX_RESULTS")
+    mana_workspace_allowed_roots: str = Field(default="", alias="MANA_WORKSPACE_ALLOWED_ROOTS")
+    mana_api_token: str = Field(default="", alias="MANA_API_TOKEN")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -97,24 +110,34 @@ class Settings(BaseSettings):
 
 
 def default_index_dir(target_path: str | Path) -> Path:
-    return mana_root_dir(target_path) / "index"
+    # Compatibility helper for callers that have not resolved a repository id.
+    # The workspace registry replaces this with repository_index_dir(repo_id).
+    from mana_agent.workspaces.paths import repository_id_for_path, repository_index_dir
+
+    return repository_index_dir(repository_id_for_path(target_path))
 
 
 def mana_root_dir(target_path: str | Path) -> Path:
-    return Path(target_path).resolve() / MANA_ROOT_DIRNAME
+    # Kept as a public compatibility name: generated state is now user-level.
+    _ = target_path
+    return mana_home()
 
 
 def default_logs_dir(target_path: str | Path) -> Path:
-    return mana_root_dir(target_path) / "logs"
+    _ = target_path
+    return mana_home() / "logs"
 
 
 def default_tools_logs_dir(target_path: str | Path) -> Path:
-    return mana_root_dir(target_path) / "tools_logs"
+    _ = target_path
+    return mana_home() / "tools_logs"
 
 
 def default_llm_logs_dir(target_path: str | Path) -> Path:
-    return mana_root_dir(target_path) / "llm_logs"
+    _ = target_path
+    return mana_home() / "llm_logs"
 
 
 def default_diagrams_dir(target_path: str | Path) -> Path:
-    return mana_root_dir(target_path) / "diagrams"
+    _ = target_path
+    return mana_home() / "diagrams"

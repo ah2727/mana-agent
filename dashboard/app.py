@@ -207,7 +207,9 @@ elif page == "Chat":
 
         # Persist real interaction (productional)
         try:
-            chat_dir = root / ".mana" / "dashboard" / "chats"
+            from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
+
+            chat_dir = repository_dir(repository_id_for_path(root)) / "dashboard" / "chats"
             chat_dir.mkdir(parents=True, exist_ok=True)
             (chat_dir / "latest.jsonl").open("a", encoding="utf-8").write(
                 json.dumps({

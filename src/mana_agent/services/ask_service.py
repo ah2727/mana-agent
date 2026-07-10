@@ -174,16 +174,34 @@ class AskService:
         index_dirs: list[Path],
     ) -> list[SourceGroup]:
 
-        grouped: dict[Path, list[SearchHit]] = {
-            item.resolve(): [] for item in index_dirs
-        }
+        import json
+
+        grouped: dict[Path, list[SearchHit]] = {item.resolve(): [] for item in index_dirs}
+        metadata: dict[Path, dict[str, str]] = {}
+        for index_dir in grouped:
+            try:
+                manifest = json.loads((index_dir / "manifest.json").read_text(encoding="utf-8"))
+            except Exception:
+                manifest = {}
+            legacy_root = index_dir.parent.parent if index_dir.parent.name == ".mana" else index_dir.parent
+            metadata[index_dir] = {
+                "repository_id": str(manifest.get("repository_id") or ""),
+                "repository_name": str(manifest.get("repository_name") or legacy_root.name),
+                "repository_root": str(manifest.get("repository_root") or legacy_root),
+            }
 
         for source in sources:
-            source_path = Path(source.file_path).resolve()
             for index_dir in grouped.keys():
-                subproject_root = index_dir.parent.parent if index_dir.parent.name == ".mana" else index_dir.parent
-                if subproject_root in source_path.parents:
+                meta = metadata[index_dir]
+                if source.repository_id and source.repository_id == meta["repository_id"]:
                     grouped[index_dir].append(source)
+                    break
+                if meta["repository_root"]:
+                    source_path = Path(source.file_path).resolve()
+                    repository_root = Path(meta["repository_root"]).resolve()
+                    if source_path == repository_root or repository_root in source_path.parents:
+                        grouped[index_dir].append(source)
+                        break
 
         result: list[SourceGroup] = []
         for index_dir, hits in grouped.items():
@@ -191,8 +209,10 @@ class AskService:
                 result.append(
                     SourceGroup(
                         index_dir=str(index_dir),
-                        subproject_root=str(index_dir.parent.parent if index_dir.parent.name == ".mana" else index_dir.parent),
+                        subproject_root=metadata[index_dir]["repository_root"],
                         sources=hits,
+                        repository_id=metadata[index_dir]["repository_id"],
+                        repository_name=metadata[index_dir]["repository_name"],
                     )
                 )
         return result

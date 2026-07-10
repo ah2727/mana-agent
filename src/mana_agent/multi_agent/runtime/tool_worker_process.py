@@ -843,6 +843,8 @@ class WorkerInitPayload(BaseModel):
     repo_root: str
     allowed_prefixes: list[str] | None = None
     tools_only_strict: bool = True
+    workspace_id: str | None = None
+    repository_id: str | None = None
 
 
 class ToolRunRequest(BaseModel):
@@ -861,6 +863,8 @@ class ToolRunRequest(BaseModel):
     tool_args: dict[str, Any] = Field(default_factory=dict)
     retry_attempt: int = 0
     execution_context: dict[str, Any] = Field(default_factory=dict)
+    workspace_id: str | None = None
+    repository_id: str | None = None
 
 
 class ToolRunResponse(BaseModel):
@@ -959,6 +963,8 @@ class ToolWorkerClient:
         allowed_prefixes: list[str] | None = None,
         tools_only_strict: bool = True,
         model_level: str = "",
+        workspace_id: str | None = None,
+        repository_id: str | None = None,
     ) -> None:
         resolved_base_url = str(base_url or os.getenv("OPENAI_BASE_URL") or "").strip() or None
         self._init_payload = WorkerInitPayload(
@@ -969,6 +975,8 @@ class ToolWorkerClient:
             repo_root=str(repo_root.resolve()),
             allowed_prefixes=allowed_prefixes,
             tools_only_strict=tools_only_strict,
+            workspace_id=workspace_id,
+            repository_id=repository_id,
         )
         self._model_level = str(model_level or "").strip()
         self._proc: subprocess.Popen[str] | None = None
@@ -1100,6 +1108,18 @@ class ToolWorkerClient:
         on_event: Callable[[WorkerEvent], None] | None = None,
     ) -> ToolRunResponse:
         logger.info(f"[ToolWorkerClient.run_tools] Starting with question: {request.question[:100]}...")
+        if request.repository_id and self._init_payload.repository_id and request.repository_id != self._init_payload.repository_id:
+            raise ToolWorkerProcessError(
+                code="repository_scope_mismatch",
+                message="tool request repository does not match worker repository boundary",
+                retriable=False,
+            )
+        if request.workspace_id and self._init_payload.workspace_id and request.workspace_id != self._init_payload.workspace_id:
+            raise ToolWorkerProcessError(
+                code="workspace_scope_mismatch",
+                message="tool request workspace does not match worker workspace boundary",
+                retriable=False,
+            )
         logger.debug(f"[ToolWorkerClient.run_tools] Full request: {request.model_dump()}")
         _validate_direct_tool_request(request)
         request_started = time.time()
@@ -1735,6 +1755,8 @@ class _ToolWorkerServer:
         self._turn_tool_state = TurnToolExecutionState()
         self._current_turn_id: str | None = None
         self._repo_root: str | None = None
+        self._repository_id: str | None = None
+        self._workspace_id: str | None = None
 
     def run(self) -> int:
         logger.info("[_ToolWorkerServer] Starting worker server...")
@@ -1790,6 +1812,8 @@ class _ToolWorkerServer:
             self._ask_agent = _build_worker_ask_agent(payload)
             self._tools_only_strict = bool(payload.tools_only_strict)
             self._repo_root = str(payload.repo_root or payload.project_root or "") or None
+            self._repository_id = payload.repository_id
+            self._workspace_id = payload.workspace_id
             self._emit(
                 WorkerReply(
                     type="event",
@@ -1850,6 +1874,18 @@ class _ToolWorkerServer:
         try:
             sanitized_env_payload = _strip_banned_keys(env.payload)
             req = ToolRunRequest.model_validate(sanitized_env_payload)
+            if req.repository_id and self._repository_id and req.repository_id != self._repository_id:
+                raise ToolWorkerProcessError(
+                    code="repository_scope_mismatch",
+                    message="tool request repository does not match initialized worker",
+                    retriable=False,
+                )
+            if req.workspace_id and self._workspace_id and req.workspace_id != self._workspace_id:
+                raise ToolWorkerProcessError(
+                    code="workspace_scope_mismatch",
+                    message="tool request workspace does not match initialized worker",
+                    retriable=False,
+                )
             _validate_direct_tool_request(req, repo_root=self._repo_root)
 
             tool_name = str(req.tool_name or "").strip()

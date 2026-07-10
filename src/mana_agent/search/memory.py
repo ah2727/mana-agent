@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 from mana_agent.search.models import SearchMemoryRecord, SearchResult, SearchTarget, utc_iso
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 
 
 def normalize_search_query(value: str) -> str:
@@ -39,7 +40,7 @@ def _parse_dt(value: str | None) -> datetime | None:
 class SearchMemoryStore:
     def __init__(self, *, root: str | Path) -> None:
         self.root = Path(root).resolve()
-        self.path = self.root / ".mana" / "search_memory.jsonl"
+        self.path = repository_dir(repository_id_for_path(self.root)) / "search_memory.jsonl"
         self._records: list[SearchMemoryRecord] | None = None
 
     def _load(self) -> list[SearchMemoryRecord]:

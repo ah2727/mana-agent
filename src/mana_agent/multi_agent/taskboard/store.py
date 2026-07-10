@@ -22,6 +22,8 @@ from mana_agent.multi_agent.core.types import (
     parse_dt,
     to_jsonable,
 )
+from mana_agent.workspaces.paths import workspace_dir
+from mana_agent.workspaces.service import WorkspaceService
 
 T = TypeVar("T")
 
@@ -105,7 +107,12 @@ def queue_job_from_dict(payload: dict[str, Any]) -> QueueJob:
 class JsonStateStore:
     def __init__(self, root: str | Path = ".") -> None:
         self.root = Path(root).resolve()
-        self.base_dir = self.root / ".mana" / "taskboard"
+        workspaces = WorkspaceService()
+        repo = workspaces.register_repository(self.root)
+        workspace = workspaces.workspace_for_repository(repo.repository_id)
+        self.repository_id = repo.repository_id
+        self.workspace_id = workspace.workspace_id
+        self.base_dir = workspace_dir(workspace.workspace_id) / "taskboard"
         self.state_path = self.base_dir / "state.json"
         self.history_path = self.base_dir / "history.jsonl"
 

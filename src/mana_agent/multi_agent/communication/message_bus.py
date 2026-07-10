@@ -7,12 +7,17 @@ from typing import Any
 from mana_agent.multi_agent.core.ids import new_message_id
 from mana_agent.multi_agent.core.types import AgentMessage, MessageType, to_jsonable
 from mana_agent.multi_agent.taskboard.store import message_from_dict
+from mana_agent.workspaces.paths import workspace_dir
+from mana_agent.workspaces.service import WorkspaceService
 
 
 class MessageBus:
     def __init__(self, root: str | Path = ".") -> None:
         self.root = Path(root).resolve()
-        self.path = self.root / ".mana" / "taskboard" / "messages.jsonl"
+        service = WorkspaceService()
+        repo = service.register_repository(self.root)
+        workspace = service.workspace_for_repository(repo.repository_id)
+        self.path = workspace_dir(workspace.workspace_id) / "taskboard" / "messages.jsonl"
         self.messages: dict[str, AgentMessage] = {}
         self._load()
 
