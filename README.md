@@ -8,7 +8,7 @@
 
 Optional Gmail email connector setup and security guidance: [docs/16-email-connectors.md](docs/16-email-connectors.md).
 
-**Current documented version:** `v0.0.12`
+**Current documented version:** `v0.0.13`
 
 ---
 
