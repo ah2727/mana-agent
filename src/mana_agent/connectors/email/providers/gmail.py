@@ -42,7 +42,9 @@ class GmailProvider(EmailProvider):
     async def list_labels(self) -> list[EmailLabel]: return [EmailLabel(id=x.id, name=x.name) for x in await self.list_folders()]
     async def search_messages(self, query: EmailQuery, cursor: str | None = None) -> EmailSearchResult:
         data = await self._call(self.service.users().messages().list(userId="me", q=gmail_query(query), pageToken=cursor, maxResults=query.limit))
-        return EmailSearchResult(messages=[await self.get_message(str(x["id"])) for x in data.get("messages", [])], cursor=data.get("nextPageToken"), total_estimate=data.get("resultSizeEstimate"))
+        # Search is useful even for a metadata-only account. Do not make a
+        # harmless "latest email" request fail by requesting full MIME bodies.
+        return EmailSearchResult(messages=[await self.get_message_metadata(str(x["id"])) for x in data.get("messages", [])], cursor=data.get("nextPageToken"), total_estimate=data.get("resultSizeEstimate"))
     def _normalize(self, raw: dict[str, Any]) -> EmailMessage:
         headers = {str(x.get("name", "")).lower(): str(x.get("value", "")) for x in raw.get("payload", {}).get("headers", [])}
         plain: list[str] = []; html: list[str] = []; attachments: list[EmailAttachment] = []
@@ -58,7 +60,12 @@ class GmailProvider(EmailProvider):
         return EmailMessage(id=str(raw["id"]), provider_message_id=str(raw["id"]), account_id=self.account.id, thread_id=raw.get("threadId"), internet_message_id=headers.get("message-id"), subject=headers.get("subject", ""), sender=_address(headers.get("from", "unknown@invalid")), to=_addresses(headers.get("to")), cc=_addresses(headers.get("cc")), bcc=_addresses(headers.get("bcc")), reply_to=_addresses(headers.get("reply-to")), received_at=datetime.fromtimestamp(int(raw.get("internalDate", "0"))/1000, timezone.utc), text_body="\n".join(plain) or None, sanitized_html_body=sanitize_html("\n".join(html)), snippet=raw.get("snippet"), labels=labels, attachments=attachments, is_read="UNREAD" not in labels, is_starred="STARRED" in labels, is_draft="DRAFT" in labels, is_trashed="TRASH" in labels, headers=headers)
     async def get_message(self, message_id: str) -> EmailMessage:
         try: return self._normalize(await self._call(self.service.users().messages().get(userId="me", id=message_id, format="full")))
-        except Exception as exc: raise InvalidMessageIdentifier("Gmail message could not be read.") from exc
+        except Exception as exc: raise InvalidMessageIdentifier("Gmail message body could not be read. Reconnect the account with Gmail read access if it currently grants metadata only.") from exc
+    async def get_message_metadata(self, message_id: str) -> EmailMessage:
+        try:
+            raw = await self._call(self.service.users().messages().get(userId="me", id=message_id, format="metadata", metadataHeaders=["From", "To", "Cc", "Subject", "Message-ID", "Reply-To"]))
+            return self._normalize(raw)
+        except Exception as exc: raise InvalidMessageIdentifier("Gmail message metadata could not be read.") from exc
     async def get_thread(self, thread_id: str) -> EmailThread:
         raw = await self._call(self.service.users().threads().get(userId="me", id=thread_id, format="full")); return EmailThread(id=thread_id, account_id=self.account.id, messages=[self._normalize(x) for x in raw.get("messages", [])])
     async def get_attachment(self, message_id: str, attachment_id: str) -> EmailAttachment:
