@@ -42,6 +42,7 @@ from mana_agent.cli.events import make_event
 from mana_agent.cli.renderers import InlineChatRenderer
 from mana_agent.tui.menu import NonInteractivePromptError
 from mana_agent.tui.wizard import ensure_setup
+from mana_agent.skills.chat import ChatSkillCoordinator
 
 
 _NEW_TOPIC_COMMANDS = {"/new", "/new-topic", "new topic", "new topic chat"}
@@ -163,6 +164,25 @@ def _decide_chat_route(*, ask_service, question: str, root: Path) -> AgentDecisi
         repo_context=f"Repository root: {root}",
         command_hint="chat",
     )
+
+
+def _model_selected_skill_ids(*, ask_service: Any, question: str, compact_index: str) -> list[str]:
+    """Get a semantic skill selection from the model without keyword fallback."""
+    llm = _agent_decision_llm(ask_service)
+    if llm is None or not hasattr(llm, "invoke"):
+        raise RuntimeError("skill selection model is unavailable")
+    response = llm.invoke(
+        "Select the smallest sufficient set of adaptive skill IDs for this task. "
+        "Return strict JSON only: {\"selected_skill_ids\":[...]}. Do not select a skill "
+        "unless its procedure is materially useful.\n\n"
+        f"Task:\n{question}\n\n{compact_index}"
+    )
+    text = str(getattr(response, "content", response) or "").strip()
+    payload = json.loads(text)
+    selected = payload.get("selected_skill_ids")
+    if not isinstance(selected, list) or any(not isinstance(item, str) for item in selected):
+        raise ValueError("skill selection response did not contain selected_skill_ids")
+    return selected
 
 
 def _auto_chat_mode_from_agent_decision(decision: AgentDecision, fallback: AutoChatMode) -> AutoChatMode:
@@ -804,6 +824,11 @@ def chat(
         log_path=chat_log_path,
         session_id=session_id or f"sess-{uuid.uuid4().hex}",
     )
+    skill_coordinator = ChatSkillCoordinator()
+    chat_skill_context = skill_coordinator.initialize_session(root)
+    if not skill_coordinator.config.chat_enabled:
+        chat_skill_context.enabled = False
+        chat_skill_context.subsystem_status = "disabled"
 
     def _build_tools_executor(worker_client: ToolWorkerClient):
         helper = _public_symbol("build_tools_executor_with_fallback", build_tools_executor_with_fallback)
@@ -900,6 +925,19 @@ def chat(
     background_index_state: dict[str, Any] = {"status": "idle", "announced": False, "error": ""}
     try:
         set_active_chat_ui_state(chat_ui_state)
+        if chat_skill_context.subsystem_status == "failed":
+            console.print("[yellow]Warning: adaptive skills are unavailable for this session. Chat will continue with normal repository tools and memory.[/yellow]")
+        else:
+            chat_ui_state.record_event(
+                make_event(
+                    "chat.skills.ready",
+                    title="Skill index loaded",
+                    message=f"{len(chat_skill_context.available_skills)} repository skills available.",
+                    status="success",
+                    session_id=chat_ui_state.session_id,
+                    metadata={"repository_id": chat_skill_context.repository_id, "available_count": len(chat_skill_context.available_skills)},
+                ).finish()
+            )
         # -----------------------------
         # Resolve indexes (dir-mode vs classic)
         # -----------------------------
@@ -1988,6 +2026,10 @@ def chat(
                     json.dumps(service.store.get_workspace(chat_ui_state.workspace_id).model_dump(mode="json"))
                 )
                 continue
+            skill_command_response = skill_coordinator.render_command(chat_skill_context, question)
+            if skill_command_response is not None:
+                console.print(skill_command_response)
+                continue
             if question.strip() == "/repo list":
                 from mana_agent.workspaces.service import WorkspaceService
 
@@ -2157,6 +2199,66 @@ def chat(
                 lambda: _decide_chat_route(ask_service=ask_service, question=question, root=root),
                 event_type="RoutingStarted",
             )
+            selected_skill_text = ""
+            if chat_skill_context.enabled and chat_skill_context.available_skills:
+                try:
+                    chat_ui_state.record_event(
+                        make_event(
+                            "chat.skill.selection.started",
+                            title="Skill selection",
+                            message="Evaluating relevant procedures.",
+                            status="running",
+                            session_id=chat_ui_state.session_id,
+                            turn_id=current_turn_id,
+                        )
+                    )
+                    selected_ids = _model_selected_skill_ids(
+                        ask_service=ask_service,
+                        question=question,
+                        compact_index=skill_coordinator.compact_index(chat_skill_context),
+                    )
+                    decisions = skill_coordinator.select_for_task(
+                        chat_skill_context,
+                        selected_ids=selected_ids,
+                        available_tools=agent_decision.selected_tools,
+                    )
+                    selected_skill_text = skill_coordinator.load_selected(chat_skill_context)
+                    chat_ui_state.record_event(
+                        make_event(
+                            "chat.skill.selection.completed",
+                            title="Skill selection",
+                            message=f"{len(chat_skill_context.selected_skills)} selected.",
+                            status="success",
+                            session_id=chat_ui_state.session_id,
+                            turn_id=current_turn_id,
+                            metadata={
+                                "decisions": [
+                                    {"skill_id": item.skill_id, "selected": item.selected, "reason": item.reason, "policy_result": item.policy_result}
+                                    for item in decisions
+                                ]
+                            },
+                        ).finish()
+                    )
+                    for selected in chat_skill_context.selected_skills:
+                        chat_ui_state.record_event(
+                            make_event(
+                                "chat.skill.loaded",
+                                title="Skill selected",
+                                message=f"{selected.name} v{selected.version}",
+                                status="success",
+                                session_id=chat_ui_state.session_id,
+                                turn_id=current_turn_id,
+                                metadata={"skill_id": selected.id, "version": selected.version},
+                            ).finish()
+                        )
+                except Exception as exc:
+                    # A bad model selection or unavailable optional subsystem must
+                    # never reuse a stale selection or interrupt the main task.
+                    chat_skill_context.selected_skills.clear()
+                    chat_skill_context.loaded_versions.clear()
+                    chat_ui_state.record_event(
+                        make_event("chat.skills.failed", title="Skill selection unavailable", message=str(exc), status="failed", session_id=chat_ui_state.session_id, turn_id=current_turn_id).finish(status="failed")
+                    )
             auto_chat_mode = _auto_chat_mode_from_agent_decision(
                 agent_decision,
                 classify_auto_chat_intent(question),
@@ -2844,6 +2946,8 @@ def chat(
                 )
                 auto_execute_available = bool(execute_plan_now and hasattr(coding_agent_instance, "generate_auto_execute"))
                 request_for_generation = question
+                if selected_skill_text:
+                    request_for_generation = f"{question}\n\nSelected adaptive procedures (advisory; existing policy still applies):\n{selected_skill_text}"
                 turn_full_auto_resume_cycles = 0
                 turn_full_auto_passes_total = 0
                 turn_full_auto_pass_checkpoints_emitted = 0

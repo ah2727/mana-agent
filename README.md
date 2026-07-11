@@ -6,6 +6,14 @@
 
 `mana-agent` is an installable Python CLI for understanding and safely changing software projects. It can index a repository, run static and dependency analysis, generate structured reports, answer repository-grounded questions, and drive a constrained coding agent that can inspect files, apply patches, use Git tools, and run verification commands.
 
+## Adaptive repository skills
+
+Mana-Agent can retain verified, reusable repository procedures as adaptive skills. Generated skills are never written into a checkout: they live under `${MANA_HOME:-~/.mana}/skills/repositories/<repository-id>/`, are candidates first, and require review/approval before activation. Existing `skills/` files remain static, user-authored skills.
+
+Use `mana-agent skills storage-path`, `mana-agent skills candidates`, `mana-agent skills review <id>`, and `mana-agent skills approve <id>` to inspect the lifecycle. Active adaptive skills are indexed compactly and loaded only after an explicit model selection passes repository identity, status, required-tool, permission, and maximum-count checks.
+
+Chat uses the same repository-isolated store. `/skills`, `/skills available`, `/skills selected`, `/skills explain`, `/skills disable`, `/skills enable`, `/skills review <id>`, `/skills approve <id>`, and `/skills reject <id> <reason>` operate on the current repository only. A Chat selection is recorded in the timeline and full procedure text is supplied to the coding path only after model selection and policy validation.
+
 Optional Gmail email connector setup and security guidance: [docs/16-email-connectors.md](docs/16-email-connectors.md).
 
 **Current documented version:** `v0.0.13`

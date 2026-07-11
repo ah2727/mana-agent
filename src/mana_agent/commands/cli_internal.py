@@ -61,7 +61,7 @@ from mana_agent.multi_agent.runtime.agent_work_queue import QueueManager
 from mana_agent.multi_agent.runtime.run_logger import LlmRunLogger  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.utils.project_search import project_search  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.multi_agent.tools import git_tools
-from mana_agent.skills import SkillManager
+from mana_agent.skills import SkillManager, RepositoryIdentityService, SkillPolicyEngine, SkillStorage
 from mana_agent.tui.menu import NonInteractivePromptError
 from mana_agent.tui.wizard import ensure_setup
 from mana_agent.ui.banner import render_mode_header
@@ -84,6 +84,7 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(connector_app, name="connector")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(repo_app, name="repo")
+app.add_typer(repo_app, name="repository")
 app.add_typer(session_app, name="session")
 app.command("search")(search_command)
 app.command("impact")(impact_command)
@@ -921,10 +922,19 @@ def skills_init(
 @skills_app.command("list")
 def skills_list(
     repo: str | None = typer.Option(None, "--repo", "--root-dir", help="Repository root."),
+    scope: str | None = typer.Option(None, "--scope", help="Filter adaptive skills by scope."),
+    repository: str | None = typer.Option(None, "--repository", help="Repository identity for adaptive skills."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable output."),
 ) -> None:
     """List skills by priority source."""
     root = _resolve_repo(repo)
     _record_multi_agent_request(root, "skills list", entrypoint="skills", command_scope=True)
+    identity = RepositoryIdentityService().identify(root)
+    adaptive_id = repository or identity.repository_id
+    adaptive = [item for item in SkillStorage().list(adaptive_id) if scope in (None, item.scope)]
+    if json_output:
+        console.print_json(json.dumps({"repository_id": adaptive_id, "adaptive": [item.model_dump(mode="json") for item in adaptive], "static": SkillManager(root).list_by_source()}))
+        return
     groups = SkillManager(root).list_by_source()
     console.print("[bold cyan]Available Skills[/bold cyan]\n")
     for title, names in groups.items():
@@ -935,6 +945,10 @@ def skills_list(
         else:
             console.print("- (none)")
         console.print("")
+    console.print("[bold]Adaptive Repository Skills:[/bold]")
+    for item in adaptive:
+        console.print(f"- {item.name} ({item.status}, {item.version}, {item.id})")
+    if not adaptive: console.print("- (none)")
 
 
 @skills_app.command("show")
@@ -945,12 +959,79 @@ def skills_show(
     """Print the selected skill content."""
     root = _resolve_repo(repo)
     _record_multi_agent_request(root, f"skills show {name}", entrypoint="skills", command_scope=True)
+    identity = RepositoryIdentityService().identify(root)
+    try:
+        path, manifest, evidence, markdown = SkillStorage().load(identity.repository_id, name)
+        console.print(f"[bold cyan]{manifest.name}[/bold cyan] ({path})\n")
+        console.print(markdown)
+        return
+    except KeyError:
+        pass
     skill = SkillManager(root).get(name)
     if skill is None:
         raise typer.BadParameter(f"Unknown skill: {name}")
     source = skill.path if skill.path is not None else skill.source
     console.print(f"[bold cyan]{skill.name}[/bold cyan] ({source})\n")
     console.print(skill.content)
+
+
+def _adaptive_id(root: Path, repository: str | None = None) -> str:
+    return repository or RepositoryIdentityService().identify(root).repository_id
+
+
+@skills_app.command("storage-path")
+def skills_storage_path(json_output: bool = typer.Option(False, "--json")) -> None:
+    path = SkillStorage().storage_path()
+    if json_output: console.print_json(json.dumps({"path": str(path)}))
+    else: console.print(str(path))
+
+
+@skills_app.command("candidates")
+def skills_candidates(repo: str | None = typer.Option(None, "--repo", "--root-dir"), repository: str | None = typer.Option(None, "--repository")) -> None:
+    root=_resolve_repo(repo); items=SkillStorage().list(_adaptive_id(root, repository), state="candidates")
+    console.print_json(json.dumps([item.model_dump(mode="json") for item in items]))
+
+
+@skills_app.command("review")
+def skills_review(skill_id: str, repo: str | None = typer.Option(None, "--repo", "--root-dir")) -> None:
+    root=_resolve_repo(repo); path, manifest, evidence, markdown=SkillStorage().load(_adaptive_id(root), skill_id)
+    report = json.loads((path / "security.json").read_text(encoding="utf-8")) if (path / "security.json").exists() else []
+    console.print_json(json.dumps({"skill": markdown, "manifest":manifest.model_dump(mode="json"), "evidence":evidence.model_dump(mode="json"), "security":report}, ensure_ascii=False))
+
+
+@skills_app.command("approve")
+@skills_app.command("activate")
+def skills_approve(skill_id: str, repo: str | None = typer.Option(None, "--repo", "--root-dir")) -> None:
+    root=_resolve_repo(repo); storage=SkillStorage(); rid=_adaptive_id(root)
+    path, manifest, evidence, markdown=storage.load(rid, skill_id, active=False)
+    # Approval is deliberately a final revalidation; candidates cannot promote themselves.
+    from mana_agent.skills.adaptive import SkillValidator
+    findings=SkillValidator().validate(markdown, manifest, evidence, storage.repository_dir(rid))
+    if any(item.severity == "critical" for item in findings): raise typer.BadParameter("critical security finding blocks activation")
+    console.print(str(storage.activate(rid, skill_id)))
+
+
+@skills_app.command("reject")
+def skills_reject(skill_id: str, reason: str = typer.Option(..., "--reason"), repo: str | None = typer.Option(None, "--repo", "--root-dir")) -> None:
+    root=_resolve_repo(repo); path=SkillStorage().reject(_adaptive_id(root), skill_id, reason)
+    console.print(str(path))
+
+
+@skills_app.command("archive")
+@skills_app.command("deactivate")
+def skills_archive(skill_id: str, repo: str | None = typer.Option(None, "--repo", "--root-dir")) -> None:
+    console.print(str(SkillStorage().transition(_adaptive_id(_resolve_repo(repo)), skill_id, "archived")))
+
+
+@skills_app.command("explain-permissions")
+def skills_explain_permissions(skill_id: str, repo: str | None = typer.Option(None, "--repo", "--root-dir")) -> None:
+    root=_resolve_repo(repo); _path, manifest, _evidence, _markdown=SkillStorage().load(_adaptive_id(root), skill_id)
+    console.print_json(json.dumps(SkillPolicyEngine().explain(manifest)))
+
+
+@skills_app.command("rebuild-index")
+def skills_rebuild_index(repo: str | None = typer.Option(None, "--repo", "--root-dir")) -> None:
+    root=_resolve_repo(repo); console.print(str(SkillStorage().rebuild_index(_adaptive_id(root))))
 
 
 @app.command("continue")

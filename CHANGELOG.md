@@ -4,6 +4,16 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-11
 
+- Integrated adaptive repository skills with Chat through a shared session coordinator: repository-isolated compact indexes, explicit model selection with policy validation, progressive loading, timeline events, session-scoped enable/disable, and shared lifecycle inspection commands.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_adaptive_skills.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/skills/chat.py src/mana_agent/commands/chat_cli.py src/mana_agent/config/skills.py` passed.
+
+- Added repository-isolated adaptive skill foundations: stable repository identity, typed manifests and evidence, atomic candidate storage under `${MANA_HOME}/skills`, security validation, approval-gated immutable activation, compact indexes, and constrained progressive selection.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/skills/adaptive.py src/mana_agent/skills/manager.py src/mana_agent/commands/cli_internal.py` passed.
+- Added adaptive skill CLI inspection and lifecycle commands while preserving legacy static `skills/` behavior.
+  - Verification: `PYTHONPATH=src .venv/bin/mana-agent skills --help` passed.
+
+## 2026-07-11
+
 - Restored explicitly requested configured MCP providers to the chat tool loop. The selected provider is now propagated through route execution and only that provider is discovered, so a Context7 request no longer fails because its tools were never registered.
   - Included the selected provider's model-visible tools in routing context, so the router can produce a valid constrained tool decision before execution.
   - Verification: Focused MCP and AskAgent tests added.

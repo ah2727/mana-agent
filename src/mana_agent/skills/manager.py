@@ -6,6 +6,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Iterable
 
+from mana_agent.skills.adaptive import RepositoryIdentityService, SkillStorage
+
 
 DEFAULT_SKILL_NAMES = (
     "cli",
@@ -269,6 +271,13 @@ class SkillManager:
         self._content_cache: dict[str, str] = {}
 
     @property
+    def adaptive_repository_id(self) -> str:
+        return RepositoryIdentityService(self.home / ".mana").identify(self.project_root).repository_id
+
+    def adaptive_storage(self) -> SkillStorage:
+        return SkillStorage(self.home / ".mana")
+
+    @property
     def project_skills_dir(self) -> Path:
         return self.project_root / "skills"
 
@@ -292,11 +301,23 @@ class SkillManager:
                 return Skill(name=name, source=source, path=path, content=path.read_text(encoding="utf-8"))
         return None
 
+    def _read_adaptive_skill(self, name: str) -> Skill | None:
+        try:
+            directory = self.adaptive_storage().repository_dir(self.adaptive_repository_id) / "active" / name
+            path = directory / "SKILL.md"
+            if path.is_file():
+                return Skill(name=name, source="adaptive-repository", path=path, content=path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return None
+
     def get(self, name: str) -> Skill | None:
         normalized = _normalize_name(name)
         if not normalized:
             return None
         return (
+            self._read_adaptive_skill(normalized)
+            or
             self._read_file_skill(self.project_skills_dir, normalized, "project")
             or self._read_file_skill(self.global_skills_dir, normalized, "global")
             or self._builtin_skill(normalized)
@@ -374,6 +395,17 @@ class SkillManager:
                     trigger=(meta.get("trigger") or _extract_trigger(body) or f"Use when the task matches the {name} skill.")[:320],
                     path=_builtin_skill_path(name),
                 )
+        # Adaptive skills are deliberately read from their repository-isolated
+        # index.  They are never discovered from a checkout's ./skills folder.
+        try:
+            adaptive = self.adaptive_storage().repository_dir(self.adaptive_repository_id) / "active"
+            for path in sorted(adaptive.glob("*/SKILL.md")):
+                item = parse_skill_index_item(path)
+                items[item.name] = item
+        except (OSError, ValueError):
+            # Skill storage is an optional enhancement; a damaged adaptive store
+            # must not prevent legacy static skills from loading.
+            pass
         return [items[name] for name in sorted(items)]
 
     def prompt_index(self, *, include_builtins: bool = True) -> list[dict[str, str]]:

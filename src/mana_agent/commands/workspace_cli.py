@@ -11,6 +11,7 @@ from mana_agent.workspaces.relationships import RelationshipService
 from mana_agent.workspaces.search import WorkspaceSearchService
 from mana_agent.workspaces.service import WorkspaceService
 from mana_agent.workspaces.paths import repository_index_dir
+from mana_agent.skills.adaptive import RepositoryIdentityService
 
 
 workspace_app = typer.Typer(help="Manage multi-repository workspaces.")
@@ -101,6 +102,24 @@ def repo_refresh(path_or_id: str) -> None:
     except FileNotFoundError:
         path = path_or_id
     _emit(service.register_repository(path, refresh=True).model_dump(mode="json"))
+
+
+@repo_app.command("identity")
+def repo_identity(
+    root: str = typer.Option(".", "--repo", "--root-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show the stable adaptive-skill identity for a checkout."""
+    identity = RepositoryIdentityService().identify(root)
+    if json_output:
+        _emit(identity.model_dump(mode="json"))
+    else:
+        typer.echo(f"{identity.repository_id}  {identity.display_name}")
+
+
+@repo_app.command("relink")
+def repo_relink(repository_id: str, root: str = typer.Option(".", "--repo", "--root-dir")) -> None:
+    _emit(RepositoryIdentityService().relink(repository_id, root).model_dump(mode="json"))
 
 
 @repo_app.command("index")

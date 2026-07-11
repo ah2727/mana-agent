@@ -19,6 +19,7 @@ from mana_agent.workspaces.models import WorkspaceSearchRequest
 from mana_agent.workspaces.relationships import RelationshipService
 from mana_agent.workspaces.search import WorkspaceSearchService
 from mana_agent.workspaces.service import WorkspaceService
+from mana_agent.skills.adaptive import RepositoryIdentityService, SkillStorage
 
 
 st.set_page_config(page_title="Mana Agent", page_icon="🧠", layout="wide", initial_sidebar_state="expanded")
@@ -55,7 +56,7 @@ if st.sidebar.button("New isolated session", use_container_width=True):
     st.session_state.dashboard_session_id = created.session_id
     st.rerun()
 
-pages = ["Overview", "Chat", "Search", "Relationships & Impact", "Taskboard & Traces", "Reports"]
+pages = ["Overview", "Chat", "Search", "Relationships & Impact", "Taskboard & Traces", "Skills", "Reports"]
 page = st.sidebar.radio("Navigation", pages)
 st.caption(f"Workspace `{selected_workspace.name}` · Repository `{selected_repo.name}` · `{root}`")
 
@@ -134,6 +135,31 @@ elif page == "Taskboard & Traces":
     st.json(load_taskboard_state(root))
     st.header("Recent traces")
     st.json(load_recent_traces(root, limit=10))
+
+elif page == "Skills":
+    st.header("Adaptive repository skills")
+    identity = RepositoryIdentityService().identify(root)
+    storage = SkillStorage()
+    st.caption(f"Repository identity: `{identity.repository_id}` · storage: `{storage.storage_path()}`")
+    skills = storage.list(identity.repository_id)
+    if not skills:
+        st.info("No adaptive skills have been generated for this repository.")
+    else:
+        st.dataframe([item.model_dump(mode="json") for item in skills], use_container_width=True)
+        selected = st.selectbox("Skill", skills, format_func=lambda item: f"{item.name} · {item.status} · {item.version}")
+        try:
+            _path, manifest, evidence, markdown = storage.load(identity.repository_id, selected.id)
+            st.markdown(markdown)
+            with st.expander("Manifest and evidence"):
+                st.json({"manifest": manifest.model_dump(mode="json"), "evidence": evidence.model_dump(mode="json")})
+            if selected.status == "candidate" and st.button("Approve and activate"):
+                storage.activate(identity.repository_id, selected.id)
+                st.rerun()
+            if selected.status == "active" and st.button("Archive"):
+                storage.transition(identity.repository_id, selected.id, "archived")
+                st.rerun()
+        except (KeyError, OSError, ValueError) as exc:
+            st.error(f"Could not read skill: {exc}")
 
 elif page == "Reports":
     st.header("Repository reports")
