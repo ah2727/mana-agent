@@ -22,7 +22,7 @@ from langchain_community.tools.file_management import (
     WriteFileTool,
     ListDirectoryTool,
 )
-from langchain_openai import ChatOpenAI
+from mana_agent.llm import create_chat_model
 from mana_agent.config.settings import (
     Settings,
     default_diagrams_dir,  # noqa: F401 - consumed by chat_cli through wildcard command wiring
@@ -188,8 +188,7 @@ def _build_main_agent_routing_llm() -> Any | None:
         AgentRole.HEAD_DECISION,
         global_model=getattr(settings, "openai_chat_model", "gpt-4.1-mini"),
     ).resolved_model
-    chat_openai_cls = _public_symbol("ChatOpenAI", ChatOpenAI)
-    return chat_openai_cls(
+    return create_chat_model(
         api_key=api_key,
         model=model,
         base_url=getattr(settings, "openai_base_url", None) or os.getenv("OPENAI_BASE_URL") or None,
@@ -1544,7 +1543,7 @@ def build_ask_service(
     router_kwargs = {"api_key": settings.openai_api_key, "model": router_model}
     if settings.openai_base_url:
         router_kwargs["base_url"] = settings.openai_base_url
-    router_llm = _public_symbol("ChatOpenAI", ChatOpenAI)(**router_kwargs)
+    router_llm = create_chat_model(**router_kwargs)
 
     return ask_service_cls(
         store=build_store(settings),
