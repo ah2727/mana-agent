@@ -7,7 +7,7 @@ from time import perf_counter
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+from mana_agent.llm import CompatibleChatOpenAI, create_chat_model
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -87,11 +87,8 @@ class RepositoryMultiChain:
             [("system", TECH_SYSTEM), ("human", TECH_HUMAN)]
         )
 
-    def _create_llm(self, model_name: str) -> ChatOpenAI:
-        kwargs: dict[str, Any] = {"api_key": self.api_key, "model": model_name}
-        if self.base_url:
-            kwargs["base_url"] = self.base_url
-        return ChatOpenAI(**kwargs)
+    def _create_llm(self, model_name: str) -> CompatibleChatOpenAI:
+        return create_chat_model(api_key=self.api_key, model=model_name, base_url=self.base_url)
 
     def update_model(self, new_model: str):
         if self.model != new_model:

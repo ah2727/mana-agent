@@ -336,7 +336,7 @@ class LLMAnalyzer:
 
     def __init__(self, model_config: ModelConfig) -> None:
         from langchain_core.prompts import ChatPromptTemplate
-        from langchain_openai import ChatOpenAI
+        from mana_agent.llm import create_chat_model
 
         from mana_agent.multi_agent.runtime.prompts import (
             PROJECT_ANALYZE_HUMAN_TEMPLATE,
@@ -350,12 +350,15 @@ class LLMAnalyzer:
                 ("human", PROJECT_ANALYZE_HUMAN_TEMPLATE),
             ]
         )
-        kwargs: dict[str, Any] = {"api_key": model_config.api_key, "model": model_config.model}
-        if model_config.base_url:
-            kwargs["base_url"] = model_config.base_url
+        kwargs: dict[str, Any] = {}
         if model_config.request_timeout:
             kwargs["timeout"] = model_config.request_timeout
-        self.llm = ChatOpenAI(**kwargs)
+        self.llm = create_chat_model(
+            api_key=model_config.api_key,
+            model=model_config.model,
+            base_url=model_config.base_url,
+            **kwargs,
+        )
 
     def run(self, evidence: AnalyzeEvidence) -> LLMAnalyzeResult:
         chain = self.prompt | self.llm

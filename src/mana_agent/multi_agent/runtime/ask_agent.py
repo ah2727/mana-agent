@@ -15,7 +15,7 @@ from collections import defaultdict
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool, BaseTool
-from langchain_openai import ChatOpenAI
+from mana_agent.llm import create_chat_model
 from pydantic import BaseModel, Field
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -257,10 +257,7 @@ class AskAgent:
         base_url: str | None = None,
         coding_memory_service: CodingMemoryService | None = None,
     ) -> None:
-        kwargs = {"api_key": api_key, "model": model}
-        if base_url:
-            kwargs["base_url"] = base_url
-        self.llm = ChatOpenAI(**kwargs)
+        self.llm = create_chat_model(api_key=api_key, model=model, base_url=base_url)
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
@@ -280,10 +277,7 @@ class AskAgent:
         resolved = str(model_name or "").strip()
         if not resolved or resolved == self.model:
             return
-        kwargs = {"api_key": self.api_key, "model": resolved}
-        if self.base_url:
-            kwargs["base_url"] = self.base_url
-        self.llm = ChatOpenAI(**kwargs)
+        self.llm = create_chat_model(api_key=self.api_key, model=resolved, base_url=self.base_url)
         self.model = resolved
 
     def _is_blocked_command(self, cmd: str) -> bool:

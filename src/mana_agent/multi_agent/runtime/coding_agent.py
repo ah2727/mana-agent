@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from mana_agent.llm import create_chat_model
 from pydantic import ValidationError
 
 from mana_agent.agent.task_classifier import classify_task
@@ -470,15 +470,11 @@ class CodingAgent:
                 or "gpt-4.1-mini"
             )
             
-            planner_kwargs = {
-                "api_key": self.api_key, # فرض بر این است که self.api_key در کلاس موجود است
-                "model": current_model,
-            }
-            
-            if hasattr(self, "base_url") and self.base_url:
-                planner_kwargs["base_url"] = self.base_url
-                
-            self.planner_llm = ChatOpenAI(**planner_kwargs)
+            self.planner_llm = create_chat_model(
+                api_key=self.api_key,
+                model=current_model,
+                base_url=self.base_url if hasattr(self, "base_url") else None,
+            )
             
             # یک تست کوچک برای اطمینان از صحت مدل (اختیاری)
             # self.planner_llm.predict("health check") 

@@ -85,6 +85,24 @@ DEFAULT_TOP_K=8
 MANA_LLM_LOG_FILE=
 ```
 
+## OpenAI-Compatible LLM Capabilities
+
+Mana-Agent automatically uses the Responses API for tool calls with enabled
+reasoning when the active endpoint is OpenAI. Custom `OPENAI_BASE_URL`
+gateways are treated as Chat Completions-only by default, so tool calls stay
+enabled and incompatible reasoning is sent as `none`.
+
+For a verified nonstandard gateway, use these optional environment overrides:
+
+```bash
+MANA_LLM_API_MODE=auto # auto, responses, or chat_completions
+MANA_LLM_REASONING_EFFORT=high
+MANA_LLM_SUPPORTS_RESPONSES_API=true
+MANA_LLM_SUPPORTS_TOOLS_WITH_CHAT_REASONING=false
+```
+
+Only enable Responses API support when that gateway implements `/v1/responses`.
+
 ## Model Role Levels
 
 `MODEL_LEVEL_*` variables contain actual model IDs. `MANA_MODEL_*` variables map each Mana role to one of those model levels.

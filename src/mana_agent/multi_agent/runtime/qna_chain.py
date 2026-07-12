@@ -4,7 +4,7 @@ import logging
 from time import perf_counter
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+from mana_agent.llm import create_chat_model
 
 from mana_agent.multi_agent.runtime.prompts import HUMAN_TEMPLATE, SYSTEM_PROMPT
 from mana_agent.multi_agent.runtime.run_logger import LlmRunLogger
@@ -21,10 +21,7 @@ class QnAChain:
                 ("human", HUMAN_TEMPLATE),
             ]
         )
-        kwargs = {"api_key": api_key, "model": model}
-        if base_url:
-            kwargs["base_url"] = base_url
-        self.llm = ChatOpenAI(**kwargs)
+        self.llm = create_chat_model(api_key=api_key, model=model, base_url=base_url)
         self.model = model
         self.run_logger = LlmRunLogger()
 

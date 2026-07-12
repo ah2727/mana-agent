@@ -2,6 +2,12 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-12
+
+- Added a centralized capability-driven LLM request compatibility layer. Tool calls with enabled reasoning now use Responses API only when the selected provider supports it; Chat Completions gateways instead retain tools and normalize incompatible reasoning effort to `none`.
+  - Added one safe retry for the documented unsupported tools-plus-reasoning HTTP error, with structured API-mode/adjustment logging and no model-name-specific routing.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_llm_compatibility.py tests/test_ask_agent.py tests/test_project_llm_analyze_service.py tests/test_cli_smoke.py -q` passed; compatibility regression suite has 10 passing tests.
+
 ## 2026-07-11
 
 - Integrated adaptive repository skills with Chat through a shared session coordinator: repository-isolated compact indexes, explicit model selection with policy validation, progressive loading, timeline events, session-scoped enable/disable, and shared lifecycle inspection commands.
