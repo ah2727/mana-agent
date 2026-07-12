@@ -4,6 +4,10 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-12
 
+- Updated multi-agent model-level tests to isolate persisted `~/.mana` settings
+  and verify that shell model variables cannot override configured role tiers.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py -q` (53 passed) and `PYTHONPATH=src .venv/bin/python -m pytest tests/test_tui_user_config.py -q` (13 passed).
+
 - Fixed OpenAI tool-chat requests for models that enable reasoning by default.
   Tool calls now use the supported Responses API before a Chat Completions
   rejection can occur, and the client retries the observed transient
