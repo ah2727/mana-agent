@@ -11,6 +11,7 @@ from mana_agent.connectors.email.providers.base import EmailProvider
 from mana_agent.connectors.email.sanitizer import safe_attachment_filename, sanitize_html
 
 GMAIL_CAPABILITIES = EmailProviderCapabilities(supports_threads=True, supports_labels=True, supports_drafts=True, supports_push_notifications=True, supports_server_search=True, supports_send_as=True, supports_archive=True, supports_reply_all=True)
+GMAIL_SYSTEM_LABEL_IDS = frozenset({"INBOX", "SENT", "DRAFT", "SPAM", "TRASH", "UNREAD", "STARRED", "IMPORTANT"})
 
 
 def _google_error_message(exc: Exception) -> str:
@@ -32,6 +33,25 @@ def gmail_query(query: EmailQuery) -> str:
     parts += [f"label:{x}" for x in query.labels] + [f"in:{x}" for x in query.folders]
     return " ".join(x for x in parts if x).strip()
 
+
+def gmail_list_arguments(query: EmailQuery, cursor: str | None = None) -> dict[str, Any]:
+    """Build a Gmail list request without using ``q`` for system folders.
+
+    Gmail's metadata scope permits label filtering but rejects ``q`` entirely.
+    Using the documented ``labelIds`` parameter keeps inbox-only metadata
+    searches compatible with a metadata-capable account.
+    """
+    arguments: dict[str, Any] = {"userId": "me", "pageToken": cursor, "maxResults": query.limit}
+    normalized_folders = [folder.upper() for folder in query.folders]
+    if normalized_folders and all(folder in GMAIL_SYSTEM_LABEL_IDS for folder in normalized_folders):
+        arguments["labelIds"] = normalized_folders
+        query_text = gmail_query(query.model_copy(update={"folders": []}))
+    else:
+        query_text = gmail_query(query)
+    if query_text:
+        arguments["q"] = query_text
+    return arguments
+
 def _address(value: str) -> EmailAddress:
     name, address = parseaddr(value); return EmailAddress(address=address or value, name=name or None)
 def _addresses(value: str | None) -> list[EmailAddress]: return [_address(f"{name} <{address}>") for name, address in getaddresses([value or ""]) if address]
@@ -50,8 +70,8 @@ class GmailProvider(EmailProvider):
                 detail = _google_error_message(exc)
                 if "Metadata scope does not support 'q' parameter" in detail:
                     raise AuthenticationRequired(
-                        "Gmail authorization is valid, but its combined metadata/read scopes block inbox searches. "
-                        "Reconnect with `email.read` only (do not include `email.metadata`)."
+                        "Gmail authorization is valid, but its metadata scope blocks sender, subject, and text query filters. "
+                        "Inbox-only metadata retrieval is supported; reconnect with `email.read` only for filtered searches."
                     ) from exc
                 raise AuthenticationRequired(
                     "Gmail rejected this account's authorization "
@@ -70,7 +90,7 @@ class GmailProvider(EmailProvider):
     async def list_folders(self) -> list[EmailFolder]: return [EmailFolder(id=x["id"], name=x["name"], role=x.get("type")) for x in (await self._call(self.service.users().labels().list(userId="me"))).get("labels", [])]
     async def list_labels(self) -> list[EmailLabel]: return [EmailLabel(id=x.id, name=x.name) for x in await self.list_folders()]
     async def search_messages(self, query: EmailQuery, cursor: str | None = None) -> EmailSearchResult:
-        data = await self._call(self.service.users().messages().list(userId="me", q=gmail_query(query), pageToken=cursor, maxResults=query.limit))
+        data = await self._call(self.service.users().messages().list(**gmail_list_arguments(query, cursor)))
         # Search is useful even for a metadata-only account. Do not make a
         # harmless "latest email" request fail by requesting full MIME bodies.
         return EmailSearchResult(messages=[await self.get_message_metadata(str(x["id"])) for x in data.get("messages", [])], cursor=data.get("nextPageToken"), total_estimate=data.get("resultSizeEstimate"))

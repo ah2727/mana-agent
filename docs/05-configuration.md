@@ -90,10 +90,11 @@ MANA_LLM_LOG_FILE=
 
 ## OpenAI-Compatible LLM Capabilities
 
-Mana-Agent automatically uses the Responses API for tool calls with enabled
-reasoning when the active endpoint is OpenAI. Custom `OPENAI_BASE_URL`
-gateways are treated as Chat Completions-only by default, so tool calls stay
-enabled and incompatible reasoning is sent as `none`.
+Mana-Agent automatically uses the Responses API for tool calls when the active
+endpoint is OpenAI. This also supports reasoning models that enable reasoning
+by default and reject function tools through Chat Completions. Custom
+`OPENAI_BASE_URL` gateways are treated as Chat Completions-only by default, so
+tool calls stay enabled and incompatible reasoning is sent as `none`.
 
 For a verified nonstandard gateway, configure these optional values in
 `~/.mana/config.toml`:

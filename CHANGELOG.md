@@ -4,11 +4,19 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-12
 
+- Fixed OpenAI tool-chat requests for models that enable reasoning by default.
+  Tool calls now use the supported Responses API before a Chat Completions
+  rejection can occur, and the client retries the observed transient
+  insufficient-permission response once without changing the request.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_llm_compatibility.py tests/connectors/test_email_core.py tests/test_ask_entry_router.py -q` passed (32 tests); a live default chat/Gmail request completed through `email_accounts_list`, `email_search`, `email_read`, and `email_thread_read`; `git diff --check` passed.
+
 - Fixed Gmail inbox-search authorization when `email.metadata` and `email.read`
   were selected together. OAuth now requests the searchable readonly scope
   without the conflicting metadata scope, reports Google’s exact query-scope
-  denial, and supports reconnecting an existing account in place.
-  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/connectors/test_email_core.py tests/test_ask_agent.py tests/test_ask_entry_router.py -q` passed (58 tests); reconnect CLI help, focused module compilation, and `git diff --check` passed.
+  denial, and supports reconnecting an existing account in place. Inbox-only
+  metadata searches now use Gmail's `labelIds` API parameter instead of the
+  metadata-blocked `q=in:INBOX` query, so existing combined-scope tokens work.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/connectors/test_email_core.py -q` passed (10 tests); focused module compilation, a live existing-token inbox metadata search, and `git diff --check` passed. A broader AskAgent suite remains blocked by four unrelated concurrent read-cache failures.
 
 - Moved the shared LLM compatibility client into the multi-agent runtime and
   retargeted all runtime callers and its regression tests, removing the

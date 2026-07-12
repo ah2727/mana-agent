@@ -35,6 +35,14 @@ def test_tools_and_reasoning_use_responses_when_supported(monkeypatch) -> None:
     assert payload["tools"][0]["name"] == "read_file"
 
 
+def test_tools_use_responses_when_supported_without_explicit_reasoning() -> None:
+    llm = create_chat_model(api_key="test", model="gpt-5.6-luna", base_url="https://api.openai.com/v1")
+    payload = _payload(llm, tools=True)
+    assert "input" in payload
+    assert "messages" not in payload
+    assert payload["tools"][0]["name"] == "read_file"
+
+
 def test_chat_tools_normalize_reasoning_when_combination_is_unsupported() -> None:
     llm = CompatibleChatOpenAI(api_key="test", model="gateway-model", reasoning_effort="high", compatibility_capabilities=ModelCapabilities(supports_responses_api=False))
     payload = _payload(llm, tools=True)
@@ -122,6 +130,22 @@ def test_retry_forces_none_even_when_the_initial_metadata_claimed_chat_reasoning
     assert llm._generate([HumanMessage(content="hello")], tools=[TOOL]) == "retried"
     assert payloads[0]["reasoning_effort"] == "high"
     assert payloads[1]["reasoning_effort"] == "none"
+
+
+def test_transient_insufficient_permission_error_retries_once(monkeypatch) -> None:
+    llm = CompatibleChatOpenAI(api_key="test", model="gpt-5.6-luna")
+    calls = 0
+
+    def fake_generate(self, messages, stop=None, run_manager=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("Error code: 401 - You have insufficient permissions for this operation.")
+        return "retried"
+
+    monkeypatch.setattr(ChatOpenAI, "_generate", fake_generate)
+    assert llm._generate([HumanMessage(content="hello")]) == "retried"
+    assert calls == 2
 
 
 def test_streaming_uses_the_same_compatibility_decision(monkeypatch) -> None:

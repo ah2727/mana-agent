@@ -3,7 +3,7 @@ from mana_agent.connectors.email.approval import ApprovalBinding, approval_for
 from mana_agent.connectors.email.exceptions import ApprovalRequired, AuthenticationRequired
 from mana_agent.connectors.email.models import EmailQuery
 from mana_agent.connectors.email.auth.oauth import GMAIL_SCOPES, gmail_scopes_for_permissions
-from mana_agent.connectors.email.providers.gmail import GMAIL_CAPABILITIES, gmail_query
+from mana_agent.connectors.email.providers.gmail import GMAIL_CAPABILITIES, gmail_list_arguments, gmail_query
 from mana_agent.connectors.email.sanitizer import safe_attachment_filename, sanitize_html, untrusted_email_context
 from mana_agent.connectors.email.tools import email_tool_contracts
 from mana_agent.connectors.email.runtime_tools import build_email_langchain_tools
@@ -15,6 +15,12 @@ def test_gmail_query_is_structured():
 
 def test_gmail_read_scope_replaces_metadata_scope_for_searchable_tokens():
     assert gmail_scopes_for_permissions(["email.metadata", "email.read"]) == [GMAIL_SCOPES["email.read"]]
+
+
+def test_gmail_inbox_only_search_uses_label_ids_not_metadata_blocked_query():
+    arguments = gmail_list_arguments(EmailQuery(folders=["INBOX"], limit=1))
+    assert arguments["labelIds"] == ["INBOX"]
+    assert "q" not in arguments
 def test_html_and_attachment_safety():
     clean = sanitize_html('<script>x()</script><img src="https://track"><a href="javascript:x">bad</a><b>ok</b>'); assert "script" not in clean and "img" not in clean and "javascript" not in clean and "<b>ok</b>" in clean; assert safe_attachment_filename("../../evil.txt") == "evil.txt"; assert untrusted_email_context("x").startswith("UNTRUSTED")
 def test_approval_is_bound_to_exact_content():
@@ -69,5 +75,5 @@ def test_gmail_search_explains_metadata_scope_query_restriction():
         def messages(self): return Messages()
     provider = GmailProvider(account=EmailAccount(id="a", provider="gmail", address=EmailAddress(address="me@example.com")), service=type("Service", (), {"users": lambda self: Users()})())
     import asyncio
-    with pytest.raises(AuthenticationRequired, match="email.read.*email.metadata"):
+    with pytest.raises(AuthenticationRequired, match="Inbox-only metadata retrieval"):
         asyncio.run(provider.search_messages(EmailQuery(limit=1)))
