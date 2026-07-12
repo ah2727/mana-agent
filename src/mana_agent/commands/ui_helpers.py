@@ -112,6 +112,15 @@ class RichToolCallbackHandler(BaseCallbackHandler):
         event_id = self._event_id
         self._tool = None
         self._event_id = None
+        try:
+            text = str(output)
+            payload = json.loads(text.split("\n", 1)[-1])
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(error, dict):
+                emit_tool_event("error", tool, duration=dt, error=str(error.get("message") or error.get("code") or "Tool failed."), event_id=event_id)
+                return
+        except (TypeError, ValueError):
+            pass
         emit_tool_event("end", tool, duration=dt, event_id=event_id)
 
     def on_tool_error(self, error: BaseException, **kwargs) -> None:

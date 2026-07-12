@@ -5,7 +5,16 @@ from datetime import datetime, timezone
 from email.message import EmailMessage as MimeMessage
 from email.utils import getaddresses, parseaddr
 from typing import Any
-from mana_agent.connectors.email.exceptions import AuthenticationRequired, CapabilityUnsupported, InvalidMessageIdentifier, PermanentProviderFailure
+from mana_agent.connectors.email.exceptions import (
+    AuthenticationRequired,
+    CapabilityUnsupported,
+    EmailAuthorizationError,
+    EmailMessageNotFoundError,
+    EmailProviderError,
+    EmailTemporaryError,
+    InvalidMessageIdentifier,
+    PermanentProviderFailure,
+)
 from mana_agent.connectors.email.models import *
 from mana_agent.connectors.email.providers.base import EmailProvider
 from mana_agent.connectors.email.sanitizer import safe_attachment_filename, sanitize_html
@@ -20,6 +29,18 @@ def _google_error_message(exc: Exception) -> str:
         payload = json.loads(bytes(raw).decode("utf-8", "replace"))
         error = payload.get("error", {}) if isinstance(payload, dict) else {}
         return str(error.get("message", "")) if isinstance(error, dict) else ""
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return ""
+
+
+def _google_error_reason(exc: Exception) -> str:
+    raw = getattr(exc, "content", b"")
+    try:
+        payload = json.loads(bytes(raw).decode("utf-8", "replace"))
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        errors = error.get("errors", []) if isinstance(error, dict) else []
+        first = errors[0] if isinstance(errors, list) and errors else {}
+        return str(first.get("reason", "")) if isinstance(first, dict) else ""
     except (TypeError, ValueError, UnicodeDecodeError):
         return ""
 
@@ -66,19 +87,21 @@ class GmailProvider(EmailProvider):
             # Google returns an HttpError whose response status is available
             # without serializing its potentially sensitive response body.
             status = getattr(getattr(exc, "resp", None), "status", None)
-            if status in {401, 403}:
-                detail = _google_error_message(exc)
-                if "Metadata scope does not support 'q' parameter" in detail:
-                    raise AuthenticationRequired(
-                        "Gmail authorization is valid, but its metadata scope blocks sender, subject, and text query filters. "
-                        "Inbox-only metadata retrieval is supported; reconnect with `email.read` only for filtered searches."
-                    ) from exc
-                raise AuthenticationRequired(
-                    "Gmail rejected this account's authorization "
-                    f"({status}). Reconnect the account with `email.metadata,email.read`; "
-                    "if it persists, enable Gmail API and add the readonly scope to the Google OAuth consent configuration."
-                ) from exc
-            raise
+            detail = _google_error_message(exc)
+            reason = _google_error_reason(exc)
+            diagnostic = {"exception_type": type(exc).__name__, "provider_reason": reason} if reason else {"exception_type": type(exc).__name__}
+            if status == 401:
+                raise AuthenticationRequired("Gmail credentials were rejected or have expired. Reconnect the account.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
+            if status == 403:
+                authorization_reasons = {"authError", "insufficientPermissions", "insufficientScopes"}
+                if reason in authorization_reasons or "insufficient authentication scopes" in detail.lower() or "metadata scope does not support" in detail.lower():
+                    raise EmailAuthorizationError("Gmail did not grant permission for this operation. Reconnect the account with the required Gmail permission.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
+                raise EmailProviderError("Gmail rejected the request, but did not report an authentication or permission failure.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
+            if status == 404:
+                raise EmailMessageNotFoundError("Gmail could not find this message.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
+            if status in {408, 429, 500, 502, 503, 504}:
+                raise EmailTemporaryError("Gmail is temporarily unavailable. Try again shortly.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
+            raise EmailProviderError("Gmail returned an unexpected provider error.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
     async def connect(self) -> EmailAccount:
         profile = await self._call(self.service.users().getProfile(userId="me")); self.account.address = EmailAddress(address=str(profile["emailAddress"])); return self.account
     async def disconnect(self) -> None: return None
@@ -108,13 +131,14 @@ class GmailProvider(EmailProvider):
         walk(raw.get("payload", {})); labels = list(raw.get("labelIds", []))
         return EmailMessage(id=str(raw["id"]), provider_message_id=str(raw["id"]), account_id=self.account.id, thread_id=raw.get("threadId"), internet_message_id=headers.get("message-id"), subject=headers.get("subject", ""), sender=_address(headers.get("from", "unknown@invalid")), to=_addresses(headers.get("to")), cc=_addresses(headers.get("cc")), bcc=_addresses(headers.get("bcc")), reply_to=_addresses(headers.get("reply-to")), received_at=datetime.fromtimestamp(int(raw.get("internalDate", "0"))/1000, timezone.utc), text_body="\n".join(plain) or None, sanitized_html_body=sanitize_html("\n".join(html)), snippet=raw.get("snippet"), labels=labels, attachments=attachments, is_read="UNREAD" not in labels, is_starred="STARRED" in labels, is_draft="DRAFT" in labels, is_trashed="TRASH" in labels, headers=headers)
     async def get_message(self, message_id: str) -> EmailMessage:
-        try: return self._normalize(await self._call(self.service.users().messages().get(userId="me", id=message_id, format="full")))
-        except Exception as exc: raise InvalidMessageIdentifier("Gmail message body could not be read. Reconnect the account with Gmail read access if it currently grants metadata only.") from exc
+        if not str(message_id or "").strip():
+            raise InvalidMessageIdentifier("The Gmail message reference is empty.", provider="gmail")
+        return self._normalize(await self._call(self.service.users().messages().get(userId="me", id=message_id, format="full")))
     async def get_message_metadata(self, message_id: str) -> EmailMessage:
-        try:
-            raw = await self._call(self.service.users().messages().get(userId="me", id=message_id, format="metadata", metadataHeaders=["From", "To", "Cc", "Subject", "Message-ID", "Reply-To"]))
-            return self._normalize(raw)
-        except Exception as exc: raise InvalidMessageIdentifier("Gmail message metadata could not be read.") from exc
+        if not str(message_id or "").strip():
+            raise InvalidMessageIdentifier("The Gmail message reference is empty.", provider="gmail")
+        raw = await self._call(self.service.users().messages().get(userId="me", id=message_id, format="metadata", metadataHeaders=["From", "To", "Cc", "Subject", "Message-ID", "Reply-To"]))
+        return self._normalize(raw)
     async def get_thread(self, thread_id: str) -> EmailThread:
         raw = await self._call(self.service.users().threads().get(userId="me", id=thread_id, format="full")); return EmailThread(id=thread_id, account_id=self.account.id, messages=[self._normalize(x) for x in raw.get("messages", [])])
     async def get_attachment(self, message_id: str, attachment_id: str) -> EmailAttachment:

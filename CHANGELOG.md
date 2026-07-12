@@ -4,6 +4,9 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-12
 
+- Fixed Gmail search-to-read handoff with account-bound canonical message references, typed provider errors, explicit account capabilities, one stale-reference refresh retry, and sanitized failed-tool diagnostics. Reconnection is now suggested only for verified authentication or authorization failures.
+  - Verification: Focused Gmail connector, AskAgent, and TUI tool-event tests.
+
 - Updated multi-agent model-level tests to isolate persisted `~/.mana` settings
   and verify that shell model variables cannot override configured role tiers.
   - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py -q` (53 passed) and `PYTHONPATH=src .venv/bin/python -m pytest tests/test_tui_user_config.py -q` (13 passed).
