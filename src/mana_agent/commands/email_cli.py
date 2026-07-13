@@ -11,6 +11,8 @@ from mana_agent.commands.browser_cli import browser_app
 connector_app.add_typer(browser_app, name="browser")
 email_app = typer.Typer(help="Manage email accounts. Gmail is the currently supported provider.")
 connector_app.add_typer(email_app, name="email")
+from mana_agent.commands.telegram_cli import telegram_app
+connector_app.add_typer(telegram_app, name="telegram")
 def _account(account_id: str) -> EmailAccount:
     return next((x for x in load_accounts() if x.id == account_id), (_ for _ in ()).throw(typer.BadParameter("Email account not found.")))
 @email_app.command("list")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import streamlit as st
@@ -56,7 +55,7 @@ if st.sidebar.button("New isolated session", use_container_width=True):
     st.session_state.dashboard_session_id = created.session_id
     st.rerun()
 
-pages = ["Overview", "Chat", "Search", "Relationships & Impact", "Taskboard & Traces", "Skills", "Reports"]
+pages = ["Overview", "Chat", "Search", "Relationships & Impact", "Taskboard & Traces", "Skills", "Telegram", "Reports"]
 page = st.sidebar.radio("Navigation", pages)
 st.caption(f"Workspace `{selected_workspace.name}` · Repository `{selected_repo.name}` · `{root}`")
 
@@ -160,6 +159,42 @@ elif page == "Skills":
                 st.rerun()
         except (KeyError, OSError, ValueError) as exc:
             st.error(f"Could not read skill: {exc}")
+
+elif page == "Telegram":
+    st.header("Telegram connector")
+    from mana_agent.connectors.telegram.admin import TelegramAdminService
+    from mana_agent.connectors.telegram.config import load_telegram_config
+
+    telegram = load_telegram_config()
+    admin = TelegramAdminService(telegram)
+    telegram_status = admin.status()
+    stats = telegram_status["queue"]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Enabled", "Yes" if telegram.enabled else "No")
+    c2.metric("Transport", telegram.effective_transport)
+    c3.metric("Queued", stats["queued"])
+    st.json(telegram_status)
+    start_column, stop_column, test_column = st.columns(3)
+    try:
+        if start_column.button("Start Telegram", disabled=telegram_status["running"]):
+            admin.start()
+            st.success("Telegram connector start requested.")
+        if stop_column.button("Stop Telegram", disabled=not telegram_status["running"]):
+            admin.stop()
+            st.success("Telegram connector stop requested.")
+        if test_column.button("Test Telegram"):
+            st.json(admin.test())
+        if telegram.effective_transport == "webhook":
+            set_column, delete_column = st.columns(2)
+            if set_column.button("Register webhook"):
+                admin.set_webhook()
+                st.success("Telegram webhook registered.")
+            if delete_column.button("Remove webhook"):
+                admin.delete_webhook()
+                st.success("Telegram webhook removed.")
+    except (OSError, RuntimeError, ValueError) as exc:
+        st.error(str(exc))
+    st.caption("Secrets are resolved only in the connector process and are never returned to this page.")
 
 elif page == "Reports":
     st.header("Repository reports")

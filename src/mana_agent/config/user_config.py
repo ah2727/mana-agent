@@ -198,6 +198,8 @@ def _toml_scalar(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_scalar(item) for item in value) + "]"
     text = str(value)
     return json.dumps(text)
 
@@ -206,7 +208,23 @@ def _write_toml(path: Path, values: dict[str, Any], *, mode: int = 0o600) -> Non
     ensure_user_config_dir()
     ordered_keys = [key for key in CONFIG_WRITE_ORDER if key in values]
     ordered_keys.extend(sorted(key for key in values if key not in set(ordered_keys)))
-    lines = [f"{key} = {_toml_scalar(values[key])}" for key in ordered_keys]
+    lines = [f"{key} = {_toml_scalar(values[key])}" for key in ordered_keys if not isinstance(values[key], dict)]
+
+    def append_tables(prefix: str, table: dict[str, Any]) -> None:
+        scalar_items = [(key, value) for key, value in table.items() if not isinstance(value, dict)]
+        if scalar_items:
+            if lines and lines[-1] != "":
+                lines.append("")
+            lines.append(f"[{prefix}]")
+            lines.extend(f"{key} = {_toml_scalar(value)}" for key, value in scalar_items)
+        for key, value in table.items():
+            if isinstance(value, dict):
+                append_tables(f"{prefix}.{key}", value)
+
+    for key in ordered_keys:
+        value = values[key]
+        if isinstance(value, dict):
+            append_tables(key, value)
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     try:
         path.chmod(mode)
