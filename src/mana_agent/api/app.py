@@ -36,7 +36,7 @@ def create_app(*, telegram_config: Any | None = None, telegram_gateway: Any | No
 
     app = FastAPI(
         title="Mana-Agent API",
-        version="0.0.13",
+        version="0.0.14",
         description="HTTP API for Mana-Agent repository intelligence workflows.",
         lifespan=lifespan,
     )

@@ -18,7 +18,7 @@ Optional Gmail email connector setup and security guidance: [docs/16-email-conne
 
 Optional model-controlled browser setup and safety guidance: [docs/17-browser-automation.md](docs/17-browser-automation.md).
 
-**Current documented version:** `v0.0.13`
+**Current documented version:** `v0.0.14`
 
 ---
 
@@ -932,7 +932,6 @@ Run it via:
 mana-agent run --root-dir /path/to/project --plan-id mp_f8864a662ad5
 ```
 
----
 
 ## Generated Artifacts
 
@@ -1056,6 +1055,7 @@ Additional documentation is available in `docs/`.
 | [`docs/13-tool-system.md`](./docs/13-tool-system.md)       | Repository tool contracts and execution. |
 | [`docs/14-release.md`](./docs/14-release.md)               | Release process notes.                   |
 | [`docs/15-development.md`](./docs/15-development.md)       | Development workflow.                    |
+| [`docs/18-telegram.md`](./docs/18-telegram.md)             | Telegram connector + bot usage.        |
 | [`docs/analyze.md`](./docs/analyze.md)                     | Additional analysis documentation.       |
 
 ---
