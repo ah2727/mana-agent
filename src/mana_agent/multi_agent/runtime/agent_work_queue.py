@@ -46,8 +46,10 @@ from typing import Any, Callable, Iterable, Literal, Protocol, Sequence
 from pydantic import BaseModel, Field
 
 from mana_agent.agent.orchestrator import AgentOrchestrator
+from mana_agent.agent.verification_planner import verify_documentation_changes
 from mana_agent.multi_agent.runtime.agent_session import AgentSession
 from mana_agent.multi_agent.runtime.goal_profiles import active_goal_profile
+from mana_agent.multi_agent.runtime.edit_scope import budget_for_scope, select_scope
 from mana_agent.multi_agent.runtime.tool_worker_process import ToolWorkerClient
 from mana_agent.multi_agent.runtime.tools_executor import ToolsExecutionConfig, ToolsExecutor
 from mana_agent.multi_agent.runtime.tools_manager import (
@@ -172,6 +174,73 @@ def _patch_context_mismatch(result: dict[str, Any]) -> bool:
     return "patch_context_not_found" in text or "re-read the target file" in text or "hunk" in text
 
 
+def _current_content_hashes(repo_root: Path, paths: Sequence[str]) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for rel in paths:
+        target = repo_root / rel
+        try:
+            hashes[rel] = hashlib.sha256(target.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return hashes
+
+
+def _rebase_patch_once(*, repo_root: Path, patch: str) -> str | None:
+    """Rebuild stale single-line hunks from current exact content when unique."""
+
+    from mana_agent.tools.apply_patch import extract_patch_touched_files
+
+    touched = extract_patch_touched_files(patch)
+    paths = list(touched.get("touched_files") or []) if touched.get("ok") else []
+    if len(paths) != 1:
+        return None
+    target = repo_root / paths[0]
+    try:
+        current_lines = target.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    patch_lines = patch.splitlines()
+    removed = [line[1:] for line in patch_lines if line.startswith("-") and not line.startswith("---")]
+    added = [line[1:] for line in patch_lines if line.startswith("+") and not line.startswith("+++")]
+    if len(removed) != 1 or not added:
+        return None
+    import difflib
+
+    scored = sorted(
+        ((difflib.SequenceMatcher(None, removed[0], line).ratio(), index, line) for index, line in enumerate(current_lines)),
+        reverse=True,
+    )
+    if not scored or scored[0][0] < 0.72 or (len(scored) > 1 and scored[0][0] - scored[1][0] < 0.08):
+        return None
+    exact_current = scored[0][2]
+    rebuilt: list[str] = []
+    replaced = False
+    for line in patch_lines:
+        if not replaced and line == f"-{removed[0]}":
+            rebuilt.append(f"-{exact_current}")
+            replaced = True
+        else:
+            rebuilt.append(line)
+    return "\n".join(rebuilt) + ("\n" if patch.endswith("\n") else "")
+
+
+def _patch_intent_already_satisfied(*, repo_root: Path, patch: str) -> bool:
+    from mana_agent.tools.apply_patch import extract_patch_touched_files
+
+    touched = extract_patch_touched_files(patch)
+    paths = list(touched.get("touched_files") or []) if touched.get("ok") else []
+    if len(paths) != 1:
+        return False
+    try:
+        content = (repo_root / paths[0]).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    lines = patch.splitlines()
+    removed = [line[1:] for line in lines if line.startswith("-") and not line.startswith("---")]
+    added = [line[1:] for line in lines if line.startswith("+") and not line.startswith("+++")]
+    return bool(added) and all(line in content for line in added) and not any(line in content for line in removed)
+
+
 def _reread_patch_targets_trace(*, repo_root: Path, touched_files: Sequence[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for rel in sorted(dict.fromkeys(str(path).replace("\\", "/").lstrip("./") for path in touched_files if str(path).strip())):
@@ -250,7 +319,18 @@ def execute_registered_mutation_command(
     elif tool == "delete_file":
         result = safe_delete_file(repo_root=repo_root, path=str(args["path"]))
     elif tool == "apply_patch":
-        result = safe_apply_patch(repo_root=repo_root, patch=str(args["patch"]))
+        expected_hashes = dict(args.get("content_hashes") or {})
+        actual_hashes = _current_content_hashes(repo_root, expected_hashes)
+        stale = sorted(path for path, expected in expected_hashes.items() if actual_hashes.get(path) != expected)
+        if stale:
+            result = {
+                "ok": False,
+                "touched_files": stale,
+                "error_code": "patch_precondition_failed",
+                "error": f"Target content changed after patch generation: {stale}",
+            }
+        else:
+            result = safe_apply_patch(repo_root=repo_root, patch=str(args["patch"]))
     elif tool == "apply_patch_batch":
         result = apply_patch_batch(repo_root, patches=list(args["patches"]))
     elif tool == "document_create":
@@ -306,9 +386,41 @@ def execute_registered_mutation_command(
             "error": "" if ok else str(result.get("error") or result.get("stderr") or "mutation command failed"),
         }
     ]
-    if not ok and tool == "apply_patch" and _patch_context_mismatch(result):
+    if not ok and tool == "apply_patch" and (_patch_context_mismatch(result) or result.get("error_code") == "patch_precondition_failed"):
         touched = list(result.get("touched_files") or command.target_files or [])
         trace.extend(_reread_patch_targets_trace(repo_root=repo_root, touched_files=touched))
+        if _patch_intent_already_satisfied(repo_root=repo_root, patch=str(args["patch"])):
+            trace.append(
+                {
+                    "tool_name": "apply_patch",
+                    "status": "ok",
+                    "patch_retry_count": 0,
+                    "target_files": touched,
+                    "changed_files": [],
+                    "mutation_plan_id": command.plan_id,
+                    "no_op_reason": "requested patch content is already present",
+                    "created_by": "apply_patch_idempotency_check",
+                }
+            )
+            return WorkResult(ok=True, summary="requested patch was already applied", trace=trace)
+        rebuilt = _rebase_patch_once(repo_root=repo_root, patch=str(args["patch"]))
+        retry_result = safe_apply_patch(repo_root=repo_root, patch=rebuilt) if rebuilt else {"ok": False, "error": "patch_rebuild_not_safe"}
+        retry_ok = bool(retry_result.get("ok"))
+        retry_changed = _command_changed_files(retry_result, args) if retry_ok else []
+        trace.append(
+            {
+                "tool_name": "apply_patch",
+                "status": "ok" if retry_ok else "error",
+                "patch_retry_count": 1,
+                "target_files": touched,
+                "changed_files": retry_changed,
+                "mutation_plan_id": command.plan_id,
+                "created_by": "apply_patch_targeted_retry",
+                "error": "" if retry_ok else str(retry_result.get("error") or "patch_retry_failed"),
+            }
+        )
+        if retry_ok:
+            return WorkResult(ok=True, summary="mutation command executed after targeted patch retry", files_changed=retry_changed, trace=trace)
     return WorkResult(
         ok=ok,
         summary="mutation command executed" if ok else "mutation command failed",
@@ -971,11 +1083,20 @@ class QueueManager:
         tool_name = str(payload.get("tool_name") or "").strip()
         tool_args = payload.get("tool_args") if isinstance(payload.get("tool_args"), dict) else {}
         if tool_name:
+            resolved_args = dict(tool_args)
+            if tool_name == "apply_patch":
+                resolved_args.setdefault(
+                    "content_hashes",
+                    {
+                        path: hashlib.sha256(content.encode("utf-8")).hexdigest()
+                        for path, content in current_files.items()
+                    },
+                )
             try:
                 return MutationCommand(
                     plan_id=str(payload.get("plan_id") or payload.get("mutation_plan_id") or plan.plan_id),
                     tool_name=tool_name,  # type: ignore[arg-type]
-                    tool_args=dict(tool_args),
+                    tool_args=resolved_args,
                     target_files=list(payload.get("target_files") or plan.target_files),
                     reason=str(payload.get("reason") or "worker synthesized mutation command"),
                 )
@@ -1499,6 +1620,14 @@ class QueueManager:
             target_files=required_files or target_files,
             requires_edit=mutation_required,
         )
+        selected_task_scope = select_scope(
+            resolved_targets=orchestrator.decision.target_files,
+            model_scope=orchestrator.decision.scope,
+            architecture_sync=requires_document_evidence_discovery(request, orchestrator.decision.target_files),
+        )
+        scope_budget = budget_for_scope(selected_task_scope)
+        resolved_tool_policy.setdefault("search_budget", scope_budget.max_initial_searches)
+        resolved_tool_policy.setdefault("read_budget", scope_budget.max_initial_read_files)
         profile = active_goal_profile(request)
         if profile is not None:
             def _relevant(path: str) -> bool:
@@ -1509,8 +1638,10 @@ class QueueManager:
 
         direct_read_targets = list(orchestrator.decision.target_files)
         explicit_direct_read = (
+            not default_skill_registry_request
+            and
             orchestrator.decision.needs_file_read
-            and orchestrator.decision.scope in {"single_file", "single_file_section"}
+            and selected_task_scope in {"direct_edit", "localized_change"}
             and bool(direct_read_targets)
             and all((self.repo_root / path).is_file() for path in direct_read_targets)
             and not is_architecture_docs_update(request, direct_read_targets)
@@ -1568,6 +1699,18 @@ class QueueManager:
         answers: list[str] = []
         sources: list[dict[str, Any]] = []
         trace: list[dict[str, Any]] = []
+        trace.append(
+            {
+                "layer": "edit_scope_policy",
+                "selected_task_scope": selected_task_scope,
+                "resolved_target_files": list(orchestrator.decision.target_files),
+                "path_resolution_method": list(target_state.get("path_resolution_methods") or []),
+                "discovery_budget": scope_budget.max_initial_searches,
+                "read_budget": scope_budget.max_initial_read_files,
+                "mutation_plan_limit": scope_budget.mutation_plan_limit,
+                "patch_retry_limit": scope_budget.patch_retry_limit,
+            }
+        )
         changed_files: list[str] = []
         executed_mutation_commands: set[str] = set()
         approved_mutation_plan: MutationPlan | None = None
@@ -1637,6 +1780,17 @@ class QueueManager:
                     summary="verify_project_blocked_until_mutation",
                     error="verify_project_blocked_until_mutation",
                     trace=blocked_trace,
+                )
+            if item.kind == "verify" and changed_files and all(path.lower().endswith((".md", ".markdown", ".txt", ".rst")) for path in changed_files):
+                verification_result = verify_documentation_changes(repo_root=self.repo_root, changed_files=changed_files)
+                row = verification_result.trace_row()
+                trace.append(row)
+                return WorkResult(
+                    ok=verification_result.ok,
+                    summary="documentation artifacts verified" if verification_result.ok else "documentation artifact verification failed",
+                    error="" if verification_result.ok else verification_result.failure_code,
+                    files_read=list(verification_result.affected_files),
+                    trace=[row],
                 )
             if mutation_required and item.kind == "edit":
                 item_tool_args = dict(item.tool_args or {})
@@ -1907,7 +2061,11 @@ class QueueManager:
             if deliverables and not mutation_state.get("mutation_succeeded"):
                 forced_targets = list(deliverables)
             elif deliverables:
-                forced_targets = list(forced_missing_before)
+                completed_targets = set(mutation_state.get("changed_files") or [])
+                # Successful concrete mutation items are authoritative. Do not
+                # ask the model to regenerate them because a later artifact
+                # quality check may fail; verification reports that failure.
+                forced_targets = [path for path in deliverables if path not in completed_targets]
             elif not mutation_state.get("mutation_succeeded"):
                 forced_targets = [resolved_target_path]
             else:
@@ -2239,6 +2397,24 @@ class QueueManager:
                     "missing_required_files": list(missing_required_files),
                     "verification_passed": verification_passed,
                     "verification_profile": verification_decision.verification_profile,
+                    "selected_task_scope": selected_task_scope,
+                    "scope_budget": {
+                        "max_initial_searches": scope_budget.max_initial_searches,
+                        "max_initial_read_files": scope_budget.max_initial_read_files,
+                        "mutation_plan_limit": scope_budget.mutation_plan_limit,
+                        "patch_retry_limit": scope_budget.patch_retry_limit,
+                    },
+                    "mutation_goals": list(approved_mutation_plan.mutation_goals if approved_mutation_plan else []),
+                    "completed_mutation_goals": list(
+                        approved_mutation_plan.mutation_goals
+                        if approved_mutation_plan and mutation_state.get("mutation_succeeded")
+                        else []
+                    ),
+                    "remaining_mutation_goals": list(
+                        []
+                        if approved_mutation_plan and mutation_state.get("mutation_succeeded")
+                        else approved_mutation_plan.mutation_goals if approved_mutation_plan else []
+                    ),
                     "verification_commands": list(verification_decision.commands),
                     "skip_full_pytest_reason": verification_decision.skip_full_pytest_reason,
                     "task_decision": {

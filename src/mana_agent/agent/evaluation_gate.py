@@ -100,6 +100,8 @@ class EvaluationGate:
             return target in state.files_read and self.target_section_found(decision, path=target)
         if decision.scope == "single_file" and decision.target_files:
             return decision.target_files[0] in state.files_read
+        if decision.scope == "multi_file" and decision.target_files:
+            return set(decision.target_files).issubset(state.files_read)
         return False
 
     def after_tool(

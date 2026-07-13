@@ -4,6 +4,38 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-13
 
+- Removed the blocking active-flow divergence prompt from interactive chat.
+  The validated routing decision now explicitly selects whether distinct
+  repository work starts a new coding flow or related work continues the
+  current flow, while ordinary conversation remains available without flow
+  control phrases. Missing flow decisions for active-flow edits stop safely
+  without executing repository actions; explicit `new topic` commands remain
+  supported.
+  - Verification: `.venv/bin/python -m pytest -q tests/test_agent_decision_routing.py tests/test_cli_smoke.py::test_chat_model_starts_distinct_work_without_control_prompt tests/test_cli_smoke.py::test_chat_new_topic_resets_flow_but_keeps_history tests/test_cli_smoke.py::test_chat_explicit_new_topic_still_starts_new_flow` passed (16 tests); `.venv/bin/python -m pytest -q tests/test_cli_smoke.py` passed; targeted Ruff, `py_compile`, and `git diff --check` passed. Whole-file Ruff for `chat_cli.py` remains blocked by its pre-existing wildcard-import F403/F405 baseline.
+
+- Made Telegram polling's single-worker lock portable by using the Windows C
+  runtime's non-blocking byte-range locks on Windows while retaining POSIX
+  `flock` behavior elsewhere.
+  - Verification: `.venv/bin/python -m pytest -q tests/connectors/test_telegram_transport.py`
+    passed (8 tests); targeted Ruff and `git diff --check` passed. Full
+    `.venv/bin/python -m pytest -q` reached 829 passed and 1 skipped, with one
+    unrelated failure in the pre-existing lightweight edit policy changes.
+
+- Added a lightweight explicit-target coding flow with component-wise,
+  case-safe path resolution; centralized direct/localized/cross-file/
+  architecture scope budgets; localized mutation evidence and goal state; and
+  zero initial content searches when named targets resolve. README edits no
+  longer imply architecture synchronization unless the validated request scope
+  explicitly calls for project-structure or documentation synchronization.
+  Patch commands now carry content preconditions, reread only stale targets,
+  rebuild one safe hunk at most once, and recognize already-applied content as
+  an idempotent no-op. Documentation-only changes use deterministic changed-
+  artifact checks for content, duplicate headings, and local links instead of
+  project verification; project verification now reports selected commands,
+  reasons, durations, timeouts, bounded output, affected files, skipped checks,
+  and machine-readable failure codes.
+  - Verification: the focused runtime suite passed (227 tests, 1 filesystem-dependent ambiguity test skipped); the full `.venv/bin/python -m pytest -q` suite passed (830 tests, 1 skipped); targeted Ruff and `git diff --check` passed.
+
 - Corrected interactive website requests so account creation, login, and form
   work route to the browser operator rather than repository coding/mutation.
   Added an explicit model browser-tool procedure, browser-only tool binding,

@@ -520,7 +520,8 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
     joined = "\n".join(worker.questions)
     assert "MutationCommand" in joined  # command synthesis ran
     assert "Target file: docs/overview.md" in joined
-    assert "Verify the changes" in joined       # the verify job ran (after edit)
+    assert "Verify the changes" not in joined  # docs verification is deterministic, not model-backed
+    assert any(row.get("tool_name") == "verify_changed_artifacts" for row in result.trace)
     assert result.execution_backend == "work_queue"
     assert result.run_status == "completed"
     assert result.changed_files == ["docs/overview.md"]

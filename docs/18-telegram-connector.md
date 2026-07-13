@@ -116,6 +116,24 @@ The registry provides `/start`, `/help`, `/status`, `/new`, `/cancel`, and `/id`
 
 Group activation can require an explicit bot mention, a reply to the bot, any bot command, or `always`. Prefer mention or reply activation. Forum topics have independent ordered execution lanes and sessions. Independent chats can execute concurrently up to the configured queue concurrency.
 
+## Approved Mutation Plan: Telegram messaging
+
+The Telegram connector can be used as a safe delivery channel for approved `MutationPlan`s.
+
+### Executable `MutationCommand` for an approved `MutationPlan`
+
+For the approved plan `mp_e0dac3f34151`, the executable mutation contract form is:
+
+```text
+MutationCommand(mp_e0dac3f34151)
+```
+
+Run it deterministically via:
+
+```bash
+mana-agent run --root-dir /path/to/project --plan-id mp_e0dac3f34151
+```
+
 ## Attachments and security
 
 When enabled, attachments are checked by declared size and MIME type, downloaded through Telegram's file API, given a sanitized filename, parsed through Mana-Agent's document service in an isolated session directory, and removed after the turn. Files are never executed. Repository access remains limited to `default_repository` inside `allowed_repository_roots`; Telegram does not provide an unrestricted path selector.

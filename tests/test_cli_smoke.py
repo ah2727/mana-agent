@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 from mana_agent.analysis.models import AskResponse, AskResponseWithTrace, SearchHit
 from mana_agent.commands.cli import _render_coding_sections, _sanitize_full_auto_answer_text, app
 from mana_agent.commands.ui_helpers import emit_tool_event
+from mana_agent.multi_agent.routing.agent_decision import AgentDecision
 
 runner = CliRunner()
 
@@ -2682,17 +2683,19 @@ def test_chat_full_auto_conflict_is_auto_continued(monkeypatch, tmp_path: Path) 
     assert "This request appears to diverge from the active flow." not in result.stdout
 
 
-def test_chat_conflict_followup_edit_request_starts_new_flow(monkeypatch, tmp_path: Path) -> None:
+def test_chat_model_starts_distinct_work_without_control_prompt(monkeypatch, tmp_path: Path) -> None:
     class _FakeAskService(FakeAskService):
         def __init__(self) -> None:
             self.ask_agent = object()
 
     class _FakeCodingAgent:
         calls: list[dict[str, object]] = []
+        reset_ids: list[str] = []
 
         def __init__(self, **_kwargs: object) -> None:
             self.active = "flow-existing"
             _FakeCodingAgent.calls = []
+            _FakeCodingAgent.reset_ids = []
 
         def get_active_flow_id(self) -> str | None:
             return self.active
@@ -2700,6 +2703,13 @@ def test_chat_conflict_followup_edit_request_starts_new_flow(monkeypatch, tmp_pa
         def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
             _ = request
             return flow_id == "flow-existing"
+
+        def reset_flow(self, flow_id: str | None = None) -> str | None:
+            target = flow_id or self.active
+            if target:
+                _FakeCodingAgent.reset_ids.append(target)
+            self.active = None
+            return target
 
         def generate(self, question: str, **kwargs: object) -> dict:
             _FakeCodingAgent.calls.append(
@@ -2729,17 +2739,29 @@ def test_chat_conflict_followup_edit_request_starts_new_flow(monkeypatch, tmp_pa
     monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
     monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
     monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr(
+        "mana_agent.commands.chat_cli._decide_chat_route",
+        lambda **_kwargs: AgentDecision(
+            intent="edit",
+            confidence=1.0,
+            selected_tools=["repo_search", "read_file", "apply_patch"],
+            repo_context_needed=True,
+            code_editing_needed=True,
+            flow_action="new",
+            verifier_passed=True,
+        ),
+    )
 
     request = "add .mana to .gitignore"
     result = runner.invoke(
         app,
         ["chat", "--agent-tools", "--coding-agent"],
-        input=f"{request}\n{request}\nquit\n",
+        input=f"{request}\nquit\n",
     )
 
     assert result.exit_code == 0
-    assert "This request appears to diverge from the active flow." in result.stdout
-    assert "Reply 'continue' or 'new'." not in result.stdout
+    assert "This request appears to diverge from the active flow." not in result.stdout
+    assert _FakeCodingAgent.reset_ids == ["flow-existing"]
     assert _FakeCodingAgent.calls == [{"question": request, "flow_id": None}]
 
 
@@ -2818,7 +2840,7 @@ def test_chat_new_topic_resets_flow_but_keeps_history(monkeypatch, tmp_path: Pat
     assert rendered_history_lengths == [1, 2]
 
 
-def test_chat_conflict_new_topic_choice_starts_new_flow(monkeypatch, tmp_path: Path) -> None:
+def test_chat_explicit_new_topic_still_starts_new_flow(monkeypatch, tmp_path: Path) -> None:
     class _FakeAskService(FakeAskService):
         def __init__(self) -> None:
             self.ask_agent = object()
@@ -2878,10 +2900,10 @@ def test_chat_conflict_new_topic_choice_starts_new_flow(monkeypatch, tmp_path: P
     )
 
     assert result.exit_code == 0
-    assert "This request appears to diverge from the active flow." in result.stdout
-    assert "new/new topic" in result.stdout
-    assert _FakeCodingAgent.reset_ids == ["flow-existing"]
-    assert _FakeCodingAgent.calls == [{"question": request, "flow_id": None}]
+    assert "This request appears to diverge from the active flow." not in result.stdout
+    assert "Started new chat topic; flow reset: flow-new" in result.stdout
+    assert _FakeCodingAgent.reset_ids == ["flow-new"]
+    assert _FakeCodingAgent.calls == [{"question": request, "flow_id": "flow-existing"}]
 
 
 def test_chat_clear_still_clears_visible_history(monkeypatch, tmp_path: Path) -> None:

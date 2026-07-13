@@ -1965,37 +1965,51 @@ def resolve_target_state(
     """Resolve requested/planner target files and keep raw unresolved values visible."""
     raw_from_request = _normalized_target_candidates(match.group("path") for match in _EXPLICIT_FILE_RE.finditer(str(request or "")))
     raw_targets = _normalized_target_candidates([*target_files, *raw_from_request])
-    repo_files = _repo_files_for_target_resolution(repo_root)
-    candidates = _normalized_target_candidates([*discovered_files, *repo_files])
+    from mana_agent.multi_agent.runtime.edit_scope import resolve_repo_path
+
+    candidates = _normalized_target_candidates(discovered_files)
+    inventory_loaded = False
     resolved: list[str] = []
     unresolved: list[str] = []
+    resolution_methods: list[str] = []
     for raw in raw_targets:
+        direct_resolution = resolve_repo_path(repo_root, raw)
+        if direct_resolution.ok:
+            if direct_resolution.resolved_path not in resolved:
+                resolved.append(direct_resolution.resolved_path)
+            resolution_methods.append(f"{raw}:{direct_resolution.method}")
+            continue
+        if not candidates and direct_resolution.method == "missing":
+            # Path resolution failed, so one bounded filename inventory is now
+            # permitted. Resolved explicit paths never pay this cost.
+            candidates = _normalized_target_candidates(_repo_files_for_target_resolution(repo_root))
+            inventory_loaded = True
         match = resolve_target_paths(raw, discovered_files=candidates, repo_files=())
         if match:
             for item in match:
                 if item not in resolved:
                     resolved.append(item)
+            resolution_methods.append(f"{raw}:{'filename_inventory' if inventory_loaded else 'discovered_candidate'}")
             continue
         rel = _safe_relative_path(repo_root, raw)
         if rel:
             rel = _resolve_existing_unique_bare_path(repo_root, rel)
-            if rel and ("/" in rel or (Path(repo_root) / rel).exists()) and rel not in resolved:
+            if rel and (Path(repo_root) / rel).exists() and rel not in resolved:
                 resolved.append(rel)
+                resolution_methods.append(f"{raw}:safe_relative")
                 continue
         if raw not in unresolved:
             unresolved.append(raw)
+        resolution_methods.append(f"{raw}:{direct_resolution.method}")
     return {
         "raw_target_files": raw_targets,
         "resolved_target_files": resolved,
         "unresolved_target_files": unresolved,
+        "path_resolution_methods": resolution_methods,
     }
 
 
 def _resolve_mutation_target_path(task: str, repo_root: Path, target_files: Sequence[str] = ()) -> str:
-    repo_files = _repo_files_for_target_resolution(repo_root)
-    resolved_targets = resolve_target_paths(task, (), repo_files)
-    if resolved_targets:
-        return resolved_targets[0]
     resolved_state = resolve_target_state(task, repo_root, target_files=target_files)
     if resolved_state["resolved_target_files"]:
         return resolved_state["resolved_target_files"][0]
@@ -2066,10 +2080,6 @@ def _resolve_required_deliverables(
     target), this returns the full ordered list of deliverables the request
     demands. The run is held to *all* of them by the verification gate.
     """
-    repo_files = _repo_files_for_target_resolution(repo_root)
-    resolved_targets = resolve_target_paths(request, (), repo_files)
-    if resolved_targets:
-        return resolved_targets
     resolved_state = resolve_target_state(request, repo_root, target_files=target_files)
     if resolved_state["resolved_target_files"]:
         return resolved_state["resolved_target_files"]
@@ -2416,7 +2426,7 @@ def _latest_useful_answer(answers: Sequence[str]) -> str:
     return ""
 
 
-_VERIFICATION_TOOLS = {"verify", "verify_project", "run_command", "n"}
+_VERIFICATION_TOOLS = {"verify", "verify_project", "verify_changed_artifacts", "run_command", "n"}
 
 # Phrases a worker may emit that directly contradict an authoritative execution
 # state showing an edit landed. When the trace proves a mutation happened, an
@@ -2673,6 +2683,13 @@ def _compose_final_answer(
                     lines.append(f"Verification: {commands[-1]} passed")
                 else:
                     lines.append("Verification: passed")
+                skipped_checks = [
+                    item for item in verification.get("skipped_commands", []) if isinstance(item, dict)
+                ]
+                for item in skipped_checks:
+                    lines.append(
+                        f"- Intentionally skipped {item.get('command')}: {item.get('reason') or 'not required for this change'}"
+                    )
         else:
             lines.append("")
             lines.append("Verification: not run")

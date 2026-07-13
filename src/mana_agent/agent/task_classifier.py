@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Sequence
 
+from mana_agent.multi_agent.runtime.edit_scope import resolve_repo_path
+
 
 TaskType = Literal[
     "answer_only",
@@ -62,20 +64,9 @@ def _repo_relative(path: str, *, repo_root: Path) -> str:
             return candidate.resolve().relative_to(repo_root).as_posix()
         except Exception:
             return candidate.as_posix()
-    try:
-        wanted_name = Path(text).name.lower()
-        wanted_path = text.lower()
-        for found in repo_root.rglob("*"):
-            if not found.is_file() or found.name.lower() != wanted_name:
-                continue
-            rel = found.resolve().relative_to(repo_root).as_posix()
-            if rel.lower() == wanted_path or found.name.lower() == wanted_name:
-                return rel
-    except OSError:
-        pass
-    direct = repo_root / text
-    if direct.exists():
-        return direct.resolve().relative_to(repo_root).as_posix()
+    resolution = resolve_repo_path(repo_root, text)
+    if resolution.ok:
+        return resolution.resolved_path
     return text
 
 

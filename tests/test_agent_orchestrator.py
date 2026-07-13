@@ -68,8 +68,8 @@ def test_enough_evidence_gate_skips_unrelated_docs_reads(tmp_path: Path) -> None
 def test_docs_only_verification_selects_task_profile() -> None:
     decision = plan_verification(changed_files=["README.md"])
 
-    assert decision.verification_profile == "task_verification"
-    assert decision.commands == ("git status --short", "git diff -- README.md")
+    assert decision.verification_profile == "documentation_verification"
+    assert decision.commands == ("verify_changed_artifacts",)
     assert decision.skip_full_pytest_reason == "README-only documentation change"
 
 

@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from mana_agent.tools import apply_patch as apply_patch_tool
+from mana_agent.multi_agent.runtime.edit_scope import resolve_repo_path
 
 
 _SIMPLE_EDIT_RE = re.compile(r"\b(update|change|replace|bump|set)\b", re.IGNORECASE)
@@ -80,70 +81,8 @@ def _extract_new_value(request: str) -> str | None:
 
 def resolve_explicit_path(root: Path, user_path: str) -> str | None:
     """Resolve one explicit user path without repository-wide discovery."""
-
-    repo_root = root.resolve()
-    normalized = _normalize_user_path(user_path)
-    if not normalized or "\x00" in normalized or normalized.startswith("/") or ".." in Path(normalized).parts:
-        return None
-
-    def _canonical_existing_rel(candidate: str) -> str | None:
-        parts = Path(candidate).parts
-        current = repo_root
-        actual_parts: list[str] = []
-        for part in parts:
-            if not current.exists() or not current.is_dir():
-                return None
-            exact_matches = [child for child in current.iterdir() if child.name == part]
-            if len(exact_matches) == 1:
-                current = exact_matches[0]
-                actual_parts.append(current.name)
-                continue
-            lowered = part.lower()
-            matches = [child for child in current.iterdir() if child.name.lower() == lowered]
-            if len(matches) != 1:
-                return None
-            current = matches[0]
-            actual_parts.append(current.name)
-        if not current.exists() or not current.is_file():
-            return None
-        try:
-            current.resolve().relative_to(repo_root)
-        except ValueError:
-            return None
-        return Path(*actual_parts).as_posix()
-
-    candidates: list[str] = [normalized]
-    p = Path(normalized)
-    if len(p.parts) == 1:
-        lowered = normalized.lower()
-        common = {
-            "readme.md": "README.md",
-            "license": "LICENSE",
-            "license.md": "LICENSE.md",
-            "changelog.md": "CHANGELOG.md",
-        }.get(lowered)
-        if common and common not in candidates:
-            candidates.append(common)
-        if lowered in {"readme.md", "license", "license.md", "changelog.md"}:
-            for child in repo_root.iterdir():
-                if child.is_file() and child.name.lower() == lowered and child.name not in candidates:
-                    candidates.append(child.name)
-
-    seen_realpaths: set[Path] = set()
-    for candidate in candidates:
-        canonical = _canonical_existing_rel(candidate)
-        if canonical is None:
-            continue
-        target = (repo_root / canonical).resolve()
-        try:
-            target.relative_to(repo_root)
-        except ValueError:
-            continue
-        if target in seen_realpaths:
-            continue
-        seen_realpaths.add(target)
-        return canonical
-    return None
+    resolution = resolve_repo_path(root, user_path)
+    return resolution.resolved_path if resolution.ok else None
 
 
 def classify_edit_intent(root: Path, request: str) -> EditIntent:

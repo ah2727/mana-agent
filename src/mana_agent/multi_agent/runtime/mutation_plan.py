@@ -7,6 +7,8 @@ from typing import Any, Literal, Sequence
 
 from pydantic import BaseModel, Field
 
+from mana_agent.multi_agent.runtime.edit_scope import TaskScope, budget_for_scope, select_scope
+
 
 MutationTool = Literal["write_file", "apply_patch", "create_file"]
 RegisteredMutationTool = Literal[
@@ -111,6 +113,10 @@ class MutationPlan(BaseModel):
     blocked_reason: str | None = None
     quality_checks: list[str] = Field(default_factory=list)
     document_evidence_manifest: dict[str, Any] = Field(default_factory=dict)
+    task_scope: TaskScope = "unknown"
+    scope_budget: dict[str, Any] = Field(default_factory=dict)
+    mutation_goals: list[str] = Field(default_factory=list)
+    completed_goals: list[str] = Field(default_factory=list)
 
     def model_post_init(self, _ctx: Any) -> None:
         if not self.plan_id:
@@ -183,9 +189,21 @@ def is_architecture_docs_update(request: str, target_files: Sequence[str]) -> bo
 def requires_document_evidence_discovery(request: str, target_files: Sequence[str]) -> bool:
     text = str(request or "").lower()
     return (
-        is_readme_document_update(request, target_files)
-        or is_architecture_docs_update(request, target_files)
-        or any(phrase in text for phrase in ("sync docs", "document new project structure", "document new structure"))
+        is_architecture_docs_update(request, target_files)
+        or any(
+            phrase in text
+            for phrase in (
+                "sync all docs",
+                "sync docs",
+                "synchronize all documentation",
+                "document current architecture",
+                "current project structure",
+                "project structure changed",
+                "regenerate all docs",
+                "document new project structure",
+                "document new structure",
+            )
+        )
     )
 
 
@@ -302,6 +320,12 @@ def build_mutation_plan(
     checks: list[str]
     manifest: dict[str, Any] = {}
     evidence_discovery_required = requires_document_evidence_discovery(user_goal, targets)
+    task_scope = select_scope(
+        resolved_targets=targets,
+        model_scope="single_file" if len(targets) == 1 else "multi_file" if targets else "unknown",
+        architecture_sync=evidence_discovery_required,
+    )
+    scope_budget = budget_for_scope(task_scope)
     if evidence_discovery_required:
         required.extend(representative_document_sources(repo_root, readme=readme_update))
         if arch_update:
@@ -347,6 +371,16 @@ def build_mutation_plan(
         blocked_reason=None,
         quality_checks=checks,
         document_evidence_manifest=manifest,
+        task_scope=task_scope,
+        scope_budget={
+            "max_initial_searches": scope_budget.max_initial_searches,
+            "max_initial_read_files": scope_budget.max_initial_read_files,
+            "max_direct_dependencies": scope_budget.max_direct_dependencies,
+            "architecture_evidence_allowed": scope_budget.architecture_evidence_allowed,
+            "mutation_plan_limit": scope_budget.mutation_plan_limit,
+            "patch_retry_limit": scope_budget.patch_retry_limit,
+        },
+        mutation_goals=list(intended),
     )
     errors = validate_mutation_plan(plan, repo_root=repo_root)
     if errors:
@@ -424,7 +458,13 @@ def compile_mutation_command(
         return MutationCommand(
             plan_id=plan.plan_id,
             tool_name="apply_patch",
-            tool_args={"patch": patch},
+            tool_args={
+                "patch": patch,
+                "content_hashes": {
+                    path: hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    for path, content in current_files.items()
+                },
+            },
             target_files=targets,
             reason="compiled from patch/diff mutation strategy",
         )
@@ -448,7 +488,13 @@ def compile_mutation_command(
         return MutationCommand(
             plan_id=plan.plan_id,
             tool_name="apply_patch",
-            tool_args={"patch": patch},
+            tool_args={
+                "patch": patch,
+                "content_hashes": {
+                    path: hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    for path, content in current_files.items()
+                },
+            },
             target_files=targets,
             reason="compiled from supplied patch",
         )

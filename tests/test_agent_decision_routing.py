@@ -135,6 +135,52 @@ def test_agent_decision_routes_fix_request_to_repo_read_and_patch_tools() -> Non
     assert decision.code_editing_needed is True
 
 
+def test_agent_decision_selects_new_flow_for_distinct_repository_work() -> None:
+    payload = {
+        "intent": "edit",
+        "confidence": 0.94,
+        "selected_tools": ["repo_search", "read_file", "apply_patch"],
+        "tool_inputs": {"repo_search": {"query": "telegram connector"}},
+        "repo_context_needed": True,
+        "web_search_needed": False,
+        "code_editing_needed": True,
+        "flow_action": "new",
+        "reasoning_summary": "This is distinct from the active documentation flow.",
+    }
+    engine = AgentDecisionEngine(llm=_DecisionModel({"fix telegram polling": payload}))
+
+    decision = engine.decide(
+        user_request="fix telegram polling",
+        memory_context='Active coding flow: {"objective":"update README"}',
+    )
+
+    assert decision.flow_action == "new"
+    assert decision.verifier_passed is True
+
+
+def test_agent_decision_rejects_missing_flow_action_for_active_edit() -> None:
+    payload = {
+        "intent": "edit",
+        "confidence": 0.94,
+        "selected_tools": ["repo_search", "read_file", "apply_patch"],
+        "tool_inputs": {"repo_search": {"query": "telegram connector"}},
+        "repo_context_needed": True,
+        "web_search_needed": False,
+        "code_editing_needed": True,
+        "reasoning_summary": "Repository edit selected without a flow decision.",
+    }
+    engine = AgentDecisionEngine(llm=_DecisionModel({"fix telegram polling": payload}))
+
+    decision = engine.decide(
+        user_request="fix telegram polling",
+        memory_context='Active coding flow: {"objective":"update README"}',
+    )
+
+    assert decision.flow_action == "none"
+    assert decision.verifier_passed is False
+    assert "requires flow_action" in decision.verifier_summary
+
+
 def test_agent_decision_routes_latest_docs_to_web_search() -> None:
     decision = _engine().decide(user_request="latest OpenAI API docs")
     assert decision.selected_tools == ["web_search"]

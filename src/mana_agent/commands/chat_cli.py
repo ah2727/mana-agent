@@ -157,12 +157,19 @@ def _agent_decision_llm(ask_service):
     return getattr(qna_chain, "llm", None)
 
 
-def _decide_chat_route(*, ask_service, question: str, root: Path) -> AgentDecision:
+def _decide_chat_route(
+    *,
+    ask_service,
+    question: str,
+    root: Path,
+    memory_context: str = "",
+) -> AgentDecision:
     llm = _agent_decision_llm(ask_service)
     engine = AgentDecisionEngine(llm=llm, enable_fallback=False)
     return engine.decide(
         user_request=question,
         repo_context=f"Repository root: {root}",
+        memory_context=memory_context,
         command_hint="chat",
     )
 
@@ -1196,7 +1203,6 @@ def chat(
         planning_question_llm_disabled = False
         planning_question_failure_logged = False
         active_flow_id: str | None = _ca_flow if isinstance(_ca_flow, str) and _ca_flow.strip() else None
-        pending_conflict_question: str | None = None
         pending_ui_selection: dict[str, Any] | None = None
         pending_prechecklist: dict[str, Any] | None = None
         pending_prechecklist_source: str = ""
@@ -1267,7 +1273,7 @@ def chat(
                 raise
 
         def _start_new_topic() -> str | None:
-            nonlocal active_flow_id, pending_conflict_question
+            nonlocal active_flow_id
             reset_id: str | None = None
             if coding_agent_instance is not None:
                 target_flow = active_flow_id or coding_agent_instance.get_active_flow_id()
@@ -1277,7 +1283,6 @@ def chat(
                     else:
                         reset_id = target_flow.strip()
             active_flow_id = None
-            pending_conflict_question = None
             return reset_id
 
         def _base_auto_execute_tool_policy(user_question: str, *, auto_chat_mode: AutoChatMode | None = None) -> dict[str, Any]:
@@ -1974,7 +1979,7 @@ def chat(
                 else:
                     console.print("[green]Browser action approved for this exact page and target. Ask Mana-Agent to continue.[/green]")
                 continue
-            if pending_conflict_question is None and _is_new_topic_command(question):
+            if _is_new_topic_command(question):
                 reset_id = _start_new_topic()
                 if reset_id:
                     console.print(f"[green]Started new chat topic; flow reset: {reset_id}[/green]")
@@ -2011,7 +2016,6 @@ def chat(
                     chat_ui_state.activate_session(created.session_id)
                     session_turns.clear()
                     active_flow_id = None
-                    pending_conflict_question = None
                     console.print(f"[green]New isolated session:[/green] {created.session_id}")
                     continue
                 if action == "switch" and len(parts) > 2:
@@ -2024,7 +2028,6 @@ def chat(
                         continue
                     session_turns.clear()
                     active_flow_id = None
-                    pending_conflict_question = None
                     console.print(f"[green]Switched session:[/green] {chat_ui_state.session_id}")
                     continue
                 if action == "archive":
@@ -2211,11 +2214,46 @@ def chat(
 
             original_auto_question = question
             question = resolve_auto_followup(question, auto_chat_state)
+            flow_routing_context = ""
+            if (
+                active_flow_id
+                and coding_agent_instance is not None
+                and hasattr(coding_agent_instance, "flow_summary")
+            ):
+                flow_summary = coding_agent_instance.flow_summary(active_flow_id)
+                if flow_summary:
+                    flow_routing_context = (
+                        "Active coding flow (decide flow_action explicitly):\n"
+                        + json.dumps(flow_summary, ensure_ascii=False, sort_keys=True, default=str)[:4000]
+                    )
             agent_decision = _run_chat_event_step(
                 "Decision routing...",
-                lambda: _decide_chat_route(ask_service=ask_service, question=question, root=root),
+                lambda: _decide_chat_route(
+                    ask_service=ask_service,
+                    question=question,
+                    root=root,
+                    memory_context=flow_routing_context,
+                ),
                 event_type="RoutingStarted",
             )
+            if (
+                active_flow_id
+                and (agent_decision.intent == "edit" or agent_decision.code_editing_needed)
+                and agent_decision.flow_action == "none"
+            ):
+                console.print(
+                    "[red]Model decision failed: flow_action.[/red] "
+                    "No repository action was executed. The active coding flow requires "
+                    "a validated continue or new decision."
+                )
+                continue
+            if active_flow_id and agent_decision.flow_action == "new":
+                prior_flow_id = active_flow_id
+                _start_new_topic()
+                logger.info(
+                    "Model started a new coding flow for a distinct request",
+                    extra={"prior_flow_id": prior_flow_id, "question": question},
+                )
             selected_skill_text = ""
             if chat_skill_context.enabled and chat_skill_context.available_skills:
                 try:
@@ -2709,7 +2747,6 @@ def chat(
                 if action == "reset":
                     reset_id = coding_agent_instance.reset_flow(active_flow_id)
                     active_flow_id = None
-                    pending_conflict_question = None
                     if reset_id:
                         console.print(f"[green]Flow reset: {reset_id}[/green]")
                     else:
@@ -2872,34 +2909,6 @@ def chat(
             logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
 
             if (
-                coding_agent_instance is not None
-                and coding_memory
-                and pending_conflict_question is not None
-                and not plan_trigger_request
-            ):
-                choice = question.strip().lower()
-                if choice in {"continue", "c", "1"}:
-                    question = pending_conflict_question
-                elif choice in {"new", "n", "2"} or _is_new_topic_command(question):
-                    conflict_question = pending_conflict_question
-                    _start_new_topic()
-                    question = conflict_question
-                elif edit_request:
-                    logger.info(
-                        "Pending flow conflict replaced by new edit request",
-                        extra={
-                            "flow_id": active_flow_id,
-                            "pending_question": pending_conflict_question,
-                            "question": question,
-                        },
-                    )
-                    _start_new_topic()
-                else:
-                    console.print("[yellow]Reply 'continue' or 'new topic'.[/yellow]")
-                    continue
-                pending_conflict_question = None
-
-            if (
                 edit_request
                 and coding_agent_instance is None
                 and not (agent_tools and auto_execute_plan and tool_worker_process and plan_trigger_request)
@@ -2909,26 +2918,6 @@ def chat(
                     "Re-run with [bold]--agent-tools --coding-agent[/bold] to allow create_file/write_file/apply_patch/delete_file."
                 )
                 continue
-
-            if (
-                coding_agent_instance is not None
-                and coding_memory
-                and edit_request
-                and not plan_trigger_request
-            ):
-                if active_flow_id and coding_agent_instance.is_conflicting_request(question, active_flow_id):
-                    if execution_profile == "full-auto":
-                        logger.info(
-                            "Full-auto flow conflict auto-continued",
-                            extra={"flow_id": active_flow_id, "question": question},
-                        )
-                    else:
-                        pending_conflict_question = question
-                        console.print(
-                            "[yellow]This request appears to diverge from the active flow.[/yellow] "
-                            "Type [bold]continue[/bold] to keep current flow or [bold]new/new topic[/bold] to start a new flow."
-                        )
-                        continue
 
             if (
                 coding_agent_instance is None

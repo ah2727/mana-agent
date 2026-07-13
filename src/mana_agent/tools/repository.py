@@ -43,6 +43,11 @@ class VerificationCheck:
     stdout: str = ""
     stderr: str = ""
     reason: str = ""
+    selection_reason: str = ""
+    duration_ms: float = 0.0
+    timed_out: bool = False
+    failure_code: str = ""
+    affected_files: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -447,14 +452,43 @@ def git_diff(repo_root: Path, *, path: str = "") -> dict[str, Any]:
     return git_tools.diff(repo_path=repo_root, path=path)
 
 
-def _run_check(repo_root: Path, name: str, command: list[str], timeout: int = 120) -> VerificationCheck:
+def _run_check(
+    repo_root: Path,
+    name: str,
+    command: list[str],
+    timeout: int = 120,
+    *,
+    selection_reason: str = "project verification policy",
+    affected_files: list[str] | None = None,
+) -> VerificationCheck:
     exe = command[0]
     if shutil.which(exe) is None and not Path(exe).exists():
-        return VerificationCheck(name=name, command=command, status="skipped", reason=f"{exe} not found")
+        return VerificationCheck(
+            name=name,
+            command=command,
+            status="skipped",
+            reason=f"{exe} not found",
+            selection_reason=selection_reason,
+            failure_code="verification_tool_missing",
+            affected_files=affected_files or [],
+        )
+    started = time.perf_counter()
     try:
         completed = subprocess.run(command, cwd=repo_root, capture_output=True, text=True, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired:
-        return VerificationCheck(name=name, command=command, status="failed", reason=f"timed out after {timeout}s")
+    except subprocess.TimeoutExpired as exc:
+        return VerificationCheck(
+            name=name,
+            command=command,
+            status="failed",
+            reason=f"timed out after {timeout}s",
+            stdout=str(exc.stdout or "")[:6000],
+            stderr=str(exc.stderr or "")[:6000],
+            selection_reason=selection_reason,
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 3),
+            timed_out=True,
+            failure_code="verification_timeout",
+            affected_files=affected_files or [],
+        )
     status = "passed" if completed.returncode == 0 else "failed"
     return VerificationCheck(
         name=name,
@@ -463,28 +497,62 @@ def _run_check(repo_root: Path, name: str, command: list[str], timeout: int = 12
         returncode=completed.returncode,
         stdout=completed.stdout[:6000],
         stderr=completed.stderr[:6000],
+        selection_reason=selection_reason,
+        duration_ms=round((time.perf_counter() - started) * 1000.0, 3),
+        failure_code="" if completed.returncode == 0 else "verification_command_failed",
+        affected_files=affected_files or [],
     )
 
 
-def verify_project(repo_root: Path, *, quick: bool = False) -> dict[str, Any]:
+def verify_project(
+    repo_root: Path,
+    *,
+    quick: bool = False,
+    changed_files: list[str] | None = None,
+) -> dict[str, Any]:
     """Run standard project verification checks and report skipped tools clearly."""
 
     root = repo_root.resolve()
-    commands: list[tuple[str, list[str]]] = [
-        ("pytest", ["pytest", "-q"]),
-        ("ruff", ["ruff", "check", "src", "tests"]),
-        ("mypy", ["mypy", "src", "tests"]),
-        ("import", [sys.executable, "-c", "import mana_agent; print('ok')"]),
-        ("cli_help", ["mana-agent", "--help"]),
-        ("cli_ask_help", ["mana-agent", "ask", "--help"]),
-        ("cli_chat_help", ["mana-agent", "chat", "--help"]),
+    affected = [str(path).replace("\\", "/").lstrip("./") for path in (changed_files or []) if str(path).strip()]
+    docs_only = bool(affected) and all(path.lower().endswith((".md", ".markdown", ".txt", ".rst")) for path in affected)
+    if docs_only:
+        from mana_agent.agent.verification_planner import verify_documentation_changes
+
+        artifact_result = verify_documentation_changes(repo_root=root, changed_files=affected)
+        return {
+            "ok": artifact_result.ok,
+            "verification_class": "documentation",
+            "checks": list(artifact_result.checks),
+            "selected_commands": ["verify_changed_artifacts"],
+            "skipped_checks": list(artifact_result.skipped_checks),
+            "affected_files": affected,
+            "failure_code": artifact_result.failure_code,
+            "summary": {"passed": int(artifact_result.ok), "failed": int(not artifact_result.ok), "skipped": len(artifact_result.skipped_checks)},
+        }
+    commands: list[tuple[str, list[str], str]] = [
+        ("pytest", ["pytest", "-q"], "broad project behavior verification"),
+        ("ruff", ["ruff", "check", "src", "tests"], "project lint verification"),
+        ("mypy", ["mypy", "src", "tests"], "project type verification"),
+        ("import", [sys.executable, "-c", "import mana_agent; print('ok')"], "package import smoke check"),
+        ("cli_help", ["mana-agent", "--help"], "CLI startup smoke check"),
+        ("cli_ask_help", ["mana-agent", "ask", "--help"], "ask command smoke check"),
+        ("cli_chat_help", ["mana-agent", "chat", "--help"], "chat command smoke check"),
     ]
     if quick:
-        commands = [item for item in commands if item[0] in {"pytest", "import", "cli_help"}]
-    checks = [_run_check(root, name, cmd) for name, cmd in commands]
+        commands = [item for item in commands if item[0] in {"import", "cli_help"}]
+    checks = [
+        _run_check(root, name, cmd, selection_reason=reason, affected_files=affected)
+        for name, cmd, reason in commands
+    ]
+    failed = [item for item in checks if item.status == "failed"]
     return {
         "ok": all(item.status in {"passed", "skipped"} for item in checks),
         "checks": [item.to_dict() for item in checks],
+        "verification_class": "quick_project" if quick else "project",
+        "selected_commands": [item.command for item in checks],
+        "affected_files": affected,
+        "skipped_checks": [item.reason for item in checks if item.status == "skipped"],
+        "failure_code": failed[0].failure_code if failed else "",
         "summary": {
             "passed": sum(1 for item in checks if item.status == "passed"),
             "failed": sum(1 for item in checks if item.status == "failed"),

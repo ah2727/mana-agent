@@ -22,6 +22,7 @@ AgentIntent = Literal[
     "tool",
     "high_risk_tool",
 ]
+FlowAction = Literal["none", "continue", "new"]
 
 KNOWN_AGENT_TOOLS = frozenset(
     {
@@ -78,6 +79,7 @@ class AgentDecision:
     repo_context_needed: bool = False
     web_search_needed: bool = False
     code_editing_needed: bool = False
+    flow_action: FlowAction = "none"
     reasoning_summary: str = ""
     source: str = "model"
     verifier_passed: bool = False
@@ -173,8 +175,15 @@ Return JSON only with this schema:
   "repo_context_needed": true,
   "web_search_needed": false,
   "code_editing_needed": false,
+  "flow_action": "none|continue|new",
   "reasoning_summary": "short reason"
 }
+
+Flow continuity rules:
+- Use "continue" when the request continues or refines the active coding flow.
+- Use "new" when the request starts distinct repository work that should not inherit the active flow's objective or checklist.
+- Use "none" when there is no active coding flow or the request does not perform repository work.
+- Always decide flow_action from the supplied memory_context; never ask the user to type a control phrase merely to switch topics.
 """
 
 AGENT_DECISION_REVIEW_PROMPT = """You are Mana-Agent's routing decision reviewer.
@@ -192,6 +201,9 @@ Enforce these boundaries:
   inspecting or interacting with a target URL.
 - Website account/form/content actions are not repository edits.
 - Repository mutation tools are valid only when repository files must change.
+- When memory_context contains an active coding flow, preserve the proposed
+  flow_action only if it correctly distinguishes related work (continue) from
+  distinct repository work (new). Plain conversation uses none.
 - Select only tools present in available_tools. Preserve a valid proposal; fix
   an invalid one. Do not infer a static route from keywords alone.
 Return JSON only.
@@ -231,7 +243,11 @@ class AgentDecisionEngine:
                 reasoning_summary="High-risk shell or git operation requires safety routing.",
                 source="safety",
             )
-            return self._with_verification(decision, request)
+            return self._with_verification(
+                decision,
+                request,
+                require_flow_action=bool(memory_context.strip()),
+            )
 
         model_decision = self._model_decision(
             request,
@@ -240,7 +256,11 @@ class AgentDecisionEngine:
             command_hint=command_hint,
         )
         if model_decision is not None:
-            return self._with_verification(model_decision, request)
+            return self._with_verification(
+                model_decision,
+                request,
+                require_flow_action=bool(memory_context.strip()),
+            )
         return self._with_verification(
             AgentDecision(
                 intent="answer",
@@ -249,6 +269,7 @@ class AgentDecisionEngine:
                 source="model_unavailable",
             ),
             request,
+            require_flow_action=bool(memory_context.strip()),
         )
 
     def _model_decision(
@@ -288,6 +309,7 @@ class AgentDecisionEngine:
                             {
                                 "user_request": request,
                                 "proposed_decision": proposed.to_dict(),
+                                "memory_context": memory_context[:1200],
                                 "available_tools": self.tool_descriptions,
                             },
                             ensure_ascii=False,
@@ -331,12 +353,24 @@ class AgentDecisionEngine:
             repo_context_needed=bool(data.get("repo_context_needed", False)),
             web_search_needed=bool(data.get("web_search_needed", False)),
             code_editing_needed=bool(data.get("code_editing_needed", False)),
+            flow_action=_clean_flow_action(data.get("flow_action")),
             reasoning_summary=str(data.get("reasoning_summary") or "Model-routed agent decision.")[:500],
             source="model",
         )
 
-    def _with_verification(self, decision: AgentDecision, request: str) -> AgentDecision:
-        verification = verify_agent_decision(decision, user_request=request, tool_descriptions=self.tool_descriptions)
+    def _with_verification(
+        self,
+        decision: AgentDecision,
+        request: str,
+        *,
+        require_flow_action: bool = False,
+    ) -> AgentDecision:
+        verification = verify_agent_decision(
+            decision,
+            user_request=request,
+            tool_descriptions=self.tool_descriptions,
+            require_flow_action=require_flow_action,
+        )
         decision.verifier_passed = verification.passed
         decision.verifier_summary = verification.summary
         return decision
@@ -347,6 +381,7 @@ def verify_agent_decision(
     *,
     user_request: str,
     tool_descriptions: list[dict[str, Any]] | None = None,
+    require_flow_action: bool = False,
 ) -> AgentDecisionVerification:
     available = {str(item.get("name") or "") for item in (tool_descriptions or agent_tool_descriptions())}
     warnings: list[str] = []
@@ -368,6 +403,12 @@ def verify_agent_decision(
         warnings.append("web_research intent must set web_search_needed=true")
     if decision.intent in {"repo_search", "analyze", "edit", "review"} and not decision.repo_context_needed:
         warnings.append(f"{decision.intent} intent should request repository context")
+    if (
+        require_flow_action
+        and (decision.intent == "edit" or decision.code_editing_needed)
+        and decision.flow_action == "none"
+    ):
+        warnings.append("active coding flow requires flow_action=continue or flow_action=new for repository edits")
     if not str(user_request or "").strip():
         warnings.append("empty user request")
     return AgentDecisionVerification(
@@ -405,3 +446,10 @@ def _clean_tool_inputs(value: Any, selected_tools: list[str]) -> dict[str, dict[
         if isinstance(raw, dict):
             cleaned[tool] = dict(raw)
     return cleaned
+
+
+def _clean_flow_action(value: Any) -> FlowAction:
+    action = str(value or "none").strip().lower()
+    if action not in {"none", "continue", "new"}:
+        raise ValueError(f"invalid flow_action: {action}")
+    return action  # type: ignore[return-value]

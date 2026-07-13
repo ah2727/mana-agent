@@ -9,7 +9,7 @@ from mana_agent.multi_agent.runtime.coding_agent_models import CodingAgentStateM
 from mana_agent.tools.contracts import coding_tool_contracts
 from mana_agent.config.settings import default_logs_dir
 from mana_agent.tools.apply_patch import safe_apply_patch
-from mana_agent.tools.repository import _run_check, call_graph
+from mana_agent.tools.repository import _run_check, call_graph, verify_project
 
 
 def test_tool_contracts_are_machine_readable() -> None:
@@ -113,6 +113,37 @@ def test_verification_command_reports_missing_tool(tmp_path: Path) -> None:
 
     assert result.status == "skipped"
     assert "not found" in result.reason
+    assert result.failure_code == "verification_tool_missing"
+
+
+def test_verify_project_docs_only_returns_structured_skips(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+
+    result = verify_project(tmp_path, quick=True, changed_files=["README.md"])
+
+    assert result["ok"] is True
+    assert result["verification_class"] == "documentation"
+    assert result["selected_commands"] == ["verify_changed_artifacts"]
+    assert any("pytest" in reason for reason in result["skipped_checks"])
+    assert result["failure_code"] == ""
+
+
+def test_quick_project_verification_does_not_select_full_pytest(monkeypatch, tmp_path: Path) -> None:
+    selected: list[list[str]] = []
+
+    def _fake_run_check(repo_root, name, command, timeout=120, **kwargs):  # noqa: ANN001
+        selected.append(command)
+        from mana_agent.tools.repository import VerificationCheck
+
+        return VerificationCheck(name=name, command=command, status="passed", **kwargs)
+
+    monkeypatch.setattr("mana_agent.tools.repository._run_check", _fake_run_check)
+
+    result = verify_project(tmp_path, quick=True)
+
+    assert result["ok"] is True
+    assert selected
+    assert all(command[:2] != ["pytest", "-q"] for command in selected)
 
 
 def test_call_graph_reports_python_ast_call_edges(tmp_path: Path) -> None:

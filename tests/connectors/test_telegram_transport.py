@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +13,7 @@ from mana_agent.connectors.telegram.config import TelegramPollingConfig
 from mana_agent.connectors.telegram.errors import TelegramApiError, TelegramConflictError, TelegramRateLimitError
 from mana_agent.connectors.telegram.normalizer import TelegramUpdateNormalizer
 from mana_agent.connectors.telegram.store import TelegramUpdateStore
+from mana_agent.connectors.telegram.transports import polling
 from mana_agent.connectors.telegram.transports.polling import TelegramPollingTransport
 
 
@@ -105,3 +108,25 @@ def test_polling_lock_prevents_two_workers(tmp_path: Path) -> None:
             two._acquire_lock()
     finally:
         one._release_lock()
+
+
+def test_windows_polling_lock_uses_nonblocking_one_byte_region(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, int, int, int]] = []
+
+    def locking(fd: int, mode: int, nbytes: int) -> None:
+        calls.append((fd, mode, nbytes, handle.tell()))
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2, locking=locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+    with (tmp_path / "poller.lock").open("a+") as handle:
+        handle.write("occupied")
+        polling._acquire_windows_file_lock(handle)
+        polling._release_windows_file_lock(handle)
+
+    assert [(mode, nbytes, position) for _, mode, nbytes, position in calls] == [
+        (fake_msvcrt.LK_NBLCK, 1, 0),
+        (fake_msvcrt.LK_UNLCK, 1, 0),
+    ]

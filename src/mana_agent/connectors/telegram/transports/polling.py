@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -11,6 +12,42 @@ from ..normalizer import TelegramUpdateNormalizer
 from ..observability import emit_telegram_event
 
 logger = logging.getLogger(__name__)
+
+
+def _acquire_posix_file_lock(handle: Any) -> None:
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _release_posix_file_lock(handle: Any) -> None:
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _acquire_windows_file_lock(handle: Any) -> None:
+    import msvcrt
+
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+
+def _release_windows_file_lock(handle: Any) -> None:
+    import msvcrt
+
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+if os.name == "nt":
+    _acquire_file_lock = _acquire_windows_file_lock
+    _release_file_lock = _release_windows_file_lock
+elif os.name == "posix":
+    _acquire_file_lock = _acquire_posix_file_lock
+    _release_file_lock = _release_posix_file_lock
+else:
+    raise RuntimeError(f"Unsupported file-locking platform: {os.name}")
 
 
 class TelegramPollingTransport:
@@ -31,9 +68,8 @@ class TelegramPollingTransport:
         self.lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         handle = self.lock_path.open("a+")
         try:
-            import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (ImportError, BlockingIOError, OSError) as exc:
+            _acquire_file_lock(handle)
+        except OSError as exc:
             handle.close()
             raise TelegramConflictError(409, "Another polling worker is already using this Telegram bot.") from exc
         self._lock_handle = handle
@@ -42,9 +78,8 @@ class TelegramPollingTransport:
         if self._lock_handle is None:
             return
         try:
-            import fcntl
-            fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
-        except (ImportError, OSError):
+            _release_file_lock(self._lock_handle)
+        except OSError:
             pass
         self._lock_handle.close()
         self._lock_handle = None
