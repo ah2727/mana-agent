@@ -21,6 +21,16 @@ All notable repository changes should be recorded here.
     3 pre-existing failures in `tests/test_chat_ui_events_tokens.py` (UI mode /
     subagent rendering) are unrelated to patch recovery. Focused patch/recovery
     suite passed (40 tests, 1 skipped). Targeted `py_compile` passed.
+- Removed post-response diagnostic panels (Summary, Steps, Decisions, History /
+  Session History) from chat presentation. Final turns now render the normal
+  assistant answer plus concise warnings; live tool progress while a request is
+  running is preserved. Execution telemetry, traces, decisions, and session
+  history remain available for logging, debugging, tests, and future dashboard
+  use.
+  - Verification: `./venv/bin/python -m pytest -q tests/test_cli_smoke.py
+    tests/test_cli_ux_helpers.py tests/test_chat_direct_commands.py` passed
+    (94 tests); focused panel-regression filter also passed (22 tests);
+    `py_compile` and `git diff --check` passed.
 
 - Reworked coding turns around one validated adaptive execution-scope decision
   with a four-level escalation ladder, canonical run-scoped evidence caching,
