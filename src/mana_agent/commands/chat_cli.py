@@ -446,13 +446,13 @@ def chat(
         True,
         "--auto-index-missing/--no-auto-index-missing",
     ),
-    agent_tools: bool | None = typer.Option(
-        None,
+    agent_tools: bool = typer.Option(
+        True,
         "--agent-tools/--no-agent-tools",
         help="Use agent tool mode for chat answers.",
     ),
-    coding_agent: bool | None = typer.Option(
-        None,
+    coding_agent: bool = typer.Option(
+        True,
         "--coding-agent/--no-coding-agent",
         help="Allow coding-agent file-edit workflows.",
     ),
@@ -534,8 +534,8 @@ def chat(
         "--planning-max-questions",
         help="Maximum planning clarification questions to ask (1-6).",
     ),
-    auto_execute_plan: bool | None = typer.Option(
-        None,
+    auto_execute_plan: bool = typer.Option(
+        True,
         "--auto-execute-plan/--no-auto-execute-plan",
         help="Automatically execute plan-producing turns in agent-tools mode.",
         hidden=True,
@@ -630,12 +630,13 @@ def chat(
     # Keep noisy indexing/parsing logs off the interactive console (the file log
     # still captures everything) so the prompt is usable while the index builds.
     _install_quiet_chat_console_logging()
-    agent_tools_explicit = agent_tools is not None
-    coding_agent_explicit = coding_agent is not None
-    agent_tools = True if agent_tools is None else bool(agent_tools)
-    coding_agent = True if coding_agent is None else bool(coding_agent)
-    if agent_tools_explicit and not coding_agent_explicit:
-        coding_agent = False
+    # Defaults are True for rich full-featured experience (agent routing, planning,
+    # tools, auto-execute, etc) in both the plain "old" console chat loop and the TUI.
+    agent_tools = bool(agent_tools)
+    coding_agent = bool(coding_agent)
+    # For legacy decision sites that keyed off "*_explicit", treat the (now default-on) value
+    # as the intent for rich mode. This ensures old console path uses full features by default.
+    agent_tools_explicit = bool(agent_tools)
     logger.info(
         "Chat command started",
         extra={
@@ -690,11 +691,13 @@ def chat(
     if execution_profile not in {"full-auto", "balanced", "conservative"}:
         raise typer.BadParameter("--execution-profile must be one of: full-auto, balanced, conservative.")
 
-    legacy_auto_execute_plan_requested = auto_execute_plan is True
-    legacy_auto_execute_plan_disabled = auto_execute_plan is False
-    auto_execute_plan = not legacy_auto_execute_plan_disabled
+    # auto_execute_plan now defaults True via Option; honor explicit disable or full-auto profile.
+    auto_execute_plan = bool(auto_execute_plan)
+    legacy_auto_execute_plan_requested = bool(auto_execute_plan)
+    legacy_auto_execute_plan_disabled = False
     if execution_profile == "full-auto":
         auto_execute_plan = True
+        legacy_auto_execute_plan_requested = True
         # Keep user override when they pass a non-default value.
         if int(auto_execute_max_passes) == 4:
             auto_execute_max_passes = 10
@@ -795,7 +798,7 @@ def chat(
         dir_mode=dir_mode,
         root_dir=str(root),
         k=resolved_k,
-        agent_tools=bool(agent_tools_explicit and agent_tools),
+        agent_tools=bool(agent_tools),
         agent_max_steps=chat_agent_max_steps,
         agent_timeout_seconds=agent_timeout_seconds,
         max_indexes=max_indexes,
@@ -3064,7 +3067,9 @@ def chat(
                 force_plan_only_response=force_plan_only_response,
                 has_pending_prechecklist=pending_prechecklist is not None,
                 coding_agent_is_custom=coding_agent_is_custom,
-                general_coding_agent_turns=bool(coding_agent_explicit or coding_agent_is_custom),
+                # Use effective value (defaults to True) so "old chat cli" plain loop gets full
+                # rich model-driven routing + planning + agent turns by default, matching TUI.
+                general_coding_agent_turns=bool(coding_agent or coding_agent_is_custom),
             )
 
             if not use_coding_agent_turn:

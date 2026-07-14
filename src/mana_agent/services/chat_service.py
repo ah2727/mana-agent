@@ -134,17 +134,19 @@ class ChatService:
                     "Compute selected indexes in CLI and call chat_service.set_index_dirs(...)."
                 )
 
+            call_k = kwargs.get("k", self._k) if kwargs else self._k
+            extra = {kk: vv for kk, vv in (kwargs or {}).items() if kk != "k"}
             if self._agent_tools:
                 # Tool/agent dir-mode path
                 response = _call_with_optional_callbacks(
                     self._ask_service.ask_with_tools_dir_mode,
                     index_dirs=self._index_dirs,
                     question=question,
-                    k=self._k,
+                    k=call_k,
                     max_steps=self._agent_max_steps,
                     timeout_seconds=self._agent_timeout_seconds,
                     root_dir=self._root_dir,
-                    **kwargs,
+                    **extra,
                 )
             else:
                 # Classic dir-mode path
@@ -152,9 +154,9 @@ class ChatService:
                     self._ask_service.ask_dir_mode,
                     index_dirs=self._index_dirs,
                     question=question,
-                    k=self._k,
+                    k=call_k,
                     root_dir=self._root_dir,
-                    **kwargs,
+                    **extra,
                 )
         else:
             if not self._index_dirs:
@@ -164,17 +166,18 @@ class ChatService:
                 )
 
             index_dir = self._index_dirs[0]
-
+            call_k = kwargs.get("k", self._k) if kwargs else self._k
+            extra = {kk: vv for kk, vv in (kwargs or {}).items() if kk != "k"}
             if self._agent_tools:
                 # Tool/agent single-index path
                 response = _call_with_optional_callbacks(
                     self._ask_service.ask_with_tools,
                     index_dir=index_dir,
                     question=question,
-                    k=self._k,
+                    k=call_k,
                     max_steps=self._agent_max_steps,
                     timeout_seconds=self._agent_timeout_seconds,
-                    **kwargs,
+                    **extra,
                 )
             else:
                 # Classic single-index path
@@ -182,8 +185,8 @@ class ChatService:
                     self._ask_service.ask,
                     index_dir=index_dir,
                     question=question,
-                    k=self._k,
-                    **kwargs,
+                    k=call_k,
+                    **extra,
                 )
 
         # Record history safely

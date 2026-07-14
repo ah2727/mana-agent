@@ -97,8 +97,8 @@ class ManaChatApp(App):
         dir_mode: bool = False,
         index_dir: str | Path | None = None,
         index_dirs: list[str | Path] | None = None,
-        auto_execute_plan: bool = False,
-        auto_execute_max_passes: int = 3,
+        auto_execute_plan: bool = True,
+        auto_execute_max_passes: int = 4,
         coding_agent_max_steps: int = 200,
         resolved_k: int = 6,
         agent_timeout_seconds: int = 600,
@@ -470,9 +470,32 @@ class ManaChatApp(App):
         ctx_result = {"root": str(self.repo_root)}
 
         try:
+            # ==========================================================
+            # Decide whether to use the full CodingAgent + strict planner checklist path.
+            # General queries (e.g. "check my gmail", "connect to mcp server X",
+            # "search the internet for ...", pure questions) should use the standard
+            # routing via chat_service.ask (which supports MCP tools, email connectors,
+            # web search, etc.) even when the rich coding stack is available.
+            # ==========================================================
+            use_coding_path = False
             if self.coding_agent is not None:
+                try:
+                    from mana_agent.multi_agent.runtime.auto_chat import classify_auto_chat_intent, AutoChatMode
+                    intent = classify_auto_chat_intent(question or "")
+                    is_coding_intent = intent in (AutoChatMode.EDIT, AutoChatMode.PLAN_ONLY)
+                except Exception:
+                    is_coding_intent = False
+
+                # Use classifier as the primary model decision.
+                # General queries ("check my gmail", "search internet", "connect to mcp X")
+                # should use standard routing even if auto_execute_plan is on by default.
+                # Only enter the strict coding planner for edit/plan intents.
+                use_coding_path = is_coding_intent
+
+            if self.coding_agent is not None and use_coding_path:
                 # ==========================================================
                 # EXACT CODING AGENT PATH (mirrors chat_cli.py ~3127-3330)
+                # Only entered for edit/plan intents (or when auto-execute forces it).
                 # ==========================================================
                 self.update_status("Running coding agent (tools live in chat box)…")
 
@@ -685,13 +708,32 @@ class ManaChatApp(App):
                     used_full_flow = True
 
                 # Clean up planner failure messages so internal parse details like
-                # "no checklist payload found" are not leaked to the user (while still
-                # matching the high-level behavior of the console path).
+                # "no checklist payload found" are not leaked to the user.
                 if isinstance(result, dict):
                     de = str(result.get("decision_error", "") or "").lower()
                     ans_lower = (answer or "").lower()
-                    if "no checklist payload found" in de or "planner output is invalid" in de or "no checklist payload found" in ans_lower:
-                        answer = "Planner was unable to produce a valid checklist for this request (after repair attempt). Try rephrasing your task more specifically as a coding or editing goal."
+                    planner_failed = (
+                        "no checklist payload found" in de or
+                        "planner output is invalid" in de or
+                        "no checklist payload found" in ans_lower or
+                        "planner failed to produce valid checklist" in ans_lower
+                    )
+                    if planner_failed:
+                        # For non-editing / general queries, clear the answer so we fall
+                        # back to the standard chat_service / routing path. This makes
+                        # "check my gmail", "search the internet", "connect to mcp ..." work
+                        # via connectors / MCP tools / web search instead of the coding planner.
+                        try:
+                            from mana_agent.multi_agent.runtime.auto_chat import classify_auto_chat_intent, AutoChatMode
+                            intent = classify_auto_chat_intent(question or "")
+                            if intent not in (AutoChatMode.EDIT, AutoChatMode.PLAN_ONLY):
+                                answer = ""  # fall through to chat_service.ask etc.
+                                used_full_flow = False
+                            else:
+                                answer = "Planner was unable to produce a valid checklist for this request (after repair attempt). The planner LLM may need a more specific goal."
+                        except Exception:
+                            # If we can't classify, still prefer to show a helpful (non-internal) message
+                            answer = "Planner was unable to produce a valid checklist for this request (after repair attempt). Try rephrasing or use a more specific coding/editing request."
                     elif "planner failed to produce valid checklist" in ans_lower:
                         warns = result.get("warnings") or []
                         detail = "; ".join(str(w) for w in warns if w and "planner" in str(w).lower())
@@ -911,8 +953,8 @@ def run_chat_tui(
     dir_mode: bool = False,
     index_dir: str | Path | None = None,
     index_dirs: list[str | Path] | None = None,
-    auto_execute_plan: bool = False,
-    auto_execute_max_passes: int = 3,
+    auto_execute_plan: bool = True,
+    auto_execute_max_passes: int = 4,
     coding_agent_max_steps: int = 200,
     resolved_k: int = 6,
     agent_timeout_seconds: int = 600,

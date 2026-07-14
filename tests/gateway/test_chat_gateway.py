@@ -16,8 +16,29 @@ import pytest
 from mana_agent.gateway import AgentChatGateway, RichChatContext
 
 
-def test_gateway_constructs_minimally(tmp_path: Path) -> None:
+class _DummyAskService:
+    """Minimal stand-in so gateway construction tests do not require OPENAI_API_KEY."""
+
+    def ask(self, *args, **kwargs):
+        return type("Resp", (), {"answer": "(dummy response)"})()
+
+    def ask_with_tools(self, *args, **kwargs):
+        return type("Resp", (), {"answer": "(dummy tools response)"})()
+
+    def ask_dir_mode(self, *args, **kwargs):
+        return type("Resp", (), {"answer": "(dummy dir response)"})()
+
+    def ask_with_tools_dir_mode(self, *args, **kwargs):
+        return type("Resp", (), {"answer": "(dummy dir tools response)"})()
+
+
+def test_gateway_constructs_minimally(tmp_path: Path, monkeypatch) -> None:
     # Use a temp dir as "repo" (no index required for basic construction)
+    # Patch to avoid needing real OPENAI_API_KEY during minimal construction.
+    monkeypatch.setattr(
+        "mana_agent.commands.cli_internal.build_ask_service",
+        lambda *a, **k: _DummyAskService(),
+    )
     gw = AgentChatGateway(
         tmp_path,
         coding_agent=False,
@@ -28,7 +49,11 @@ def test_gateway_constructs_minimally(tmp_path: Path) -> None:
     assert not gw.owns_coding_stack()
 
 
-def test_gateway_creates_session_and_simple_send(tmp_path: Path) -> None:
+def test_gateway_creates_session_and_simple_send(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "mana_agent.commands.cli_internal.build_ask_service",
+        lambda *a, **k: _DummyAskService(),
+    )
     gw = AgentChatGateway(
         tmp_path,
         coding_agent=False,
@@ -48,7 +73,11 @@ def test_gateway_creates_session_and_simple_send(tmp_path: Path) -> None:
         assert "gateway" in str(type(gw)).lower() or "no response" in str(exc).lower() or True
 
 
-def test_gateway_provides_rich_context(tmp_path: Path) -> None:
+def test_gateway_provides_rich_context(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "mana_agent.commands.cli_internal.build_ask_service",
+        lambda *a, **k: _DummyAskService(),
+    )
     gw = AgentChatGateway(
         tmp_path,
         dir_mode=True,

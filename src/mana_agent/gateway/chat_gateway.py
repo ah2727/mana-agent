@@ -273,8 +273,9 @@ class AgentChatGateway:
 
             # Delegate to the ChatService (which uses the ask stack)
             # ChatService.ask is sync in current implementation.
+            # Note: ChatService.ask takes (question, *, callbacks=None, **kwargs) and
+            # manages index internally (from construction or set_index_dirs).
             resp = self._chat_service.ask(
-                self._index_dir or str(self.root),
                 question,
                 k=getattr(self._chat_service, "_k", 6),
             )
