@@ -89,6 +89,8 @@ Use the most direct tool for the job:
 
 - `apply_patch`:
   Use Codex-style patch text for multi-file or larger contextual edits.
+  The tool re-reads targets and recovers stale context via unique anchors within a strict retry bound.
+  Prefer minimal hunks with 2–5 stable context lines. Do not resubmit an unchanged stale patch.
 
 - `apply_patch_batch`:
   Use for multiple related Codex patches that can be validated together.
@@ -135,6 +137,11 @@ Use the most direct tool for the job:
 - `apply_patch` must use Codex patch text with `*** Begin Patch`; do not use JSON hunk objects.
 - Never rely on generated line numbers for mutation correctness.
 - Do not manually retry the same patch format repeatedly.
+- If `apply_patch` returns `patch_context_not_found` after recovery:
+  1. use the attached `stdout` excerpt and any `reread_files` content as diagnostic input;
+  2. rebuild a minimal unique-context patch (never resend the identical stale patch);
+  3. stop when `strategy` is `ambiguous_context` or multiple candidate locations remain.
+- Already-applied intended content (`already_applied=true`) is success without further mutation.
 - If patch succeeds but changed files are empty, treat it as a no-op, not success.
 - After no-op:
   1. inspect the latest file content if stale evidence is likely;

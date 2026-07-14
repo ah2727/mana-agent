@@ -172,7 +172,38 @@ class ToolsManager:
                 ok = bool(result.get("ok"))
                 error = None if ok else str(result.get("error") or result.get("message") or "patch failed")
                 if not ok and result.get("error_code") == "patch_context_not_found":
-                    error = "patch_context_not_found; reread target file before rebuilding patch"
+                    # Recovery already ran inside apply_patch. Surface diagnostic fields and
+                    # force a fresh read of every touched file before any further edit attempt.
+                    touched = list(result.get("touched_files") or [])
+                    reread_files: list[dict[str, Any]] = []
+                    for rel in touched:
+                        target = self.root / str(rel)
+                        try:
+                            content = target.read_text(encoding="utf-8")
+                            reread_files.append(
+                                {
+                                    "path": str(rel),
+                                    "ok": True,
+                                    "content": content,
+                                    "bytes_read": len(content.encode("utf-8")),
+                                }
+                            )
+                        except OSError as exc:
+                            reread_files.append({"path": str(rel), "ok": False, "error": str(exc)})
+                    result = {
+                        **result,
+                        "reread_files": reread_files,
+                        "recovery_required": False,
+                        "note": (
+                            "patch recovery exhausted; fresh file contents attached in reread_files. "
+                            "Do not resubmit the original stale patch unchanged."
+                        ),
+                    }
+                    error = (
+                        "patch_context_not_found; reread target file before rebuilding patch. "
+                        f"strategy={result.get('strategy') or 'none'} "
+                        f"candidates={result.get('candidate_count') or 0}"
+                    )
                 return ToolResult(new_message_id(), job.task_id, ok, result, error)
             if job.job_type == QueueJobType.REPO_SEARCH:
                 query = str(job.payload.get("query", ""))

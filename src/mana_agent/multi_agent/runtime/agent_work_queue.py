@@ -401,8 +401,9 @@ def execute_registered_mutation_command(
     ]
     if not ok and tool == "apply_patch" and (_patch_context_mismatch(result) or result.get("error_code") == "patch_precondition_failed"):
         touched = list(result.get("touched_files") or command.target_files or [])
+        # Always re-read targets so the agent/runtime has fresh content before any further edit.
         trace.extend(_reread_patch_targets_trace(repo_root=repo_root, touched_files=touched))
-        if _patch_intent_already_satisfied(repo_root=repo_root, patch=str(args["patch"])):
+        if result.get("already_applied") or _patch_intent_already_satisfied(repo_root=repo_root, patch=str(args["patch"])):
             trace.append(
                 {
                     "tool_name": "apply_patch",
@@ -413,13 +414,54 @@ def execute_registered_mutation_command(
                     "mutation_plan_id": command.plan_id,
                     "no_op_reason": "requested patch content is already present",
                     "created_by": "apply_patch_idempotency_check",
+                    "strategy": result.get("strategy") or "already_applied",
                 }
             )
             return WorkResult(ok=True, summary="requested patch was already applied", trace=trace)
-        rebuilt = _rebase_patch_once(repo_root=repo_root, patch=str(args["patch"]))
-        retry_result = safe_apply_patch(repo_root=repo_root, patch=rebuilt) if rebuilt else {"ok": False, "error": "patch_rebuild_not_safe"}
+
+        # safe_apply_patch already runs bounded deterministic recovery. Do not resubmit the
+        # original stale patch unchanged. Only retry when we can rebuild a distinct patch
+        # (precondition failure / single-line rebase) or when recovery metadata is absent.
+        recovery_attempts = list(result.get("attempts") or [])
+        recovery_exhausted = bool(recovery_attempts) and result.get("error_code") == "patch_context_not_found"
+        rebuilt = None if recovery_exhausted else _rebase_patch_once(repo_root=repo_root, patch=str(args["patch"]))
+        if recovery_exhausted and not rebuilt:
+            trace.append(
+                {
+                    "tool_name": "apply_patch",
+                    "status": "error",
+                    "patch_retry_count": 1,
+                    "target_files": touched,
+                    "changed_files": [],
+                    "mutation_plan_id": command.plan_id,
+                    "created_by": "apply_patch_recovery_exhausted",
+                    "strategy": result.get("strategy") or "",
+                    "matched_anchor": result.get("matched_anchor") or "",
+                    "candidate_count": result.get("candidate_count") or 0,
+                    "recovery_error": result.get("recovery_error") or result.get("error") or "",
+                    "error": str(result.get("error") or "patch_context_not_found"),
+                    "note": "original stale patch was not resubmitted; recovery already exhausted",
+                }
+            )
+            return WorkResult(
+                ok=False,
+                summary="mutation command failed after patch recovery",
+                error=str(result.get("error") or trace[0]["error"]),
+                files_changed=[],
+                answer="",
+                trace=trace,
+            )
+
+        # Precondition failures still need one apply against freshly read content.
+        retry_patch = rebuilt or str(args["patch"])
+        if rebuilt is None and result.get("error_code") != "patch_precondition_failed":
+            retry_result = {"ok": False, "error": "patch_rebuild_not_safe"}
+        else:
+            retry_result = safe_apply_patch(repo_root=repo_root, patch=retry_patch)
         retry_ok = bool(retry_result.get("ok"))
         retry_changed = _command_changed_files(retry_result, args) if retry_ok else []
+        if retry_ok and retry_result.get("already_applied"):
+            retry_changed = []
         trace.append(
             {
                 "tool_name": "apply_patch",
@@ -429,11 +471,29 @@ def execute_registered_mutation_command(
                 "changed_files": retry_changed,
                 "mutation_plan_id": command.plan_id,
                 "created_by": "apply_patch_targeted_retry",
+                "strategy": retry_result.get("strategy") or "",
+                "matched_anchor": retry_result.get("matched_anchor") or "",
+                "candidate_count": retry_result.get("candidate_count") or 0,
+                "already_applied": bool(retry_result.get("already_applied")),
+                "rebuilt_patch": bool(rebuilt),
                 "error": "" if retry_ok else str(retry_result.get("error") or "patch_retry_failed"),
             }
         )
         if retry_ok:
-            return WorkResult(ok=True, summary="mutation command executed after targeted patch retry", files_changed=retry_changed, trace=trace)
+            summary = (
+                "requested patch was already applied"
+                if retry_result.get("already_applied")
+                else "mutation command executed after targeted patch retry"
+            )
+            return WorkResult(ok=True, summary=summary, files_changed=retry_changed, trace=trace)
+    elif ok and tool == "apply_patch" and result.get("already_applied"):
+        trace[0]["no_op_reason"] = "requested patch content is already present"
+        trace[0]["strategy"] = result.get("strategy") or "already_applied"
+        return WorkResult(ok=True, summary="requested patch was already applied", files_changed=[], trace=trace)
+    elif ok and tool == "apply_patch":
+        trace[0]["strategy"] = result.get("strategy") or ""
+        trace[0]["matched_anchor"] = result.get("matched_anchor") or ""
+        trace[0]["attempts"] = list(result.get("attempts") or [])
     return WorkResult(
         ok=ok,
         summary="mutation command executed" if ok else "mutation command failed",

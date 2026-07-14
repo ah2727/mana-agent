@@ -15,6 +15,8 @@ inspection, file patching, file writing, and verification steps.
 2. Read the files that contain the evidence, using `repo_batch_read` for multiple files.
 3. Use symbols or call graphs when structural detail is needed.
 4. Apply constrained edits with edit, patch, or `apply_patch_batch` tools.
+   `apply_patch` recovers stale context deterministically: re-read → match unique
+   anchors → rebuild → bounded retry. Ambiguous locations fail without writing.
 5. Run checks to confirm the change, using `run_script_once` for grouped checks.
 
 ## Available Tool Categories

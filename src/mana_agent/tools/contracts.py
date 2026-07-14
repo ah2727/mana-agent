@@ -454,7 +454,10 @@ def coding_tool_contracts() -> list[ToolContract]:
         ),
         ToolContract(
             name="apply_patch",
-            description="Apply a Codex-style text patch inside the repository.",
+            description=(
+                "Apply a Codex-style text patch inside the repository. "
+                "On stale context, re-reads targets, recovers via unique anchors, rebuilds, and retries within a bound."
+            ),
             input_schema=_schema(
                 {
                     "patch": {"type": "string"},
@@ -462,12 +465,27 @@ def coding_tool_contracts() -> list[ToolContract]:
                 },
                 ["patch"],
             ),
-            output_schema=_schema({"ok": {"type": "boolean"}, "touched_files": {"type": "array"}, "changed_ranges": {"type": "array"}}),
+            output_schema=_schema(
+                {
+                    "ok": {"type": "boolean"},
+                    "touched_files": {"type": "array"},
+                    "changed_ranges": {"type": "array"},
+                    "strategy": {"type": "string"},
+                    "attempts": {"type": "array"},
+                    "matched_anchor": {"type": "string"},
+                    "candidate_count": {"type": "integer"},
+                    "already_applied": {"type": "boolean"},
+                    "recovery_error": {"type": "string"},
+                }
+            ),
             error_format=common_error,
             safety_rules=[
                 "Reject unread existing target files when read tracking is supplied.",
                 "Reject traversal, absolute paths, paths outside root, and stale contexts.",
                 "Match update hunks by surrounding text, never by generated line numbers.",
+                "Recover stale context only when a unique explainable anchor exists; never apply ambiguous matches.",
+                "Never resubmit the original stale patch unchanged after recovery; prefer minimal rebuilt hunks.",
+                "Treat already-present intended content as an idempotent success.",
                 "Store patch preview and result under .mana/logs/ before returning.",
             ],
             examples=[{"input": {"patch": "*** Begin Patch\n*** Update File: a.py\n@@\n-old\n+new\n*** End Patch"}}],

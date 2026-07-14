@@ -1,4 +1,10 @@
-"""Codex-style patch application tool for coding agents."""
+"""Codex-style patch application tool for coding agents.
+
+Applies patches by surrounding text context (not line numbers). When context is
+stale, a deterministic recovery workflow re-reads targets, matches unique
+anchors, rebuilds hunks against current content, and retries within a strict
+bound. Ambiguous matches never apply.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +21,19 @@ from ..config.settings import default_logs_dir
 DEFAULT_ALLOWED_PREFIXES: Optional[tuple[str, ...]] = None
 _DRIVE_LETTER_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 
+# Bounded recovery: original exact → rebuilt exact context → minimal anchored.
+MAX_PATCH_ATTEMPTS = 3
+
+# Constrained single-line similarity (not unrestricted fuzzy replacement).
+_SIMILAR_LINE_MIN_RATIO = 0.72
+_SIMILAR_LINE_MARGIN = 0.08
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+\S")
+_DEF_CLASS_RE = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+\w+")
+_CONFIG_KEY_RE = re.compile(r"^\s*[A-Za-z_][\w.-]*\s*[:=]")
+_IMPORT_RE = re.compile(r"^\s*(?:from\s+\S+\s+import|import\s+\S)")
+_TABLE_ROW_RE = re.compile(r"^\s*\|.+\|\s*$")
+
 
 @dataclass(frozen=True)
 class ApplyPatchResult:
@@ -27,7 +46,11 @@ class ApplyPatchResult:
     error_code: str = ""
     strategy: str = ""
     attempts: list[dict[str, Any]] = field(default_factory=list)
+    matched_anchor: str = ""
+    candidate_count: int = 0
     changed_ranges: list[dict[str, Any]] = field(default_factory=list)
+    already_applied: bool = False
+    recovery_error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -38,6 +61,50 @@ class _CodexFilePatch:
     op: str
     path: str
     lines: list[str]
+
+
+@dataclass(frozen=True)
+class _HunkMatch:
+    strategy: str
+    line_index: int
+    old_span: int
+    new_lines: list[str]
+    matched_anchor: str = ""
+    candidate_count: int = 1
+    already_applied: bool = False
+    error: str = ""
+    anchors_searched: list[str] = field(default_factory=list)
+    candidates: list[int] = field(default_factory=list)
+
+
+@dataclass
+class _FileText:
+    """Normalized line view that preserves original newline style on write-back."""
+
+    lines: list[str]
+    newline: str
+    had_final_newline: bool
+
+    @classmethod
+    def from_text(cls, content: str) -> "_FileText":
+        if "\r\n" in content:
+            newline = "\r\n"
+        elif "\r" in content and "\n" not in content.replace("\r\n", ""):
+            newline = "\r"
+        else:
+            newline = "\n"
+        had_final = bool(content) and content.endswith(("\n", "\r"))
+        normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+        lines = normalized.splitlines()
+        return cls(lines=lines, newline=newline, had_final_newline=had_final)
+
+    def to_text(self) -> str:
+        if not self.lines:
+            return self.newline if self.had_final_newline and self.newline else ""
+        body = self.newline.join(self.lines)
+        if self.had_final_newline:
+            body += self.newline
+        return body
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -257,36 +324,770 @@ def _nearby_snippet(content: str, patch_lines: Sequence[str]) -> str:
     return "\n".join(f"{line_no}: {lines[line_no - 1]}" for line_no in range(start + 1, end + 1))
 
 
-def _apply_codex_update(content: str, lines: Sequence[str], path: str) -> tuple[bool, str, str]:
-    current = content
-    hunk: list[str] = []
-
-    def apply_hunk(hunk_lines: list[str], current_text: str) -> tuple[bool, str, str]:
-        payload = [line for line in hunk_lines if line != "@@" and not line.startswith("@@ ")]
-        if not payload:
-            return True, current_text, ""
-        invalid = [line for line in payload if not line.startswith((" ", "+", "-"))]
-        if invalid:
-            return False, current_text, f"invalid patch hunk line for {path}: {invalid[0]}"
-        old_block = "\n".join(line[1:] for line in payload if line.startswith((" ", "-")))
-        new_block = "\n".join(line[1:] for line in payload if line.startswith((" ", "+")))
-        if old_block:
-            old_block += "\n"
-        if new_block:
-            new_block += "\n"
-        if old_block not in current_text:
-            return False, current_text, "patch_context_not_found"
-        return True, current_text.replace(old_block, new_block, 1), ""
-
+def _split_update_hunks(lines: Sequence[str]) -> list[list[str]]:
+    hunks: list[list[str]] = []
+    current: list[str] = []
     for raw in lines:
         if raw.startswith("@@"):
-            ok, current, err = apply_hunk(hunk, current)
-            if not ok:
-                return ok, current, err
-            hunk = [raw]
+            if current:
+                hunks.append(current)
+            current = [raw]
         else:
-            hunk.append(raw)
-    return apply_hunk(hunk, current)
+            current.append(raw)
+    if current:
+        hunks.append(current)
+    return hunks
+
+
+def _hunk_payload(hunk_lines: Sequence[str]) -> list[str]:
+    return [line for line in hunk_lines if line != "@@" and not line.startswith("@@ ")]
+
+
+def _normalize_hunk_payload_lines(payload: Sequence[str]) -> tuple[list[str], str]:
+    """Normalize hunk lines; bare empty lines are treated as empty context."""
+    normalized: list[str] = []
+    for line in payload:
+        if line == "":
+            normalized.append(" ")
+            continue
+        if not line.startswith((" ", "+", "-")):
+            return [], f"invalid patch hunk line: {line}"
+        normalized.append(line)
+    return normalized, ""
+
+
+def _hunk_signed_parts(payload: Sequence[str]) -> tuple[list[str], list[str], list[str], list[str], list[str], str]:
+    """Return old_lines, new_lines, removed, added, context, error."""
+    normalized, err = _normalize_hunk_payload_lines(payload)
+    if err:
+        return [], [], [], [], [], err
+    old_lines = [line[1:] for line in normalized if line.startswith((" ", "-"))]
+    new_lines = [line[1:] for line in normalized if line.startswith((" ", "+"))]
+    removed = [line[1:] for line in normalized if line.startswith("-")]
+    added = [line[1:] for line in normalized if line.startswith("+")]
+    context = [line[1:] for line in normalized if line.startswith(" ")]
+    return old_lines, new_lines, removed, added, context, ""
+
+
+def _find_sequence(haystack: Sequence[str], needle: Sequence[str]) -> list[int]:
+    if not needle:
+        return []
+    n = len(needle)
+    if n > len(haystack):
+        return []
+    hits: list[int] = []
+    for i in range(0, len(haystack) - n + 1):
+        if list(haystack[i : i + n]) == list(needle):
+            hits.append(i)
+    return hits
+
+
+def _find_sequence_ws(haystack: Sequence[str], needle: Sequence[str]) -> list[int]:
+    if not needle:
+        return []
+    norm_h = [re.sub(r"[ \t]+", " ", line.rstrip()) for line in haystack]
+    norm_n = [re.sub(r"[ \t]+", " ", line.rstrip()) for line in needle]
+    return _find_sequence(norm_h, norm_n)
+
+
+def _is_indent_significant(path: str) -> bool:
+    lower = path.lower()
+    return lower.endswith(
+        (
+            ".py",
+            ".pyi",
+            ".yml",
+            ".yaml",
+            ".toml",
+            ".json",
+            ".jsonc",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".go",
+            ".rs",
+            ".java",
+            ".kt",
+            ".scala",
+            ".rb",
+            ".php",
+            ".c",
+            ".cc",
+            ".cpp",
+            ".h",
+            ".hpp",
+            ".cs",
+            ".swift",
+        )
+    )
+
+
+def _is_stable_anchor(line: str) -> bool:
+    text = line.strip()
+    if not text:
+        return False
+    if _HEADING_RE.match(line) or _DEF_CLASS_RE.match(line) or _IMPORT_RE.match(line):
+        return True
+    if _CONFIG_KEY_RE.match(line) or _TABLE_ROW_RE.match(line):
+        return True
+    # Unique-looking non-trivial lines (identifiers, links, table cells).
+    if len(text) >= 8 and (text.startswith("|") or text.startswith("#") or text.startswith("-") or "://" in text):
+        return True
+    return len(text) >= 12
+
+
+def _sequence_present(file_lines: Sequence[str], needle: Sequence[str]) -> bool:
+    return bool(needle) and bool(_find_sequence(file_lines, list(needle)))
+
+
+def _hunk_already_applied(
+    file_lines: Sequence[str],
+    *,
+    old_lines: Sequence[str],
+    new_lines: Sequence[str],
+    removed: Sequence[str],
+    added: Sequence[str],
+) -> bool:
+    if not new_lines and not added:
+        return False
+    # Pure insertion already present (prefer contiguous new block / added block).
+    if added and not removed:
+        if _sequence_present(file_lines, new_lines):
+            return True
+        if _sequence_present(file_lines, added):
+            return True
+        return False
+    # Replacement: new block present, old block absent.
+    if new_lines and _sequence_present(file_lines, new_lines):
+        if old_lines and not _sequence_present(file_lines, old_lines):
+            return True
+        leftover_removed = [line for line in removed if line not in added]
+        if leftover_removed and not any(_sequence_present(file_lines, [line]) for line in leftover_removed):
+            return True
+    if added and all(_sequence_present(file_lines, [line]) for line in added):
+        leftover_removed = [line for line in removed if line not in added]
+        if leftover_removed and not any(_sequence_present(file_lines, [line]) for line in leftover_removed):
+            return True
+    return False
+
+
+def _reduce_old_variants(payload: Sequence[str]) -> list[tuple[list[str], list[str], str]]:
+    """Build reduced-context old/new variants (full → less outer context)."""
+    old_lines, new_lines, removed, added, context, err = _hunk_signed_parts(payload)
+    if err:
+        return []
+    variants: list[tuple[list[str], list[str], str]] = []
+    variants.append((list(old_lines), list(new_lines), "exact_context"))
+    if not context:
+        return variants
+
+    # Drop leading then trailing context lines progressively.
+    signed = list(payload)
+    leading_ctx = 0
+    for line in signed:
+        if line.startswith(" "):
+            leading_ctx += 1
+        else:
+            break
+    trailing_ctx = 0
+    for line in reversed(signed):
+        if line.startswith(" "):
+            trailing_ctx += 1
+        else:
+            break
+
+    for drop_lead in range(0, leading_ctx + 1):
+        for drop_trail in range(0, trailing_ctx + 1):
+            if drop_lead == 0 and drop_trail == 0:
+                continue
+            trimmed = signed[drop_lead : len(signed) - drop_trail if drop_trail else None]
+            if not trimmed:
+                continue
+            o, n, _r, _a, _c, e = _hunk_signed_parts(trimmed)
+            if e or not o:
+                continue
+            variants.append((o, n, "reduced_context"))
+    # Prefer more context first (already ordered by increasing drops).
+    return variants
+
+
+def _locate_hunk(file_lines: Sequence[str], payload: Sequence[str], *, path: str, minimal: bool = False) -> _HunkMatch:
+    old_lines, new_lines, removed, added, context, err = _hunk_signed_parts(payload)
+    if err:
+        return _HunkMatch(strategy="", line_index=-1, old_span=0, new_lines=[], error=err, candidate_count=0)
+
+    anchors_searched: list[str] = []
+    if _hunk_already_applied(file_lines, old_lines=old_lines, new_lines=new_lines, removed=removed, added=added):
+        return _HunkMatch(
+            strategy="already_applied",
+            line_index=0,
+            old_span=0,
+            new_lines=list(new_lines),
+            already_applied=True,
+            candidate_count=1,
+            matched_anchor="content already matches intended result",
+        )
+
+    # 1–2. Exact full-hunk and reduced-context variants.
+    variants = _reduce_old_variants(payload)
+    if minimal:
+        # Prefer shorter old spans first for minimal anchored rebuild.
+        variants = sorted(variants, key=lambda item: len(item[0]))
+
+    for old_var, new_var, strategy in variants:
+        if not old_var:
+            continue
+        anchors_searched.append(f"{strategy}:{old_var[0][:80]}")
+        hits = _find_sequence(file_lines, old_var)
+        if len(hits) == 1:
+            return _HunkMatch(
+                strategy=strategy,
+                line_index=hits[0],
+                old_span=len(old_var),
+                new_lines=list(new_var),
+                matched_anchor=old_var[0] if old_var else "",
+                candidate_count=1,
+                anchors_searched=anchors_searched,
+            )
+        if len(hits) > 1:
+            return _HunkMatch(
+                strategy="ambiguous_context",
+                line_index=-1,
+                old_span=0,
+                new_lines=list(new_var),
+                candidate_count=len(hits),
+                candidates=hits,
+                anchors_searched=anchors_searched,
+                matched_anchor=old_var[0] if old_var else "",
+                error=(
+                    f"ambiguous_context: {len(hits)} equally plausible locations for "
+                    f"context starting with {old_var[0]!r}"
+                ),
+            )
+
+    # 3. Unique removed-line sequence (exact).
+    if removed:
+        anchors_searched.append(f"unique_removed_lines:{removed[0][:80]}")
+        hits = _find_sequence(file_lines, list(removed))
+        if len(hits) == 1:
+            # Expand with local context from the file when possible.
+            start = hits[0]
+            # Prefer replacing only the removed span with added (+ surrounding context from new_lines if available).
+            if new_lines and context:
+                # Rebuild new as: leading context from file if present + added + trailing
+                return _HunkMatch(
+                    strategy="unique_removed_lines",
+                    line_index=start,
+                    old_span=len(removed),
+                    new_lines=list(added) if added else list(new_lines),
+                    matched_anchor=removed[0],
+                    candidate_count=1,
+                    anchors_searched=anchors_searched,
+                )
+            return _HunkMatch(
+                strategy="unique_removed_lines",
+                line_index=start,
+                old_span=len(removed),
+                new_lines=list(added) if added else list(new_lines),
+                matched_anchor=removed[0],
+                candidate_count=1,
+                anchors_searched=anchors_searched,
+            )
+        if len(hits) > 1:
+            return _HunkMatch(
+                strategy="ambiguous_context",
+                line_index=-1,
+                old_span=0,
+                new_lines=list(new_lines),
+                candidate_count=len(hits),
+                candidates=hits,
+                anchors_searched=anchors_searched,
+                matched_anchor=removed[0],
+                error=f"ambiguous_context: removed lines match {len(hits)} locations",
+            )
+
+        # Constrained single-line similarity for one drifted removed line.
+        if len(removed) == 1 and len(added) == 1:
+            needle = removed[0]
+            scored = sorted(
+                (
+                    (difflib.SequenceMatcher(None, needle, line).ratio(), index, line)
+                    for index, line in enumerate(file_lines)
+                ),
+                reverse=True,
+            )
+            anchors_searched.append(f"unique_similar_removed:{needle[:80]}")
+            if scored and scored[0][0] >= _SIMILAR_LINE_MIN_RATIO:
+                best_ratio, best_idx, best_line = scored[0]
+                second = scored[1][0] if len(scored) > 1 else 0.0
+                if best_ratio - second >= _SIMILAR_LINE_MARGIN:
+                    return _HunkMatch(
+                        strategy="unique_removed_lines",
+                        line_index=best_idx,
+                        old_span=1,
+                        new_lines=list(added),
+                        matched_anchor=best_line,
+                        candidate_count=1,
+                        anchors_searched=anchors_searched,
+                    )
+                return _HunkMatch(
+                    strategy="ambiguous_context",
+                    line_index=-1,
+                    old_span=0,
+                    new_lines=list(added),
+                    candidate_count=2,
+                    candidates=[scored[0][1], scored[1][1]] if len(scored) > 1 else [scored[0][1]],
+                    anchors_searched=anchors_searched,
+                    matched_anchor=best_line,
+                    error="ambiguous_context: multiple similar lines for removed content",
+                )
+
+    # 4. Anchored insert / unique surrounding anchors.
+    anchor_candidates: list[tuple[str, int, str]] = []  # kind, index, text
+    search_lines = list(context) + list(removed) + list(old_lines)
+    for line in search_lines:
+        if not _is_stable_anchor(line):
+            continue
+        anchors_searched.append(f"anchor:{line[:80]}")
+        hits = _find_sequence(file_lines, [line])
+        if len(hits) == 1:
+            kind = "heading" if _HEADING_RE.match(line) else (
+                "table_row" if _TABLE_ROW_RE.match(line) else (
+                    "import" if _IMPORT_RE.match(line) else (
+                        "symbol" if _DEF_CLASS_RE.match(line) else "unique_line"
+                    )
+                )
+            )
+            anchor_candidates.append((kind, hits[0], line))
+
+    # Pure insertion: place added lines after/before a unique context line.
+    if added and not removed and anchor_candidates:
+        # Prefer table rows / headings for docs, then other unique lines.
+        priority = {"heading": 0, "table_row": 1, "symbol": 2, "import": 3, "unique_line": 4}
+        anchor_candidates.sort(key=lambda item: (priority.get(item[0], 9), item[1]))
+        kind, idx, text = anchor_candidates[0]
+        # If context has lines after the anchor in the old_lines, try to find insertion point
+        # between unique predecessor and successor when both exist.
+        insert_at = idx + 1
+        if context:
+            # Find last context line that appears before added intent.
+            for ctx in reversed(context):
+                ctx_hits = _find_sequence(file_lines, [ctx])
+                if len(ctx_hits) == 1:
+                    insert_at = ctx_hits[0] + 1
+                    text = ctx
+                    break
+        # If new_lines includes context around added, use only the insertion delta.
+        return _HunkMatch(
+            strategy="anchored_insert",
+            line_index=insert_at,
+            old_span=0,
+            new_lines=list(added),
+            matched_anchor=text,
+            candidate_count=1,
+            anchors_searched=anchors_searched,
+        )
+
+    # Replacement anchored by unique surrounding context when old block drifted.
+    if removed and added and anchor_candidates:
+        kind, idx, text = anchor_candidates[0]
+        # Search near the anchor for best place to apply replacement.
+        window_start = max(0, idx - 5)
+        window_end = min(len(file_lines), idx + 8)
+        window = list(file_lines[window_start:window_end])
+        if len(removed) == 1:
+            local = [
+                (difflib.SequenceMatcher(None, removed[0], line).ratio(), window_start + i, line)
+                for i, line in enumerate(window)
+            ]
+            local.sort(reverse=True)
+            if local and local[0][0] >= _SIMILAR_LINE_MIN_RATIO:
+                if len(local) == 1 or local[0][0] - local[1][0] >= _SIMILAR_LINE_MARGIN:
+                    return _HunkMatch(
+                        strategy="anchored_insert" if not removed else "unique_removed_lines",
+                        line_index=local[0][1],
+                        old_span=1,
+                        new_lines=list(added),
+                        matched_anchor=text,
+                        candidate_count=1,
+                        anchors_searched=anchors_searched,
+                    )
+
+    # 5. Whitespace-normalized matching when indentation is not significant.
+    if not _is_indent_significant(path) and old_lines:
+        anchors_searched.append(f"whitespace_normalized:{old_lines[0][:80]}")
+        hits = _find_sequence_ws(file_lines, list(old_lines))
+        if len(hits) == 1:
+            # Map to exact current lines for rebuild (preserve file indentation).
+            span = len(old_lines)
+            return _HunkMatch(
+                strategy="whitespace_normalized",
+                line_index=hits[0],
+                old_span=span,
+                new_lines=_rebase_new_lines_ws(file_lines[hits[0] : hits[0] + span], list(old_lines), list(new_lines)),
+                matched_anchor=file_lines[hits[0]],
+                candidate_count=1,
+                anchors_searched=anchors_searched,
+            )
+        if len(hits) > 1:
+            return _HunkMatch(
+                strategy="ambiguous_context",
+                line_index=-1,
+                old_span=0,
+                new_lines=list(new_lines),
+                candidate_count=len(hits),
+                candidates=hits,
+                anchors_searched=anchors_searched,
+                error=f"ambiguous_context: whitespace-normalized match hit {len(hits)} locations",
+            )
+
+    # No reliable unique anchor.
+    return _HunkMatch(
+        strategy="ambiguous_context" if anchors_searched else "",
+        line_index=-1,
+        old_span=0,
+        new_lines=list(new_lines),
+        candidate_count=0,
+        anchors_searched=anchors_searched,
+        error=(
+            "patch_context_not_found: no unique reliable anchor for intended edit. "
+            f"anchors_searched={anchors_searched[:8]}"
+        ),
+    )
+
+
+def _rebase_new_lines_ws(current_old: Sequence[str], patch_old: Sequence[str], patch_new: Sequence[str]) -> list[str]:
+    """Preserve current indentation when only whitespace drifted in the old side."""
+    if len(current_old) != len(patch_old):
+        return list(patch_new)
+    # Map leading whitespace from current old lines onto corresponding new lines by content.
+    indent_by_stripped = {}
+    for cur, old in zip(current_old, patch_old):
+        indent_by_stripped[old.rstrip()] = cur[: len(cur) - len(cur.lstrip(" \t"))]
+    rebuilt: list[str] = []
+    for line in patch_new:
+        key = line.rstrip()
+        if key in indent_by_stripped:
+            stripped = line.lstrip(" \t")
+            rebuilt.append(indent_by_stripped[key] + stripped)
+        else:
+            rebuilt.append(line)
+    return rebuilt
+
+
+def _apply_match(file_text: _FileText, match: _HunkMatch) -> None:
+    if match.already_applied:
+        return
+    if match.old_span == 0:
+        # Pure insertion at line_index.
+        idx = max(0, min(match.line_index, len(file_text.lines)))
+        file_text.lines[idx:idx] = list(match.new_lines)
+        return
+    start = match.line_index
+    end = start + match.old_span
+    file_text.lines[start:end] = list(match.new_lines)
+
+
+def _verify_expected_result(
+    after_lines: Sequence[str],
+    *,
+    new_lines: Sequence[str],
+    added: Sequence[str],
+    strategy: str,
+) -> bool:
+    if strategy == "already_applied":
+        return True
+    if new_lines and _sequence_present(after_lines, new_lines):
+        return True
+    if added and all(_sequence_present(after_lines, [line]) for line in added):
+        return True
+    if not added and not new_lines:
+        return True
+    return False
+
+
+def _apply_codex_update_exact(content: str, lines: Sequence[str], path: str) -> tuple[bool, str, str]:
+    """Exact-context application requiring a unique old-block match (no recovery)."""
+    file_text = _FileText.from_text(content)
+    for hunk in _split_update_hunks(lines):
+        payload = _hunk_payload(hunk)
+        if not payload:
+            continue
+        old_lines, new_lines, _removed, _added, _context, err = _hunk_signed_parts(payload)
+        if err:
+            return False, content, f"invalid patch hunk line for {path}: {err.split(': ', 1)[-1]}"
+        if not old_lines:
+            # Empty old block: append new content when absent (rare).
+            if new_lines and not _sequence_present(file_text.lines, new_lines):
+                file_text.lines.extend(list(new_lines))
+            continue
+        hits = _find_sequence(file_text.lines, old_lines)
+        if len(hits) == 0:
+            return False, content, "patch_context_not_found"
+        if len(hits) > 1:
+            return False, content, "patch_context_not_found"
+        start = hits[0]
+        file_text.lines[start : start + len(old_lines)] = list(new_lines)
+    return True, file_text.to_text(), ""
+
+
+def _apply_codex_update_with_recovery(
+    content: str,
+    lines: Sequence[str],
+    path: str,
+) -> tuple[bool, str, str, dict[str, Any]]:
+    """
+    Apply update hunks with bounded deterministic recovery.
+
+    Attempts:
+      1. exact_context on the original patch
+      2. rebuilt patch from freshly matched exact/reduced/removed/anchor context
+      3. minimal anchored patch when the target is unique
+    """
+    meta: dict[str, Any] = {
+        "strategy": "",
+        "attempts": [],
+        "matched_anchor": "",
+        "candidate_count": 0,
+        "already_applied": False,
+        "recovery_error": "",
+        "anchors_searched": [],
+        "candidates": [],
+        "failed_hunk": "",
+    }
+
+    # Attempt 1: exact original patch.
+    ok, after, err = _apply_codex_update_exact(content, lines, path)
+    meta["attempts"].append(
+        {
+            "attempt": 1,
+            "strategy": "exact_context",
+            "ok": ok,
+            "error": err,
+            "patch_fingerprint": _patch_fingerprint(lines),
+        }
+    )
+    if ok:
+        # Verify expected post-edit content for each hunk.
+        verify_ok, verify_err = _verify_all_hunks(after, lines, path)
+        if not verify_ok:
+            meta["strategy"] = "exact_context"
+            meta["recovery_error"] = verify_err
+            meta["attempts"].append(
+                {
+                    "attempt": 1,
+                    "strategy": "post_apply_verify",
+                    "ok": False,
+                    "error": verify_err,
+                }
+            )
+            return False, content, verify_err, meta
+        meta["strategy"] = "exact_context"
+        return True, after, "", meta
+
+    if err != "patch_context_not_found" and not err.startswith("patch_context_not_found"):
+        meta["strategy"] = "exact_context"
+        meta["recovery_error"] = err
+        return False, content, err, meta
+
+    # Attempt 2: rebuild using current file content and stable anchors.
+    recovered, rec_meta = _recover_update_content(content, lines, path, minimal=False)
+    meta["attempts"].append(
+        {
+            "attempt": 2,
+            "strategy": rec_meta.get("strategy") or "rebuilt_context",
+            "ok": recovered is not None,
+            "error": rec_meta.get("error") or "",
+            "matched_anchor": rec_meta.get("matched_anchor") or "",
+            "candidate_count": rec_meta.get("candidate_count") or 0,
+            "patch_fingerprint": rec_meta.get("patch_fingerprint") or "",
+            "already_applied": bool(rec_meta.get("already_applied")),
+        }
+    )
+    meta["matched_anchor"] = str(rec_meta.get("matched_anchor") or "")
+    meta["candidate_count"] = int(rec_meta.get("candidate_count") or 0)
+    meta["anchors_searched"] = list(rec_meta.get("anchors_searched") or [])
+    meta["candidates"] = list(rec_meta.get("candidates") or [])
+    meta["failed_hunk"] = str(rec_meta.get("failed_hunk") or "")
+    if recovered is not None:
+        if rec_meta.get("already_applied"):
+            meta["strategy"] = "already_applied"
+            meta["already_applied"] = True
+            return True, content, "", meta
+        verify_ok, verify_err = _verify_all_hunks(recovered, lines, path)
+        if not verify_ok:
+            meta["strategy"] = str(rec_meta.get("strategy") or "rebuilt_context")
+            meta["recovery_error"] = verify_err
+            return False, content, verify_err, meta
+        meta["strategy"] = str(rec_meta.get("strategy") or "rebuilt_context")
+        return True, recovered, "", meta
+
+    # Attempt 3: minimal anchored patch only when unique.
+    recovered3, rec_meta3 = _recover_update_content(content, lines, path, minimal=True)
+    meta["attempts"].append(
+        {
+            "attempt": 3,
+            "strategy": rec_meta3.get("strategy") or "anchored_insert",
+            "ok": recovered3 is not None,
+            "error": rec_meta3.get("error") or "",
+            "matched_anchor": rec_meta3.get("matched_anchor") or "",
+            "candidate_count": rec_meta3.get("candidate_count") or 0,
+            "patch_fingerprint": rec_meta3.get("patch_fingerprint") or "",
+            "already_applied": bool(rec_meta3.get("already_applied")),
+        }
+    )
+    if rec_meta3.get("matched_anchor"):
+        meta["matched_anchor"] = str(rec_meta3.get("matched_anchor") or "")
+    meta["candidate_count"] = int(rec_meta3.get("candidate_count") or meta["candidate_count"] or 0)
+    meta["anchors_searched"] = list(rec_meta3.get("anchors_searched") or meta["anchors_searched"])
+    meta["candidates"] = list(rec_meta3.get("candidates") or meta["candidates"])
+    meta["failed_hunk"] = str(rec_meta3.get("failed_hunk") or meta["failed_hunk"])
+    if recovered3 is not None:
+        if rec_meta3.get("already_applied"):
+            meta["strategy"] = "already_applied"
+            meta["already_applied"] = True
+            return True, content, "", meta
+        verify_ok, verify_err = _verify_all_hunks(recovered3, lines, path)
+        if not verify_ok:
+            meta["strategy"] = str(rec_meta3.get("strategy") or "anchored_insert")
+            meta["recovery_error"] = verify_err
+            return False, content, verify_err, meta
+        meta["strategy"] = str(rec_meta3.get("strategy") or "anchored_insert")
+        return True, recovered3, "", meta
+
+    recovery_error = str(
+        rec_meta3.get("error")
+        or rec_meta.get("error")
+        or err
+        or "patch_context_not_found"
+    )
+    meta["strategy"] = str(rec_meta3.get("strategy") or rec_meta.get("strategy") or "ambiguous_context")
+    meta["recovery_error"] = recovery_error
+    return False, content, "patch_context_not_found", meta
+
+
+def _patch_fingerprint(lines: Sequence[str]) -> str:
+    body = "\n".join(lines)
+    return f"len={len(body)}:sha1={__import__('hashlib').sha1(body.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _verify_all_hunks(after: str, lines: Sequence[str], path: str) -> tuple[bool, str]:
+    after_lines = _FileText.from_text(after).lines
+    for hunk in _split_update_hunks(lines):
+        payload = _hunk_payload(hunk)
+        if not payload:
+            continue
+        old_lines, new_lines, removed, added, _context, err = _hunk_signed_parts(payload)
+        if err:
+            return False, err
+        # If already applied originally, new content must still be present.
+        if not _verify_expected_result(after_lines, new_lines=new_lines, added=added, strategy=""):
+            # Allow verification when the intended delta is present even if full new_lines
+            # (with drifted context) are not an exact contiguous block.
+            if added and all(_sequence_present(after_lines, [line]) for line in added):
+                continue
+            if not added and not removed:
+                continue
+            if new_lines and _sequence_present(after_lines, new_lines):
+                continue
+            # Substitution: removed gone, added present.
+            if added and removed:
+                if all(_sequence_present(after_lines, [line]) for line in added):
+                    leftover = [line for line in removed if line not in added]
+                    if not leftover or not any(_sequence_present(after_lines, [line]) for line in leftover):
+                        continue
+            return False, (
+                f"post_apply_verify_failed for {path}: expected edit result not present after apply"
+            )
+    return True, ""
+
+
+def _recover_update_content(
+    content: str,
+    lines: Sequence[str],
+    path: str,
+    *,
+    minimal: bool,
+) -> tuple[str | None, dict[str, Any]]:
+    file_text = _FileText.from_text(content)
+    meta: dict[str, Any] = {
+        "strategy": "",
+        "matched_anchor": "",
+        "candidate_count": 0,
+        "already_applied": False,
+        "error": "",
+        "anchors_searched": [],
+        "candidates": [],
+        "failed_hunk": "",
+        "patch_fingerprint": "",
+    }
+    strategies: list[str] = []
+    anchors: list[str] = []
+    all_already = True
+    rebuilt_hunks: list[list[str]] = []
+
+    for hunk in _split_update_hunks(lines):
+        payload = _hunk_payload(hunk)
+        if not payload:
+            rebuilt_hunks.append(list(hunk))
+            continue
+        match = _locate_hunk(file_text.lines, payload, path=path, minimal=minimal)
+        meta["anchors_searched"].extend(match.anchors_searched)
+        if match.candidates:
+            meta["candidates"] = list(match.candidates)
+            meta["candidate_count"] = match.candidate_count
+        if match.error and match.line_index < 0 and not match.already_applied:
+            meta["strategy"] = match.strategy or "ambiguous_context"
+            meta["error"] = match.error
+            meta["matched_anchor"] = match.matched_anchor
+            meta["candidate_count"] = match.candidate_count
+            meta["failed_hunk"] = "\n".join(payload[:12])
+            meta["patch_fingerprint"] = _patch_fingerprint(lines)
+            return None, meta
+
+        strategies.append(match.strategy)
+        if match.matched_anchor:
+            anchors.append(match.matched_anchor)
+        if not match.already_applied:
+            all_already = False
+            _apply_match(file_text, match)
+
+        # Build a minimal rebuilt hunk against current (pre-apply snapshot is already mutated;
+        # for fingerprinting we record the strategy only).
+        rebuilt_hunks.append(["@@", *[f" {line}" for line in match.new_lines[:0]]])  # placeholder
+
+    if all_already:
+        meta["strategy"] = "already_applied"
+        meta["already_applied"] = True
+        meta["matched_anchor"] = anchors[0] if anchors else "content already matches intended result"
+        meta["candidate_count"] = 1
+        meta["patch_fingerprint"] = _patch_fingerprint(lines)
+        return content, meta
+
+    # Prefer the most specific non-exact strategy used.
+    strategy = "rebuilt_context"
+    for name in ("anchored_insert", "unique_removed_lines", "whitespace_normalized", "reduced_context", "exact_context"):
+        if name in strategies:
+            strategy = name
+            break
+    if strategies:
+        # Use last non-empty strategy for multi-hunk summary if preferred not found.
+        strategy = next((s for s in strategies if s and s != "already_applied"), strategies[-1]) or strategy
+
+    after = file_text.to_text()
+    meta["strategy"] = strategy
+    meta["matched_anchor"] = anchors[0] if anchors else ""
+    meta["candidate_count"] = 1
+    meta["patch_fingerprint"] = _patch_fingerprint(lines)
+    # Include a rebuilt minimal patch fingerprint distinct from the original when possible.
+    meta["rebuilt"] = True
+    return after, meta
+
+
+def _apply_codex_update(content: str, lines: Sequence[str], path: str) -> tuple[bool, str, str]:
+    """Backward-compatible exact-only apply used by tests that monkeypatch internals."""
+    return _apply_codex_update_exact(content, lines, path)
 
 
 def extract_patch_touched_files(patch: Any) -> dict[str, Any]:
@@ -307,6 +1108,7 @@ def safe_apply_patch(
     check_only: bool = False,
     read_files: Sequence[str] | None = None,
     require_read: bool = False,
+    enable_recovery: bool = True,
 ) -> dict[str, Any]:
     patch_text = _strip_markdown_fences(str(patch or ""))
     repo_root = repo_root.resolve()
@@ -342,70 +1144,231 @@ def safe_apply_patch(
     computed: dict[str, str | None] = {}
     before_by_path: dict[str, str] = {}
     changed_ranges: list[dict[str, Any]] = []
+    all_attempts: list[dict[str, Any]] = []
+    strategies: list[str] = []
+    matched_anchors: list[str] = []
+    candidate_count = 0
+    already_applied_all = True
+    any_update = False
+    recovery_error = ""
+    file_results: list[dict[str, Any]] = []
+
     for item in parsed:
         target = (repo_root / Path(item.path)).resolve()
         exists = target.exists()
+        # Always re-read from disk for each file (fresh content for recovery).
         before = target.read_text(encoding="utf-8") if exists else ""
         before_by_path.setdefault(item.path, before)
         if item.op == "add":
             if exists:
-                result = ApplyPatchResult(ok=False, touched_files=touched_files, error_code="target_exists", error=f"Add File target already exists: {item.path}").to_dict()
+                result = ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    error_code="target_exists",
+                    error=f"Add File target already exists: {item.path}",
+                    attempts=all_attempts,
+                ).to_dict()
                 _write_patch_history(repo_root=repo_root, patch=patch_text, result=result, touched_files=touched_files, check_only=check_only)
                 return result
             invalid = [line for line in item.lines if not line.startswith("+") and line.strip()]
             if invalid:
-                result = ApplyPatchResult(ok=False, touched_files=touched_files, error_code="invalid_patch_format", error=f"Add File lines must start with '+': {invalid[0]}").to_dict()
+                result = ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    error_code="invalid_patch_format",
+                    error=f"Add File lines must start with '+': {invalid[0]}",
+                    attempts=all_attempts,
+                ).to_dict()
                 _write_patch_history(repo_root=repo_root, patch=patch_text, result=result, touched_files=touched_files, check_only=check_only)
                 return result
             computed[item.path] = _text_from_patch_lines(item.lines, "+")
             changed_ranges.append({"path": item.path, **_changed_range("", str(computed[item.path] or ""))})
+            strategies.append("add_file")
+            already_applied_all = False
+            file_results.append({"path": item.path, "ok": True, "strategy": "add_file"})
         elif item.op == "delete":
             if not exists:
-                result = ApplyPatchResult(ok=False, touched_files=touched_files, error_code="target_missing", error=f"Delete File target does not exist: {item.path}").to_dict()
+                result = ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    error_code="target_missing",
+                    error=f"Delete File target does not exist: {item.path}",
+                    attempts=all_attempts,
+                ).to_dict()
                 _write_patch_history(repo_root=repo_root, patch=patch_text, result=result, touched_files=touched_files, check_only=check_only)
                 return result
             computed[item.path] = None
             changed_ranges.append({"path": item.path, **_changed_range(before, "")})
+            strategies.append("delete_file")
+            already_applied_all = False
+            file_results.append({"path": item.path, "ok": True, "strategy": "delete_file"})
         else:
             if not exists:
-                result = ApplyPatchResult(ok=False, touched_files=touched_files, error_code="target_missing", error=f"Update File target does not exist: {item.path}").to_dict()
-                _write_patch_history(repo_root=repo_root, patch=patch_text, result=result, touched_files=touched_files, check_only=check_only)
-                return result
-            current = str(computed.get(item.path, before) or "")
-            patch_ok, after, patch_err = _apply_codex_update(current, item.lines, item.path)
-            if not patch_ok:
                 result = ApplyPatchResult(
                     ok=False,
                     touched_files=touched_files,
-                    error_code="patch_context_not_found" if patch_err == "patch_context_not_found" else "invalid_patch_format",
-                    error=f"{patch_err} in {item.path}. Re-read the target file and rebuild the patch against current exact context.",
-                    stdout=_nearby_snippet(current, item.lines),
+                    error_code="target_missing",
+                    error=f"Update File target does not exist: {item.path}",
+                    attempts=all_attempts,
                 ).to_dict()
+                _write_patch_history(repo_root=repo_root, patch=patch_text, result=result, touched_files=touched_files, check_only=check_only)
+                return result
+            any_update = True
+            current = str(computed.get(item.path, before) or "")
+            if enable_recovery:
+                patch_ok, after, patch_err, rec_meta = _apply_codex_update_with_recovery(current, item.lines, item.path)
+            else:
+                patch_ok, after, patch_err = _apply_codex_update_exact(current, item.lines, item.path)
+                rec_meta = {
+                    "strategy": "exact_context" if patch_ok else "",
+                    "attempts": [{"attempt": 1, "strategy": "exact_context", "ok": patch_ok, "error": patch_err}],
+                    "matched_anchor": "",
+                    "candidate_count": 0,
+                    "already_applied": False,
+                    "recovery_error": "" if patch_ok else patch_err,
+                }
+            for attempt in rec_meta.get("attempts") or []:
+                attempt_row = dict(attempt)
+                attempt_row["path"] = item.path
+                all_attempts.append(attempt_row)
+            if rec_meta.get("matched_anchor"):
+                matched_anchors.append(str(rec_meta["matched_anchor"]))
+            candidate_count = max(candidate_count, int(rec_meta.get("candidate_count") or 0))
+            if rec_meta.get("strategy"):
+                strategies.append(str(rec_meta["strategy"]))
+            if not rec_meta.get("already_applied"):
+                already_applied_all = False
+            if not patch_ok:
+                recovery_error = str(rec_meta.get("recovery_error") or patch_err or "")
+                snippet = _nearby_snippet(current, item.lines)
+                error_detail = _format_recovery_error(
+                    path=item.path,
+                    patch_err=patch_err,
+                    rec_meta=rec_meta,
+                )
+                file_results.append(
+                    {
+                        "path": item.path,
+                        "ok": False,
+                        "strategy": rec_meta.get("strategy") or "ambiguous_context",
+                        "error": error_detail,
+                        "candidate_count": rec_meta.get("candidate_count") or 0,
+                        "matched_anchor": rec_meta.get("matched_anchor") or "",
+                        "anchors_searched": rec_meta.get("anchors_searched") or [],
+                        "candidates": rec_meta.get("candidates") or [],
+                        "failed_hunk": rec_meta.get("failed_hunk") or "",
+                    }
+                )
+                result = ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    error_code="patch_context_not_found" if "patch_context_not_found" in (patch_err or "") or "ambiguous" in str(rec_meta.get("strategy") or "") or "post_apply_verify" in recovery_error else (
+                        "invalid_patch_format" if patch_err and patch_err != "patch_context_not_found" and "post_apply" not in recovery_error else "patch_context_not_found"
+                    ),
+                    error=error_detail,
+                    stdout=snippet,
+                    strategy=str(rec_meta.get("strategy") or ""),
+                    attempts=all_attempts,
+                    matched_anchor=str(rec_meta.get("matched_anchor") or ""),
+                    candidate_count=int(rec_meta.get("candidate_count") or 0),
+                    already_applied=False,
+                    recovery_error=recovery_error or error_detail,
+                ).to_dict()
+                result["file_results"] = file_results
+                result["anchors_searched"] = list(rec_meta.get("anchors_searched") or [])
+                result["candidates"] = list(rec_meta.get("candidates") or [])
+                result["failed_hunk"] = str(rec_meta.get("failed_hunk") or "")
                 _write_patch_history(repo_root=repo_root, patch=patch_text, result=result, touched_files=touched_files, check_only=check_only)
                 return result
             computed[item.path] = after
             changed_ranges.append({"path": item.path, **_changed_range(current, after)})
+            file_results.append(
+                {
+                    "path": item.path,
+                    "ok": True,
+                    "strategy": rec_meta.get("strategy") or "exact_context",
+                    "already_applied": bool(rec_meta.get("already_applied")),
+                    "matched_anchor": rec_meta.get("matched_anchor") or "",
+                    "attempts": rec_meta.get("attempts") or [],
+                }
+            )
+
+    if not any_update:
+        already_applied_all = False
 
     changed_files = [path for path, after in computed.items() if after != before_by_path.get(path)]
+    # If all updates were already applied, treat as idempotent success with no writes.
+    if already_applied_all and any_update and not changed_files:
+        strategy = "already_applied"
+    elif strategies:
+        strategy = strategies[0] if len(set(strategies)) == 1 else "multi"
+    else:
+        strategy = "codex"
+
     result = ApplyPatchResult(
         ok=True,
         touched_files=touched_files,
         check_only=check_only,
-        strategy="codex",
-        stdout="codex patch validated" if check_only else "codex patch applied",
-        changed_ranges=changed_ranges,
+        strategy=strategy,
+        stdout="codex patch validated" if check_only else (
+            "codex patch already applied" if strategy == "already_applied" else "codex patch applied"
+        ),
+        attempts=all_attempts,
+        matched_anchor=matched_anchors[0] if matched_anchors else "",
+        candidate_count=candidate_count,
+        changed_ranges=changed_ranges if not (strategy == "already_applied") else [],
+        already_applied=strategy == "already_applied",
+        recovery_error="",
     ).to_dict()
-    result["files_changed"] = [] if check_only else changed_files
-    if not check_only:
+    result["files_changed"] = [] if check_only or strategy == "already_applied" else changed_files
+    result["file_results"] = file_results
+    if not check_only and strategy != "already_applied":
         for rel, after in computed.items():
             target = repo_root / rel
             if after is None:
                 target.unlink()
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
+                # Preserve newline style detected from the before content when possible.
+                if rel in before_by_path and before_by_path[rel]:
+                    before_ft = _FileText.from_text(before_by_path[rel])
+                    after_ft = _FileText.from_text(after)
+                    # Keep original newline character if after was normalized to \n.
+                    if before_ft.newline != "\n":
+                        normalized = after.replace("\r\n", "\n").replace("\r", "\n")
+                        if after_ft.had_final_newline or normalized.endswith("\n"):
+                            body = before_ft.newline.join(normalized.splitlines())
+                            if after_ft.had_final_newline or normalized.endswith("\n"):
+                                body += before_ft.newline
+                            after = body
                 target.write_text(after, encoding="utf-8")
     _write_patch_history(repo_root=repo_root, patch=patch_text, result=result, touched_files=touched_files, check_only=check_only)
     return result
+
+
+def _format_recovery_error(*, path: str, patch_err: str, rec_meta: dict[str, Any]) -> str:
+    strategy = str(rec_meta.get("strategy") or "")
+    anchors = list(rec_meta.get("anchors_searched") or [])
+    candidates = list(rec_meta.get("candidates") or [])
+    failed_hunk = str(rec_meta.get("failed_hunk") or "")
+    recovery_error = str(rec_meta.get("recovery_error") or rec_meta.get("error") or patch_err or "")
+    parts = [
+        f"patch_context_not_found in {path}.",
+        "Automatic recovery stopped because the intended location is ambiguous or no reliable anchor exists.",
+        f"strategy={strategy or 'none'}",
+        f"attempts={len(rec_meta.get('attempts') or [])}",
+        f"candidate_count={rec_meta.get('candidate_count') or 0}",
+    ]
+    if anchors:
+        parts.append(f"anchors_searched={anchors[:12]}")
+    if candidates:
+        parts.append(f"candidate_locations={candidates[:12]}")
+    if failed_hunk:
+        parts.append(f"failed_hunk=\n{failed_hunk}")
+    if recovery_error:
+        parts.append(f"reason={recovery_error}")
+    parts.append("Re-read the target file and rebuild a minimal unique-context patch.")
+    return " ".join(parts)
 
 
 def build_apply_patch_tool(
@@ -442,6 +1405,9 @@ def build_apply_patch_tool(
             "Safely apply a Codex-style text patch inside the repository. "
             "Supports *** Update File, *** Add File, and *** Delete File blocks. "
             "Matches update hunks by surrounding text context, not line numbers. "
+            "When context is stale, re-reads the target, recovers via unique anchors, "
+            "rebuilds a minimal patch, and retries within a strict bound. "
+            "Ambiguous matches fail without writing. "
             "With check_only=true, validation runs without writing files."
         ),
     )

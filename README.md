@@ -897,6 +897,7 @@ Optional packages are lazy-loaded. Install only the extras required by the activ
 | [`docs/07-diagram.md`](docs/07-diagram.md) | Standalone Mermaid architecture diagram. |
 | [`docs/08-architecture.md`](docs/08-architecture.md) | Internal architecture. |
 | [`docs/09-agent-behavior.md`](docs/09-agent-behavior.md) | Agent planning and action rules. |
+| [`docs/09-mcp.md`](docs/09-mcp.md) | MCP tooling, configuration, and interoperability. |
 | [`docs/10-error-handling.md`](docs/10-error-handling.md) | Failure classification and recovery. |
 | [`docs/11-logging.md`](docs/11-logging.md) | Logging, redaction, and verbosity. |
 | [`docs/12-testing.md`](docs/12-testing.md) | Test strategy and commands. |
@@ -906,7 +907,8 @@ Optional packages are lazy-loaded. Install only the extras required by the activ
 | [`docs/16-email-connectors.md`](docs/16-email-connectors.md) | Gmail connector setup and security. |
 | [`docs/17-browser-automation.md`](docs/17-browser-automation.md) | Browser automation setup and safety. |
 | [`docs/18-telegram-connector.md`](docs/18-telegram-connector.md) | Telegram bot setup, polling/webhook deployment, security, and troubleshooting. |
-| [`docs/analyze.md`](docs/analyze.md) | Additional analysis documentation. |
+| [`docs/adaptive-coding-runtime.md`](docs/adaptive-coding-runtime.md) | Adaptive coding runtime overview and behavior. |
+| [`docs/multi-agent-routing.md`](docs/multi-agent-routing.md) | Multi-agent routing architecture and decision flow. |
 
 ---
 
