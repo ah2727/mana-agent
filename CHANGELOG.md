@@ -2,6 +2,15 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-15
+
+- Made rich chat features (agent_tools, coding_agent, auto_execute_plan, etc.) default to True for both the plain "old" console chat loop ("old chat cli") and the TUI. Updated Option defaults, removed None-based explicit forcing that was suppressing full paths on defaults, and adjusted general_coding_agent_turns + TUI __init__ / run_chat_tui defaults. This ensures model-driven routing, planning, tools, and auto-execute are active by default in interactive sessions (unblocks real AskAgent/MainAgent flows instead of preview/simple fallbacks).
+  - Also fixed ChatService.ask() arity error ("takes 2 positional arguments but 3 were given") reported in live socket/dashboard/TUI: gateway send_async and dashboard run_dashboard_chat now use correct call shape (question only for ChatService; proper AskService for index-based calls). Added k= override merge in ChatService.ask to prevent duplicate kwarg when callers pass k.
+  - Improved the TUI planner failure canned message (the "Planner was unable to produce a valid checklist... rephrasing your task more specifically as a coding or editing goal") to be less misleading for general queries that now reach the rich path.
+  - Verification: `./venv/bin/python -m py_compile` on changed files passed; `./venv/bin/python -m pytest tests/gateway/test_chat_gateway.py -q` (4 passed); targeted smoke help test passed; direct ChatService.ask(question, k=...) and gateway-style simulations succeed with override; defaults inspected via signature/OptionInfo confirm True; logic sim for old-cli general turns confirms rich path selection.
+- Updated dashboard ws path (streamlit_helpers) to also default to rich gateway (coding_agent=True) for consistency with CLI/TUI.
+- Fixed `AgentChatGateway` construction tests (`tests/gateway/test_chat_gateway.py`) that failed in clean CI environments (no OPENAI_API_KEY). The three minimal construction tests now monkeypatch `build_ask_service` with a dummy so `AgentChatGateway(...)` with `coding_agent=False` etc. succeeds without credentials. Real usage paths (pre-built objects from chat_cli, or on-demand send) are unaffected. This resolves the last 3 failures in `python -m pytest -q`.
+
 ## 2026-07-14
 
 - Fixed TUI crash when rendering ToolCallEvent cards for tools invoked via the worker path.

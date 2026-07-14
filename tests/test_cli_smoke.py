@@ -399,7 +399,7 @@ def test_chat_blocks_edit_requests_without_coding_agent(monkeypatch, tmp_path: P
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools"],
+        ["chat", "--agent-tools", "--no-coding-agent"],
         input="please patch this file\nquit\n",
     )
     assert result.exit_code == 0
@@ -423,7 +423,7 @@ def test_chat_zero_tool_response_renders_only_answer(monkeypatch, tmp_path: Path
 
     result = runner.invoke(
         app,
-        ["chat"],
+        ["chat", "--no-agent-tools", "--no-coding-agent", "--no-auto-execute-plan"],
         input="hello world\nquit\n",
     )
     assert result.exit_code == 0
@@ -481,7 +481,7 @@ def test_chat_tool_backed_response_omits_diagnostic_panels(monkeypatch, tmp_path
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools"],
+        ["chat", "--agent-tools", "--no-coding-agent"],
         input="read the readme\nquit\n",
     )
     assert result.exit_code == 0
@@ -510,7 +510,7 @@ def test_chat_normal_mode_renders_answer_without_diagnostic_panels(monkeypatch, 
 
     result = runner.invoke(
         app,
-        ["chat"],
+        ["chat", "--no-agent-tools", "--no-coding-agent"],
         input="first question\nsecond question\nquit\n",
     )
     assert result.exit_code == 0
@@ -709,8 +709,8 @@ def test_chat_agent_tools_mode_renders_answer_without_diagnostic_panels(monkeypa
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools"],
-        input="plan this\nquit\n",
+        ["chat", "--agent-tools", "--no-coding-agent", "--no-auto-execute-plan"],
+        input="tell me about the code\nquit\n",
     )
     assert result.exit_code == 0
     assert "Use semantic search first" in result.stdout
@@ -740,7 +740,7 @@ def test_chat_writes_llm_run_log_rows(monkeypatch, tmp_path: Path) -> None:
 
     result = runner.invoke(
         app,
-        ["chat"],
+        ["chat", "--no-agent-tools", "--no-coding-agent"],
         input="what is this project?\nquit\n",
     )
     assert result.exit_code == 0
@@ -1789,7 +1789,7 @@ def test_chat_renders_dynamic_plan_and_diagram_blocks_in_normal_path(monkeypatch
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools"],
+        ["chat", "--agent-tools", "--no-coding-agent"],
         input="show dynamic\nquit\n",
     )
     assert result.exit_code == 0
@@ -1825,7 +1825,7 @@ def test_chat_inferrs_mermaid_diagram_block_and_renders_before_summary(monkeypat
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools"],
+        ["chat", "--agent-tools", "--no-coding-agent"],
         input="show diagram\nquit\n",
     )
     assert result.exit_code == 0
@@ -1892,7 +1892,7 @@ def test_chat_diagram_artifact_render_invokes_mermaid_renderer(monkeypatch, tmp_
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools", "--diagram-output-dir", str(tmp_path), "--diagram-format", "svg"],
+        ["chat", "--agent-tools", "--no-coding-agent", "--diagram-output-dir", str(tmp_path), "--diagram-format", "svg"],
         input="show diagram\nquit\n",
     )
     assert result.exit_code == 0
@@ -2097,7 +2097,7 @@ def test_chat_ignores_malformed_ui_blocks_and_falls_back_to_answer(monkeypatch, 
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools"],
+        ["chat", "--agent-tools", "--no-coding-agent"],
         input="tell me about this code\nquit\n",
     )
     assert result.exit_code == 0
@@ -2366,7 +2366,7 @@ def test_chat_selection_flow_works_in_normal_agent_tools_path(monkeypatch, tmp_p
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools"],
+        ["chat", "--agent-tools", "--no-coding-agent", "--no-auto-execute-plan"],
         input="begin\n2\nquit\n",
     )
     assert result.exit_code == 0

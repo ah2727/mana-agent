@@ -488,13 +488,15 @@ def run_dashboard_chat(
             }
 
         # Use the central gateway so dashboard connections go through the gateway to agents.
+        # Default to rich (agent_tools + coding) for full model-driven routing/planning like
+        # the updated chat CLI + TUI defaults.
         gw = None
-        chat_svc = None
+        ask_service = None
         try:
-            gw = AgentChatGateway(root, coding_agent=False, agent_tools=True)
-            chat_svc = getattr(gw, "_chat_service", None) or getattr(gw, "get_ask_service", lambda: None)()
+            gw = AgentChatGateway(root, coding_agent=True, agent_tools=True)
+            ask_service = getattr(gw, "get_ask_service", lambda: None)()
         except Exception:
-            chat_svc = None
+            ask_service = None
 
         idx_dir = repository_index_dir(repository_id_for_path(root))
         _emit("agent.planning", "Planning", message="Preparing repository answer", status="running")
@@ -511,7 +513,7 @@ def run_dashboard_chat(
             event_id=tool_exec_id,
         )
 
-        service = chat_svc or build_ask_service(settings, None, project_root=root)
+        service = ask_service or build_ask_service(settings, None, project_root=root)
 
         try:
             if hasattr(service, "ask_with_tools"):
