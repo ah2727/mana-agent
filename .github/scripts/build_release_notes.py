@@ -442,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
         f"PREVIOUS_TAG={previous or ''}",
         f"RELEASE_EXISTS={'true' if exists else 'false'}",
         f"RELEASE_BODY_PATH={output_path.as_posix()}",
-        f"RELEASE_NAME=mana-agent {tag}",
+        f"RELEASE_NAME={tag}",
     ]
     meta_path.write_text("\n".join(meta_lines) + "\n", encoding="utf-8")
 
