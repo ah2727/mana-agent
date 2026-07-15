@@ -1,0 +1,124 @@
+"""Configuration for AgentChatGateway runtime.
+
+Mirrors the runtime-relevant flags from the chat CLI so all frontends
+(console, TUI, Telegram, dashboard) can share one construction path.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+@dataclass
+class ChatGatewayConfig:
+    """Runtime config for chat / coding-agent stack construction and turns."""
+
+    # Model / index
+    model: str | None = None
+    index_dir: str | Path | None = None
+    dir_mode: bool = False
+    max_indexes: int = 0
+    auto_index_missing: bool = True
+    k: int | None = None
+
+    # Agent behavior
+    agent_tools: bool = True
+    coding_agent: bool = True
+    coding_memory: bool = True
+    flow_id: str | None = None
+
+    # Tool worker / executor
+    tool_worker_process: bool = True
+    tool_worker_strict: bool = True
+    tool_exec_backend: str = "local"
+    redis_url: str | None = None
+    toolsmanager_parallel_requests: int = 3
+    redis_queue_name: str = "mana-tools"
+    redis_ttl_seconds: int = 86_400
+
+    # Coding budgets
+    coding_plan_max_steps: int = 8
+    coding_search_budget: int = 4
+    coding_read_budget: int = 6
+    coding_require_read_files: int = 2
+
+    # Auto-execute / profile
+    auto_execute_plan: bool = True
+    auto_execute_max_passes: int = 4
+    auto_continue: bool = True
+    execution_profile: str = "balanced"  # full-auto | balanced | conservative
+    full_auto: bool = False
+    full_auto_status_every: int = 10
+
+    # Step / timeout budgets
+    agent_max_steps: int = 6
+    agent_unlimited: bool = False
+    agent_timeout_seconds: int = 30
+
+    # Session
+    session_id: str | None = None
+
+    # Optional injection (tests / transitional)
+    chat_service: Any = None
+    coding_agent_instance: Any = None
+    tools_orchestrator: Any = None
+    event_sink: Any = None
+
+    # Extra free-form overrides
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def normalized(self) -> "ChatGatewayConfig":
+        """Return a copy with profile / pass-cap rules applied."""
+        profile = str(self.execution_profile or "balanced").strip().lower()
+        if self.full_auto:
+            profile = "full-auto"
+        if profile not in {"full-auto", "balanced", "conservative"}:
+            profile = "balanced"
+
+        auto_execute = bool(self.auto_execute_plan)
+        max_passes = max(1, min(int(self.auto_execute_max_passes), 12))
+        if profile == "full-auto":
+            auto_execute = True
+            if int(self.auto_execute_max_passes) == 4:
+                max_passes = 10
+
+        return ChatGatewayConfig(
+            model=self.model,
+            index_dir=self.index_dir,
+            dir_mode=bool(self.dir_mode),
+            max_indexes=int(self.max_indexes),
+            auto_index_missing=bool(self.auto_index_missing),
+            k=self.k,
+            agent_tools=bool(self.agent_tools),
+            coding_agent=bool(self.coding_agent),
+            coding_memory=bool(self.coding_memory),
+            flow_id=self.flow_id,
+            tool_worker_process=bool(self.tool_worker_process),
+            tool_worker_strict=bool(self.tool_worker_strict),
+            tool_exec_backend=str(self.tool_exec_backend or "local").strip().lower() or "local",
+            redis_url=self.redis_url,
+            toolsmanager_parallel_requests=max(1, int(self.toolsmanager_parallel_requests or 3)),
+            redis_queue_name=str(self.redis_queue_name or "mana-tools").strip() or "mana-tools",
+            redis_ttl_seconds=max(60, int(self.redis_ttl_seconds or 86_400)),
+            coding_plan_max_steps=int(self.coding_plan_max_steps),
+            coding_search_budget=int(self.coding_search_budget),
+            coding_read_budget=int(self.coding_read_budget),
+            coding_require_read_files=int(self.coding_require_read_files),
+            auto_execute_plan=auto_execute,
+            auto_execute_max_passes=max_passes,
+            auto_continue=bool(self.auto_continue and auto_execute),
+            execution_profile=profile,
+            full_auto=profile == "full-auto",
+            full_auto_status_every=max(0, int(self.full_auto_status_every)),
+            agent_max_steps=int(self.agent_max_steps),
+            agent_unlimited=bool(self.agent_unlimited),
+            agent_timeout_seconds=int(self.agent_timeout_seconds),
+            session_id=self.session_id,
+            chat_service=self.chat_service,
+            coding_agent_instance=self.coding_agent_instance,
+            tools_orchestrator=self.tools_orchestrator,
+            event_sink=self.event_sink,
+            extra=dict(self.extra or {}),
+        )

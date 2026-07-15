@@ -45,7 +45,7 @@ from mana_agent.tui.menu import NonInteractivePromptError
 from mana_agent.tui.wizard import ensure_setup
 from mana_agent.skills.chat import ChatSkillCoordinator
 from mana_agent.connectors.browser.session import BrowserSessionManager
-from mana_agent.gateway import AgentChatGateway
+from mana_agent.gateway import AgentChatGateway, ChatGatewayConfig
 
 
 _NEW_TOPIC_COMMANDS = {"/new", "/new-topic", "new topic", "new topic chat"}
@@ -788,47 +788,77 @@ def chat(
         else default_diagrams_dir(root).resolve()
     )
 
-    ask_service = _build_ask_service_compat(settings, model_override=model, project_root=root)
-
-    chat_service = ChatService(
-        ask_service=ask_service,
-        settings=settings,
-        model_override=model,
+    # ------------------------------------------------------------------
+    # Gateway owns stack construction (ask / chat / coding agent / tools).
+    # chat_cli is a frontend: flags → config → gateway → I/O loops.
+    # ------------------------------------------------------------------
+    gateway_session_id = session_id or f"sess-{uuid.uuid4().hex}"
+    gateway_config = ChatGatewayConfig(
+        model=model,
         index_dir=index_dir,
         dir_mode=dir_mode,
-        root_dir=str(root),
-        k=resolved_k,
-        agent_tools=bool(agent_tools),
-        agent_max_steps=chat_agent_max_steps,
-        agent_timeout_seconds=agent_timeout_seconds,
         max_indexes=max_indexes,
         auto_index_missing=auto_index_missing,
+        k=resolved_k,
+        agent_tools=bool(agent_tools),
+        coding_agent=bool(coding_agent),
+        tool_worker_process=tool_worker_process,
+        tool_worker_strict=tool_worker_strict,
+        tool_exec_backend=resolved_tool_exec_backend,
+        redis_url=resolved_redis_url,
+        toolsmanager_parallel_requests=resolved_parallel_requests,
+        redis_queue_name=resolved_redis_queue_name,
+        redis_ttl_seconds=resolved_redis_ttl_seconds,
+        coding_memory=coding_memory,
+        flow_id=flow_id,
+        coding_plan_max_steps=coding_plan_max_steps,
+        coding_search_budget=coding_search_budget,
+        coding_read_budget=coding_read_budget,
+        coding_require_read_files=coding_require_read_files,
+        auto_execute_plan=auto_execute_plan,
+        auto_execute_max_passes=auto_execute_max_passes,
+        auto_continue=chat_auto_continue,
+        execution_profile=execution_profile,
+        full_auto=full_auto,
+        full_auto_status_every=full_auto_status_every,
+        agent_max_steps=agent_max_steps,
+        agent_unlimited=agent_unlimited,
+        agent_timeout_seconds=agent_timeout_seconds,
+        session_id=gateway_session_id,
     )
+    try:
+        gateway = AgentChatGateway(root, config=gateway_config, settings=settings)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
-    # ✅ Initialize CodingAgent (only when enabled)
-    coding_agent_instance: CodingAgent | None = None
-    coding_memory_service: CodingMemoryService | None = None
-    tool_worker_client: ToolWorkerClient | None = None
-    tools_manager_orchestrator: QueueManager | None = None
-    tools_executor_instance: LocalToolsExecutor | RedisRQToolsExecutor | None = None
-    coding_agent_cls = _public_symbol("CodingAgent", CodingAgent)
-    coding_agent_is_custom = coding_agent_cls is not CodingAgent
-    effective_model = resolve_model_for_role(
+    stack = gateway.get_stack()
+    ask_service = stack.ask_service
+    chat_service = stack.chat_service
+    coding_agent_instance = stack.coding_agent
+    coding_memory_service = stack.coding_memory_service
+    tool_worker_client = stack.tool_worker_client
+    tools_manager_orchestrator = stack.tools_orchestrator
+    tools_executor_instance = stack.tools_executor
+    coding_agent_is_custom = stack.coding_agent_is_custom
+    effective_model = stack.effective_model or resolve_model_for_role(
         AgentRole.MAIN,
         global_model=model or settings.openai_chat_model,
     ).resolved_model
-    coding_model_assignment = resolve_model_for_role(AgentRole.CODING, global_model=effective_model)
-    planner_model_assignment = resolve_model_for_role(
-        AgentRole.PLANNER,
-        global_model=settings.openai_coding_planner_model or effective_model,
-    )
+    coding_agent_max_steps = stack.coding_agent_max_steps
+    chat_agent_max_steps = stack.chat_agent_max_steps
+    resolved_k = stack.resolved_k
+    if stack.tools_execution_config is not None:
+        tools_execution_config = stack.tools_execution_config
+    tools_execution_boot_warnings = list(stack.tools_execution_boot_warnings or [])
+    effective_base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
     tool_worker_model_assignment = resolve_model_for_role(
         AgentRole.TOOL_WORKER,
         global_model=settings.openai_tool_worker_model or effective_model,
     )
     effective_tool_worker_model = tool_worker_model_assignment.resolved_model
-    effective_base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
-    chat_log_path = default_logs_dir(root) / f"mana_agent_{datetime.now().strftime('%Y%m%d')}.log"
+    chat_log_path = stack.log_path or (
+        default_logs_dir(root) / f"mana_agent_{datetime.now().strftime('%Y%m%d')}.log"
+    )
     chat_ui_state = ChatUIState(
         repo_root=root,
         provider="openai-compatible",
@@ -852,8 +882,9 @@ def chat(
         diagram_rendering=f"{'on' if diagram_render_images else 'off'} ({diagram_format})",
         tool_worker_backend=resolved_tool_exec_backend,
         log_path=chat_log_path,
-        session_id=session_id or f"sess-{uuid.uuid4().hex}",
+        session_id=stack.session_id or gateway_session_id,
     )
+    gateway.create_session(frontend="cli", session_id=chat_ui_state.session_id)
     skill_coordinator = ChatSkillCoordinator()
     chat_skill_context = skill_coordinator.initialize_session(root)
     if not skill_coordinator.config.chat_enabled:
@@ -876,78 +907,6 @@ def chat(
             local_executor_cls=_public_symbol("LocalToolsExecutor", LocalToolsExecutor),
             redis_executor_cls=_public_symbol("RedisRQToolsExecutor", RedisRQToolsExecutor),
         )
-
-    if coding_agent:
-        if not agent_tools:
-            raise typer.BadParameter("--coding-agent requires --agent-tools (needs tool loop).")
-        if getattr(ask_service, "ask_agent", None) is None:
-            raise typer.BadParameter("--coding-agent requires AskService.ask_agent to be configured.")
-        if coding_memory:
-            coding_memory_service = CodingMemoryService(
-                project_root=root,
-                max_turns=settings.coding_flow_max_turns,
-                max_tasks=settings.coding_flow_max_tasks,
-                session_id=chat_ui_state.session_id,
-            )
-        if hasattr(ask_service.ask_agent, "update_model"):
-            ask_service.ask_agent.update_model(coding_model_assignment.resolved_model)
-        elif hasattr(ask_service.ask_agent, "model"):
-            ask_service.ask_agent.model = coding_model_assignment.resolved_model
-        if tool_worker_process:
-            tool_worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)
-            tool_worker_client = tool_worker_client_cls(
-                api_key=settings.openai_api_key,
-                model=effective_tool_worker_model,
-                base_url=effective_base_url,
-                repo_root=root,
-                project_root=root,
-                allowed_prefixes=None,
-                tools_only_strict=tool_worker_strict,
-                model_level=tool_worker_model_assignment.model_level,
-                workspace_id=chat_ui_state.workspace_id,
-                repository_id=chat_ui_state.repository_id,
-            )
-
-        # ✅ IMPORTANT: allow_prefixes=None => unrestricted under repo_root
-        coding_agent_instance = coding_agent_cls(
-            api_key=settings.openai_api_key,
-            base_url=effective_base_url,
-            repo_root=root,
-            ask_agent=ask_service.ask_agent,
-            allowed_prefixes=None,
-            coding_memory_service=coding_memory_service,
-            coding_memory_enabled=coding_memory,
-            plan_max_steps=max(1, int(coding_plan_max_steps or settings.coding_plan_max_steps)),
-            search_budget=max(1, int(coding_search_budget or settings.coding_search_budget)),
-            read_budget=max(1, int(coding_read_budget or settings.coding_read_budget)),
-            require_read_files=max(1, int(coding_require_read_files or settings.coding_require_read_files)),
-            tool_worker_client=tool_worker_client,
-            full_auto_mode=(execution_profile == "full-auto"),
-            planner_model=planner_model_assignment.resolved_model,
-        )
-
-    if coding_agent_instance is not None and auto_execute_plan and tool_worker_client is not None:
-        tools_executor_instance = _build_tools_executor(tool_worker_client)
-        tools_manager_orchestrator_cls = _public_symbol("QueueManager", QueueManager)
-        tools_manager_orchestrator = tools_manager_orchestrator_cls(
-            api_key=settings.openai_api_key,
-            model=effective_model,
-            base_url=settings.openai_base_url,
-            worker_client=tool_worker_client,
-            repo_root=root,
-            execution_config=tools_execution_config,
-            executor=tools_executor_instance,
-            coding_memory_service=coding_memory_service,
-            workspace_id=chat_ui_state.workspace_id,
-            repository_id=chat_ui_state.repository_id,
-            session_id=chat_ui_state.session_id,
-        )
-        if hasattr(coding_agent_instance, "set_tools_manager_orchestrator"):
-            coding_agent_instance.set_tools_manager_orchestrator(tools_manager_orchestrator)
-        # Give preview_plan access to the coding agent's LLM planner + memory so
-        # the pre-execution checklist is accurate, not deterministic-only.
-        if hasattr(tools_manager_orchestrator, "attach_decision_provider"):
-            tools_manager_orchestrator.attach_decision_provider(coding_agent_instance)
 
     tmp_root: tempfile.TemporaryDirectory | None = None
     tmp_base: Path | None = None
@@ -1123,6 +1082,12 @@ def chat(
             else:
                 index_state = "missing (run `mana-agent index`; using direct project search fallback)"
             chat_ui_state.index_path = f"{resolved_index_dir} ({index_state})"
+
+        # Keep gateway indexes in sync with CLI-resolved paths (shared by TUI/send).
+        gateway.set_index_dirs(
+            index_dir=resolved_index_dir,
+            index_dirs=dir_mode_index_dirs or None,
+        )
 
         # -----------------------------
         # Tool-first retry logic
@@ -1963,61 +1928,26 @@ def chat(
             api_key = getattr(settings, "openai_api_key", None)
             base_url = getattr(settings, "openai_base_url", None) or os.getenv("OPENAI_BASE_URL")
 
-            # Gateway is the central connection point to the agent (multi-agent) runtime.
-            # chat_cli creates the gateway (using the just-built stack) so that TUI
-            # connects to the gateway to reach agents. The same objects are still
-            # passed for 100% parity with the console path (see TUI work on this branch).
-            gateway = AgentChatGateway(
-                root=root,
-                model=model,
-                dir_mode=dir_mode,
-                agent_tools=agent_tools,
-                coding_agent=coding_agent,
-                tool_worker_process=tool_worker_process,
-                tool_worker_strict=tool_worker_strict,
-                tool_exec_backend=resolved_tool_exec_backend,
-                redis_url=resolved_redis_url,
-                coding_memory=coding_memory,
-                auto_execute_plan=auto_execute_plan,
-                auto_execute_max_passes=auto_execute_max_passes,
-                execution_profile=execution_profile,
-                full_auto=full_auto,
-                agent_max_steps=agent_max_steps,
-                agent_unlimited=agent_unlimited,
-                agent_timeout_seconds=agent_timeout_seconds,
-                # Hand off the rich objects already constructed in this chat() invocation
-                # (preserves the large TUI parity work on the current branch).
-                chat_service=chat_service,
-                coding_agent_instance=coding_agent_instance,
-                tools_orchestrator=tools_manager_orchestrator,
-            )
-
-            # Pass the prepared multi-agent objects + full coding agent control context
-            # so the TUI drives *exactly* the same generate / generate_dir_mode / generate_auto_execute
-            # calls (with identical kwargs) as the classic console path. This guarantees
-            # 100% functional parity (flows, memory, auto-execute passes, planning, prechecklists, etc.)
-            # while tools surface via ToolCards inside the TUI chat box.
-            # TUI now also receives the gateway so "chat tui connects with gateway to agent".
+            # Gateway already owns the stack (built at chat start). TUI connects
+            # through the gateway and also receives rich objects for tool-card UI.
+            rich_ctx = gateway.get_rich_context(chat_ui_state.session_id)
             run_chat_tui(
                 repo_root=root,
                 model=effective_model_for_tui,
                 initial_prompt=prompt,
                 api_key=api_key,
                 base_url=base_url,
-                # These enable full multi-agent behavior inside the TUI handler
-                chat_service=chat_service,
-                coding_agent=coding_agent_instance,
-                tools_orchestrator=tools_manager_orchestrator,
-                # Parity flags (must match the values used by the console loop below)
-                dir_mode=dir_mode,
+                chat_service=rich_ctx.chat_service,
+                coding_agent=rich_ctx.coding_agent,
+                tools_orchestrator=rich_ctx.tools_orchestrator,
+                dir_mode=rich_ctx.dir_mode,
                 index_dir=resolved_index_dir,
                 index_dirs=dir_mode_index_dirs,
-                auto_execute_plan=auto_execute_plan,
-                auto_execute_max_passes=auto_execute_max_passes,
-                coding_agent_max_steps=coding_agent_max_steps,
-                resolved_k=resolved_k,
-                agent_timeout_seconds=agent_timeout_seconds,
-                # Gateway connection (additive; TUI accepts it optionally)
+                auto_execute_plan=rich_ctx.auto_execute_plan,
+                auto_execute_max_passes=rich_ctx.auto_execute_max_passes,
+                coding_agent_max_steps=rich_ctx.coding_agent_max_steps,
+                resolved_k=rich_ctx.resolved_k,
+                agent_timeout_seconds=rich_ctx.agent_timeout_seconds,
                 gateway=gateway,
             )
             return

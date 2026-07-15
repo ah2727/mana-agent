@@ -488,8 +488,7 @@ def run_dashboard_chat(
             }
 
         # Use the central gateway so dashboard connections go through the gateway to agents.
-        # Default to rich (agent_tools + coding) for full model-driven routing/planning like
-        # the updated chat CLI + TUI defaults.
+        # process_turn provides auto-chat + coding agent + model-driven routing when available.
         gw = None
         ask_service = None
         try:
@@ -514,20 +513,48 @@ def run_dashboard_chat(
         )
 
         service = ask_service or build_ask_service(settings, None, project_root=root)
+        answer_text = ""
+        used_gateway_turn = False
 
         try:
-            if hasattr(service, "ask_with_tools"):
-                resp = service.ask_with_tools(str(idx_dir), prompt, k=k, max_steps=5, timeout_seconds=45)
-            else:
-                resp = service.ask(str(idx_dir), prompt, k=k)
-            _emit(
-                "tool.finished",
-                "ask_with_tools" if hasattr(service, "ask_with_tools") else "ask",
-                message="Tool-assisted answer complete",
-                status="success",
-                metadata={"tool_name": "ask_with_tools" if hasattr(service, "ask_with_tools") else "ask", "result_summary": "tool-assisted"},
-                event_id=tool_exec_id,
-            )
+            if gw is not None and hasattr(gw, "process_turn"):
+                try:
+                    if hasattr(gw, "set_index_dirs"):
+                        gw.set_index_dirs(index_dir=idx_dir)
+                    sid = gw.create_session(frontend="dashboard") if hasattr(gw, "create_session") else "dashboard"
+                    turn = gw.process_turn(sid, prompt, index_dir=str(idx_dir))
+                    answer_text = str(getattr(turn, "answer", "") or "")
+                    if getattr(turn, "error", None) and not answer_text:
+                        raise RuntimeError(str(turn.error))
+                    used_gateway_turn = True
+                    _emit(
+                        "tool.finished",
+                        "gateway.process_turn",
+                        message="Gateway turn complete",
+                        status="success",
+                        metadata={
+                            "tool_name": "gateway.process_turn",
+                            "result_summary": str(getattr(turn, "mode", "") or "turn"),
+                        },
+                        event_id=tool_exec_id,
+                    )
+                except Exception:
+                    used_gateway_turn = False
+
+            if not used_gateway_turn:
+                if hasattr(service, "ask_with_tools"):
+                    resp = service.ask_with_tools(str(idx_dir), prompt, k=k, max_steps=5, timeout_seconds=45)
+                else:
+                    resp = service.ask(str(idx_dir), prompt, k=k)
+                answer_text = str(getattr(resp, "answer", resp) or "")
+                _emit(
+                    "tool.finished",
+                    "ask_with_tools" if hasattr(service, "ask_with_tools") else "ask",
+                    message="Tool-assisted answer complete",
+                    status="success",
+                    metadata={"tool_name": "ask_with_tools" if hasattr(service, "ask_with_tools") else "ask", "result_summary": "tool-assisted"},
+                    event_id=tool_exec_id,
+                )
         except Exception as tool_exc:
             _emit(
                 "tool.failed",
@@ -538,6 +565,11 @@ def run_dashboard_chat(
                 event_id=tool_exec_id,
             )
             resp = service.ask(str(idx_dir), prompt, k=k) if hasattr(service, "ask") else {"answer": str(tool_exc)}
+            answer_text = str(getattr(resp, "answer", resp) if not isinstance(resp, dict) else resp.get("answer") or resp)
+            if isinstance(resp, dict):
+                answer_text = str(resp.get("answer") or resp)
+            else:
+                answer_text = str(getattr(resp, "answer", resp) or "")
             _emit(
                 "tool.finished",
                 "ask",
@@ -546,17 +578,10 @@ def run_dashboard_chat(
                 metadata={"tool_name": "ask"},
             )
 
-        answer = ""
-        sources = []
-        mode = "real"
-        warnings = []
-        if isinstance(resp, dict):
-            answer = resp.get("answer") or str(resp)
-            sources = resp.get("sources", [])
-        else:
-            answer = getattr(resp, "answer", str(resp))
-            sources = getattr(resp, "sources", []) or []
-            warnings = getattr(resp, "warnings", []) or []
+        answer = str(answer_text or "").strip()
+        sources: list[Any] = []
+        mode = "gateway" if used_gateway_turn else "real"
+        warnings: list[Any] = []
 
         if not answer or answer.startswith("Selected route failed"):
             mode = "preview"
@@ -564,7 +589,7 @@ def run_dashboard_chat(
             _emit("warning", "Preview mode", message="Model route produced no full answer", status="failed")
 
         for source in (sources or [])[:5]:
-            path = str(source.get("file_path") or source.get("path") or source)
+            path = str(source.get("file_path") or source.get("path") or source) if isinstance(source, dict) else str(source)
             if path:
                 _emit("file.read", "read_file", message=path, status="success", metadata={"tool_name": "read_file", "path": path})
 

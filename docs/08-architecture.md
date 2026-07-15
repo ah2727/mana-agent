@@ -22,6 +22,20 @@ them while a sniffer steers follow-up reads/edits/verification.
   artifact filenames under `.mana/`.
   See: `src/mana_agent/commands/analyze_formats.py:1-174`.
 
+### Chat gateway (runtime owner)
+
+All chat frontends connect through **`src/mana_agent/gateway/`**:
+
+- **`AgentChatGateway`** (`chat_gateway.py`): session management, stack ownership,
+  `process_turn` / `send`, rich context for TUI.
+- **`ChatGatewayConfig` + `build_chat_stack`**: construct AskService, ChatService,
+  CodingAgent, ToolWorker, QueueManager (same stack the old chat CLI built).
+- **`process_chat_turn`** (`turn_engine.py`): model decision routing, auto-chat
+  modes, coding agent / auto-execute, web research, and classic ask path.
+
+Frontends (CLI flags/I/O, TUI, Telegram, dashboard) collect config and render
+results; they should not rebuild CodingAgent independently.
+
 ### Prompting and flow context
 
 - **`src/mana_agent/agent/flow.py`** builds an `AgentFlow` (goal + phase + verification
