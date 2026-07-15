@@ -4,6 +4,8 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-15
 
+- Stable GitHub Release titles use the version tag only (e.g. `v0.0.15`), without a `mana-agent` prefix.
+  - Verification: release workflow `name` and release-notes metadata updated.
 - Added professional GitHub contribution and release templates under `.github/`.
   - New PRs automatically load `.github/pull_request_template.md` (summary, motivation, changes, type of change, testing, screenshots/CLI, breaking changes, related issues, author checklist).
   - `.github/release.yml` configures categorized auto-generated release notes by PR label.

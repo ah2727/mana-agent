@@ -332,7 +332,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: mana-agent ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           body_path: release-body.md
           files: release-assets/*
           fail_on_unmatched_files: true
