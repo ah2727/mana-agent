@@ -1007,7 +1007,7 @@ def _render_direct_command(
             "- /status — model, mode, repo, tools, memory, approvals, agents, tokens\n"
             "- /model — show provider/model\n"
             "- /tokens — detailed token accounting\n"
-            "- /tools — enabled tools plus recent tool runs/failures\n"
+            "- /tools — available auto-chat tools (name + description) and recent runs\n"
             "- /agents or /subagents — active/completed subagent activity\n"
             "- /timeline — chronological event history\n"
             "- /diff — changed-file and patch summary\n"
@@ -1050,8 +1050,21 @@ def _render_direct_command(
         return "Displayed token usage."
     elif normalized == "tools" and ui_state is not None:
         ui_state.active_panel = "tools"
-        _print(ui_state.renderer.render_tools_table(ui_state.tool_runs))
-        return "Displayed tool activity."
+        # Always show the available auto-chat catalog first so users can see
+        # connectors (email, web_search, mcp, …) even before any tool runs.
+        available = list(getattr(ui_state, "available_tools", None) or [])
+        if not available:
+            try:
+                from mana_agent.tools.catalog import list_auto_chat_tools
+
+                available = list_auto_chat_tools(include_mcp_discovery=False)
+                ui_state.available_tools = available
+            except Exception:
+                available = []
+        _print(ui_state.renderer.render_available_tools(available))
+        if ui_state.tool_runs:
+            _print(ui_state.renderer.render_tools_table(ui_state.tool_runs))
+        return "Displayed available tools" + (" and recent activity." if ui_state.tool_runs else ".")
     elif normalized in {"agents", "subagents"} and ui_state is not None:
         ui_state.active_panel = "subagents"
         _print(ui_state.renderer.render_subagents(ui_state.subagent_events))

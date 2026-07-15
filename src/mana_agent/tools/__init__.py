@@ -5,6 +5,15 @@ Tool implementations used by agentic components.
 """
 
 from .apply_patch import build_apply_patch_tool, safe_apply_patch, extract_patch_touched_files  # noqa: F401
+from .catalog import (  # noqa: F401
+    ToolCatalogEntry,
+    catalog_as_dicts,
+    catalog_names,
+    format_tool_catalog_plain,
+    format_tool_catalog_summary,
+    group_tool_catalog,
+    list_auto_chat_tools,
+)
 from .contracts import coding_tool_contracts, coding_tool_contracts_payload  # noqa: F401
 from .edit_file import (  # noqa: F401
     build_edit_file_tool,
@@ -43,8 +52,15 @@ __all__ = [
     "build_edit_file_tool",
     "build_multi_edit_file_tool",
     "apply_patch_batch",
+    "ToolCatalogEntry",
+    "catalog_as_dicts",
+    "catalog_names",
     "coding_tool_contracts",
     "coding_tool_contracts_payload",
+    "format_tool_catalog_plain",
+    "format_tool_catalog_summary",
+    "group_tool_catalog",
+    "list_auto_chat_tools",
     "call_graph",
     "extract_patch_touched_files",
     "explore_src",

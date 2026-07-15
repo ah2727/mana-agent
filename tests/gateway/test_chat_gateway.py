@@ -435,6 +435,8 @@ def test_gateway_gmail_uses_auto_chat_not_coding_agent(tmp_path: Path, monkeypat
 
     def _tracking_ask(question, **kwargs):
         ask_calls.append(str(question))
+        # Capture callbacks so TUI live tool emission can be verified.
+        ask_calls.append({"callbacks": kwargs.get("callbacks")})
         return type(
             "Resp",
             (),
@@ -443,20 +445,43 @@ def test_gateway_gmail_uses_auto_chat_not_coding_agent(tmp_path: Path, monkeypat
                 "sources": [],
                 "warnings": [],
                 "mode": "agent-tools",
+                "trace": [
+                    {
+                        "tool_name": "email_search",
+                        "args_summary": '{"query":"latest"}',
+                        "duration_ms": 12.0,
+                        "status": "ok",
+                        "output_preview": "1 message",
+                    },
+                    {
+                        "tool_name": "email_read",
+                        "args_summary": '{"message_ref":"x"}',
+                        "duration_ms": 8.0,
+                        "status": "ok",
+                        "output_preview": "Subject: Hello",
+                    },
+                ],
             },
         )()
 
     original_cs.ask = _tracking_ask  # type: ignore[method-assign]
 
     sid = gw.create_session(frontend="tui")
-    result = gw.process_turn(sid, "check my latest gmail")
+    result = gw.process_turn(sid, "check my latest gmail", callbacks=[object()])
     assert result.error is None
     assert result.used_coding_agent is False
     assert result.auto_chat_mode == "answer_only"
     assert "gmail" in result.answer.lower() or "Gmail" in result.answer
-    assert ask_calls, "expected ChatService.ask (auto-chat path) to be used for Gmail"
+    assert any(isinstance(item, str) and "gmail" in item.lower() for item in ask_calls), (
+        "expected ChatService.ask (auto-chat path) to be used for Gmail"
+    )
     assert not coding_calls, "CodingAgent must not run for Gmail auto-chat turns"
     assert (result.payload or {}).get("route") == "auto_chat"
+    # Tool traces must reach TUI consumers for ToolCard rendering.
+    trace_names = [row.get("tool_name") for row in (result.trace or []) if isinstance(row, dict)]
+    assert "email_search" in trace_names
+    assert "email_read" in trace_names
+    assert (result.payload or {}).get("trace")
 
 
 def test_should_use_coding_agent_turn_gmail_is_false() -> None:

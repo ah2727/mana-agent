@@ -4,6 +4,13 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-15
 
+- Emit auto-chat tools into the chat CLI/TUI so users can see available tools at session start.
+  - New `mana_agent.tools.catalog` builds a name + description catalog for first-party auto-chat tools (email, web_search, repo, browser, documents, git, edit) and MCP connectors from config (without starting MCP processes by default).
+  - Full auto-chat catalog (name + description, grouped) is shown **by default** on chat start for both console and Textual TUI — no `/tools` required.
+  - `/tools` still re-lists the catalog and shows recent tool activity when present.
+  - Emits a `session.tools` event with tool metadata for json/session consumers.
+  - Fixed auto-chat tool **runtime events** missing in the TUI: gateway path now forwards LangChain tool callbacks, returns AskAgent tool traces on `ChatTurnResult`, and the TUI installs the `emit_tool_event` bridge before gateway turns (with trace replay fallback) so `email_read` / `web_search` / MCP tools appear as ToolCards.
+  - Verification: `./venv/bin/python -m pytest tests/test_auto_chat_tools_catalog.py tests/test_tui_auto_chat_tool_events.py tests/gateway/test_chat_gateway.py tests/test_chat_ui_events_tokens.py tests/test_cli_ux_helpers.py tests/test_auto_chat.py -q`.
 - Added **Managed Agent Worktrees** for safe parallel coding.
   - New `WorkspaceManager` (`src/mana_agent/multi_agent/worktrees/`) allocates isolated Git worktrees under `~/.mana/repositories/<repository-id>/worktrees/` with Mana-managed branches (`mana/<task-slug>`).
   - Integrated into the multi-agent flow: Taskboard → QueueManager → WorkspaceManager → worktree → CodingAgent → Verifier → Reviewer → merge candidate (no silent merge into the default branch).

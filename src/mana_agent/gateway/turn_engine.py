@@ -390,6 +390,41 @@ def _save_auto_chat_turn_state(
     return state
 
 
+def _serialize_tool_traces(resp: Any) -> list[dict[str, Any]]:
+    """Normalize AskResponseWithTrace / list traces into JSON-serializable dicts."""
+    raw = getattr(resp, "trace", None)
+    if raw is None and isinstance(resp, dict):
+        raw = resp.get("trace")
+    if not raw:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in list(raw)[:80]:
+        if item is None:
+            continue
+        if hasattr(item, "to_dict"):
+            try:
+                payload = item.to_dict()
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                out.append(payload)
+                continue
+        if isinstance(item, dict):
+            out.append(dict(item))
+            continue
+        name = str(getattr(item, "tool_name", None) or getattr(item, "name", "") or "tool")
+        out.append(
+            {
+                "tool_name": name,
+                "args_summary": str(getattr(item, "args_summary", "") or "")[:500],
+                "duration_ms": float(getattr(item, "duration_ms", 0.0) or 0.0),
+                "status": str(getattr(item, "status", "ok") or "ok"),
+                "output_preview": str(getattr(item, "output_preview", "") or "")[:4000],
+            }
+        )
+    return out
+
+
 def process_chat_turn(
     *,
     root: Path,
@@ -405,6 +440,7 @@ def process_chat_turn(
     index_dir: str | Path | None = None,
     index_dirs: list[str | Path] | None = None,
     event_sink: Callable[..., None] | None = None,
+    callbacks: list[Any] | None = None,
 ) -> ChatTurnResult:
     """Run one model-driven chat turn (non-UI).
 
@@ -608,10 +644,17 @@ def process_chat_turn(
 
     # Classic / agent-tools ask path (auto-chat: email, MCP, web, general Q&A)
     if not use_coding or coding_agent is None:
+        ask_callbacks = list(callbacks or [])
         try:
-            resp = chat_service.ask(question, k=resolved_k)
+            if ask_callbacks:
+                resp = chat_service.ask(question, k=resolved_k, callbacks=ask_callbacks)
+            else:
+                resp = chat_service.ask(question, k=resolved_k)
         except TypeError:
-            resp = chat_service.ask(question)
+            try:
+                resp = chat_service.ask(question, callbacks=ask_callbacks) if ask_callbacks else chat_service.ask(question)
+            except TypeError:
+                resp = chat_service.ask(question)
         except Exception as exc:
             return ChatTurnResult(
                 answer="",
@@ -625,6 +668,7 @@ def process_chat_turn(
         mode_name = str(getattr(resp, "mode", "") or "").strip() or (
             "agent-tools" if agent_tools else "classic"
         )
+        tool_traces = _serialize_tool_traces(resp)
         _save_auto_chat_turn_state(
             root,
             mode=auto_chat_mode,
@@ -646,10 +690,14 @@ def process_chat_turn(
             auto_chat_mode=auto_chat_mode.value,
             warnings=warnings,
             used_coding_agent=False,
+            # Real tool invocations (email_read, web_search, MCP, …) for TUI ToolCards.
+            trace=tool_traces,
             payload={
                 "route": "auto_chat",
                 "auto_chat_mode": auto_chat_mode.value,
                 "selected_tools": list(agent_decision.selected_tools or []),
+                "trace": tool_traces,
+                "actions_taken": tool_traces,
             },
         )
 

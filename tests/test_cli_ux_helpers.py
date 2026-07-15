@@ -640,7 +640,8 @@ def test_direct_panel_slash_commands_render_from_events(tmp_path: Path) -> None:
         "ui_state": state,
     }
     assert _render_direct_command(console, "/timeline", raw_question="/timeline", **common) == "Displayed timeline."
-    assert _render_direct_command(console, "/tools", raw_question="/tools", **common) == "Displayed tool activity."
+    tools_answer = _render_direct_command(console, "/tools", raw_question="/tools", **common)
+    assert "Displayed available tools" in tools_answer
     assert _render_direct_command(console, "/diff", raw_question="/diff", **common) == "Displayed diff summary."
     assert _render_direct_command(console, "/tests", raw_question="/tests", **common) == "Displayed test history."
     assert _render_direct_command(console, "/logs", raw_question="/logs", **common) == "Verbose logs are hidden. Run `/verbose on` before using `/logs`."

@@ -19,6 +19,11 @@ from mana_agent.cli.renderers import EventRenderer
 from mana_agent.telemetry.session_trace import SessionTrace
 from mana_agent.telemetry.tokens import TokenUsageTracker
 from mana_agent.observability import ObservabilityStore
+from mana_agent.tools.catalog import (
+    ToolCatalogEntry,
+    format_tool_catalog_summary,
+    list_auto_chat_tools,
+)
 from mana_agent.workspaces.paths import session_dir
 from mana_agent.workspaces.service import WorkspaceService
 
@@ -80,6 +85,8 @@ class ChatUIState:
     test_runs: list[ChatEvent] = field(default_factory=list)
     log_events: list[ChatEvent] = field(default_factory=list)
     conversation: list[dict[str, str]] = field(default_factory=list)
+    # Auto-chat tool catalog (name + description) for TUI visibility.
+    available_tools: list[ToolCatalogEntry] = field(default_factory=list)
     active_panel: str = "chat"
     verbose_logs: bool = False
     compact_mode: bool = False
@@ -87,6 +94,9 @@ class ChatUIState:
 
     def __post_init__(self) -> None:
         self.repo_root = Path(self.repo_root).resolve()
+        if not self.available_tools:
+            # Lazy, side-effect-light discovery (no MCP process start).
+            self.available_tools = list_auto_chat_tools(include_mcp_discovery=False)
         service = WorkspaceService()
         try:
             context = service.context_for_session(self.session_id)
@@ -372,6 +382,7 @@ def compact_path(path: str | Path, *, width: int = 72) -> str:
 
 
 def render_startup_header(console: Console, state: ChatUIState) -> None:
+    tools_summary = format_tool_catalog_summary(state.available_tools)
     if state.ui_mode == "json":
         event = make_event(
             "session.started",
@@ -383,6 +394,19 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
         ).finish(status="success")
         state.record_event(event)
         console.print(state.renderer.render_event(event))
+        tools_event = make_event(
+            "session.tools",
+            title="Auto-chat tools",
+            status="success",
+            session_id=state.session_id,
+            message=tools_summary,
+            metadata={
+                "tools": [entry.to_dict() for entry in state.available_tools],
+                "count": len(state.available_tools),
+            },
+        ).finish(status="success")
+        state.record_event(tools_event)
+        console.print(state.renderer.render_event(tools_event))
         ready = make_event(
             "session.ready",
             title="Ready",
@@ -403,6 +427,7 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             f"Mana-Agent v{__version__}  repo: {state.repo_root.name}  branch: {branch}",
             f"model {state.model}   mode {state.mode}   tools {'auto' if state.tools_enabled else 'off'}   memory {'on' if state.memory_enabled else 'off'}   skills {state.skills_status}   tokens exact/~",
             f"cwd {cwd_text}",
+            f"auto tools  {tools_summary}",
             "",
             "Ready. Ask for code changes, repo analysis, debugging, or planning.",
             "/help  /status  /tokens  /tools  /agents  /trace  /ui  /exit",
@@ -411,6 +436,13 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             "Enter send · Shift+Enter newline · Ctrl+C cancel · Ctrl+D exit",
         ]
         console.print("\n".join(lines))
+        # Full catalog on start so tools are visible without running /tools.
+        console.print(
+            state.renderer.render_available_tools(
+                state.available_tools,
+                title="Auto-chat tools",
+            )
+        )
     else:
         header.append("Mana-Agent", style="bold bright_cyan")
         header.append(f" v{__version__}", style="dim")
@@ -423,6 +455,15 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             f"[bold]skills[/bold] {state.skills_status}   [bold]tokens[/bold] exact/~"
         )
         console.print(f"[bold]cwd[/bold] {cwd_text}")
+        console.print(f"[bold]auto tools[/bold] {tools_summary}")
+        console.print()
+        # Always print the full name+description catalog at session start.
+        console.print(
+            state.renderer.render_available_tools(
+                state.available_tools,
+                title="Auto-chat tools",
+            )
+        )
         console.print()
         console.print("Ready. Ask for code changes, repo analysis, debugging, or planning.")
         console.print("[dim]/help  /status  /tokens  /tools  /agents  /trace  /ui  /exit[/dim]")
@@ -437,6 +478,19 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             session_id=state.session_id,
             message=str(state.repo_root),
             metadata=startup_metadata(state),
+        ).finish(status="success")
+    )
+    state.record_event(
+        make_event(
+            "session.tools",
+            title="Auto-chat tools",
+            status="success",
+            session_id=state.session_id,
+            message=tools_summary,
+            metadata={
+                "tools": [entry.to_dict() for entry in state.available_tools],
+                "count": len(state.available_tools),
+            },
         ).finish(status="success")
     )
     state.record_event(
@@ -492,6 +546,8 @@ def startup_metadata(state: ChatUIState) -> dict[str, Any]:
         "model": state.model,
         "mode": state.mode,
         "tools_enabled": state.tools_enabled,
+        "available_tools_count": len(state.available_tools),
+        "available_tool_names": [entry.name for entry in state.available_tools[:40]],
         "approvals": state.approvals,
         "memory_enabled": state.memory_enabled,
         "skills_status": state.skills_status,

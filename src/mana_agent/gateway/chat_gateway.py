@@ -381,6 +381,9 @@ class AgentChatGateway:
                 index_dir=options.get("index_dir", self._index_dir),
                 index_dirs=options.get("index_dirs", self._index_dirs or None),
                 event_sink=sink,
+                # Optional LangChain callbacks (e.g. RichToolCallbackHandler) so
+                # auto-chat tool start/end events reach the TUI emit bridge.
+                callbacks=options.get("callbacks"),
             )
             # Sync flow id back if coding agent advanced it
             if result.flow_id:

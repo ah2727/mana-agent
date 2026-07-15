@@ -230,7 +230,62 @@ class EventRenderer:
                 _duration_label(event) or "-",
                 str(event.metadata.get("result_summary") or event.message or "-"),
             )
-        return Panel(table, title="Tools", border_style="cyan", box=box.ROUNDED)
+        return Panel(table, title="Tool activity", border_style="cyan", box=box.ROUNDED)
+
+    def render_available_tools(
+        self,
+        tools: list[Any],
+        *,
+        title: str = "Auto-chat tools",
+    ) -> Any:
+        """Render the available auto-chat tool catalog (name + description)."""
+        entries = list(tools or [])
+        if self.mode == "json":
+            payload = []
+            for entry in entries:
+                if hasattr(entry, "to_dict"):
+                    payload.append(entry.to_dict())
+                elif isinstance(entry, dict):
+                    payload.append(entry)
+                else:
+                    payload.append({"name": str(entry)})
+            return json.dumps({"title": title, "tools": payload}, ensure_ascii=False)
+
+        if not entries:
+            body = "No auto-chat tools are registered for this session."
+            if self.mode == "plain":
+                return f"{title}\n{body}"
+            return Panel(body, title=title, border_style="cyan", box=box.ROUNDED)
+
+        try:
+            from mana_agent.tools.catalog import CATEGORY_LABELS, group_tool_catalog
+
+            grouped = group_tool_catalog(entries)
+        except Exception:
+            grouped = [("other", entries)]
+
+        if self.mode == "plain":
+            lines = [f"{title} ({len(entries)})"]
+            for category, items in grouped:
+                label = CATEGORY_LABELS.get(category, str(category).title())
+                lines.append(f"{label} ({len(items)})")
+                for entry in items:
+                    name = getattr(entry, "name", None) or (entry.get("name") if isinstance(entry, dict) else str(entry))
+                    desc = getattr(entry, "description", None) or (entry.get("description") if isinstance(entry, dict) else "")
+                    lines.append(f"  {name} — {desc}".rstrip(" —"))
+            return "\n".join(lines)
+
+        table = Table(show_header=True, header_style="bold", box=box.SIMPLE, expand=True)
+        table.add_column("category", no_wrap=True, style="dim")
+        table.add_column("tool", no_wrap=True, style="cyan")
+        table.add_column("description", overflow="fold")
+        for category, items in grouped:
+            label = CATEGORY_LABELS.get(category, str(category).title())
+            for entry in items:
+                name = getattr(entry, "name", None) or (entry.get("name") if isinstance(entry, dict) else str(entry))
+                desc = getattr(entry, "description", None) or (entry.get("description") if isinstance(entry, dict) else "")
+                table.add_row(label, str(name), str(desc or "-"))
+        return Panel(table, title=f"{title} ({len(entries)})", border_style="cyan", box=box.ROUNDED)
 
     def render_files(self, events: list[ChatEvent]) -> Any:
         file_events = [
