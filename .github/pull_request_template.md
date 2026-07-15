@@ -1,21 +1,24 @@
+<!-- mana-agent:pr-template -->
+<!--
+  This static template is a fallback only.
+  On open, `.github/workflows/pr-autofill.yml` replaces it with a filled
+  description from your commits and changed files (if still a template).
+  You can edit the result freely afterward.
+-->
+
 ## Summary
 
-<!-- One or two sentences describing what this PR does. -->
+_Waiting for auto-fill from commits…_ If this is still empty after a minute, summarize the change in 1–2 sentences.
 
 ## Motivation / Context
 
-<!-- Why is this change needed? Link related issues, discussions, or user-facing problems. -->
+_Why this change is needed (auto-fill adds branch context; edit as needed)._
 
 ## Changes
 
-<!-- Bullet the concrete code, docs, or config changes. Keep it scannable. -->
-
--
--
+- _Auto-fill will list commits and files._
 
 ## Type of change
-
-<!-- Check all that apply. -->
 
 - [ ] Bug fix
 - [ ] New feature
@@ -28,42 +31,30 @@
 
 ## Testing and verification
 
-<!-- How was this verified? Prefer concrete commands. -->
-
 ```bash
-# Examples (keep only what you ran):
-# python -m pytest tests/<relevant>.py -q
-# python -m mana-agent --help
+# Commands you ran (auto-fill cannot run tests for you)
 ```
 
 - [ ] Relevant tests pass
 - [ ] Manual / CLI smoke check completed (if applicable)
-- [ ] No fallback / keyword-routing path introduced (model-decision paths unchanged or improved)
+- [ ] No fallback / keyword-routing path introduced
 
 ## Screenshots / CLI output
 
-<!-- Optional: paste terminal output, TUI screenshots, or before/after for UI-facing changes. -->
-
-```text
-# Paste relevant CLI output here when useful
-```
+_Optional._
 
 ## Breaking changes
-
-<!-- "None" if not applicable. Otherwise describe impact and migration steps. -->
 
 None
 
 ## Related issues
 
-<!-- Use closing keywords when appropriate: Fixes #123, Closes #456 -->
-
--
+- 
 
 ## Author checklist
 
 - [ ] Change is focused and limited to the requested scope
-- [ ] `CHANGELOG.md` updated for user-visible or repository behavior changes
-- [ ] Docs / help text updated when user-facing behavior changes
-- [ ] Secrets, tokens, and private data are not committed or logged
+- [ ] `CHANGELOG.md` updated when needed
+- [ ] Docs updated when user-facing behavior changes
+- [ ] No secrets committed or logged
 - [ ] Ready for review

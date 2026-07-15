@@ -4,10 +4,14 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-15
 
+- PR descriptions are auto-filled from branch commits and changed files when a PR is opened.
+  - GitHub PR templates are static only; `.github/workflows/pr-autofill.yml` runs `fill_pr_body.py` to replace empty/template bodies with summary, changes, files, commits, inferred type checkboxes, related issues, and checklist.
+  - Customized PR bodies are not overwritten on later events.
+  - Verification: local dry-run of `fill_pr_body.py` against sample base/head; YAML workflow parse.
 - Stable GitHub Release titles use the version tag only (e.g. `v0.0.15`), without a `mana-agent` prefix.
   - Verification: release workflow `name` and release-notes metadata updated.
 - Added professional GitHub contribution and release templates under `.github/`.
-  - New PRs automatically load `.github/pull_request_template.md` (summary, motivation, changes, type of change, testing, screenshots/CLI, breaking changes, related issues, author checklist).
+  - New PRs load `.github/pull_request_template.md` (fallback scaffold until autofill runs).
   - `.github/release.yml` configures categorized auto-generated release notes by PR label.
   - `.github/scripts/build_release_notes.py` builds polished GitHub Release bodies from tags, GitHub generate-notes API output, CHANGELOG highlights, install instructions, docs links, and contributors.
   - `.github/workflows/release.yml` now uses the standardized notes for `v*.*.*` tags, a structured `latest-dev` prerelease body on `main`, least-privilege permissions (`contents: write` only on the publish job), and safe re-runs that update an existing tag release instead of creating a duplicate.

@@ -1,0 +1,64 @@
+name: pr-autofill
+
+# GitHub PR templates are static Markdown only — they cannot fill themselves.
+# This workflow populates a new PR body from commits and changed files so
+# authors start from real content instead of empty headings.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  autofill:
+    name: Auto-fill PR description
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch base branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "${{ github.event.pull_request.base.ref }}" \
+            +refs/heads/${{ github.event.pull_request.base.ref }}:refs/remotes/origin/${{ github.event.pull_request.base.ref }}
+
+      - name: Auto-fill PR body from commits and files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          # Prefer merge-base for accurate file list when history allows
+          if MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null)"; then
+            DIFF_BASE="$MERGE_BASE"
+          else
+            DIFF_BASE="$BASE_SHA"
+          fi
+
+          python3 .github/scripts/fill_pr_body.py \
+            --base "$DIFF_BASE" \
+            --head "$HEAD_SHA" \
+            --branch "$BRANCH" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr "$PR_NUMBER" \
+            --token "$GITHUB_TOKEN" \
+            --apply \
+            --output /tmp/pr-body.md
+
+          echo "---- PR body preview (first 60 lines) ----"
+          sed -n '1,60p' /tmp/pr-body.md

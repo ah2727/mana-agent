@@ -17,7 +17,9 @@ Configuration lives under `.github/`:
 
 | Path | Purpose |
 | --- | --- |
-| `.github/pull_request_template.md` | Default pull request form for new PRs |
+| `.github/pull_request_template.md` | Fallback PR form (static; GitHub cannot auto-fill it alone) |
+| `.github/workflows/pr-autofill.yml` | On PR open, fills description from commits and changed files |
+| `.github/scripts/fill_pr_body.py` | Builds the auto-filled PR body |
 | `.github/release.yml` | Categories for GitHub-generated release notes |
 | `.github/scripts/build_release_notes.py` | Builds polished release Markdown from tags, PRs, and CHANGELOG highlights |
 | `.github/workflows/ci.yml` | Continuous integration tests |

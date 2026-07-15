@@ -21,7 +21,7 @@ If your contribution involves security-sensitive areas (authentication/authoriza
 
 - Run the test suite and ensure it passes.
 - Prefer small, well-scoped pull requests.
-- New pull requests use the repository PR template (`.github/pull_request_template.md`). Fill in summary, motivation, changes, type of change, verification, and the author checklist.
+- New pull requests load `.github/pull_request_template.md`. The `pr-autofill` workflow then replaces empty/template bodies with commits, changed files, inferred change types, and related issue refs. Edit the result and complete testing/checklist items yourself.
 - Update `CHANGELOG.md` for user-visible or repository behavior changes.
 - For versioned releases, see [docs/14-release.md](docs/14-release.md). Stable releases are published from `v*.*.*` tags by `.github/workflows/release.yml`.
 
