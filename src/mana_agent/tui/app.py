@@ -141,6 +141,7 @@ class ManaChatApp(App):
 
         # Gateway connection (optional, preferred path going forward)
         self.gateway = gateway
+        self._gateway_session_id: str | None = None
 
         # Minimal per-session state to support full flows (updated from generate results)
         self.active_flow_id: str | None = None
@@ -399,6 +400,96 @@ class ManaChatApp(App):
             self._planning_request = None
 
         self.update_status("Thinking with multi-agent flow...")
+
+        # Prefer gateway-owned turn engine (auto-chat + coding agent + model decision).
+        # Gateway routes connector queries (Gmail, MCP, web) via auto-chat / ChatService.ask
+        # and only uses CodingAgent for edit/plan. TUI must not bypass this routing.
+        if self.gateway is not None and hasattr(self.gateway, "process_turn"):
+            try:
+                if not self._gateway_session_id:
+                    if hasattr(self.gateway, "create_session"):
+                        self._gateway_session_id = self.gateway.create_session(frontend="tui")
+                    else:
+                        self._gateway_session_id = f"tui-{id(self)}"
+                sid = self._gateway_session_id
+
+                # Sync indexes so agent-tools ask (auto-chat) can retrieve context
+                if hasattr(self.gateway, "set_index_dirs"):
+                    try:
+                        self.gateway.set_index_dirs(
+                            index_dir=self.index_dir,
+                            index_dirs=self.index_dirs,
+                        )
+                    except Exception:
+                        pass
+
+                def _run_gateway_turn() -> Any:
+                    return self.gateway.process_turn(
+                        sid,
+                        question,
+                        index_dir=self.index_dir,
+                        index_dirs=self.index_dirs,
+                    )
+
+                self.update_status("Routing via gateway (auto-chat / coding)…")
+                result = await asyncio.to_thread(_run_gateway_turn)
+                answer = str(getattr(result, "answer", "") or "")
+                if getattr(result, "error", None) and not answer:
+                    answer = f"(Gateway error: {result.error})"
+                flow_id = getattr(result, "flow_id", None)
+                if isinstance(flow_id, str) and flow_id.strip():
+                    self.active_flow_id = flow_id.strip()
+
+                # Surface tool/mode hints when auto-chat (e.g. gmail) was used
+                route_mode = str(getattr(result, "mode", "") or "")
+                auto_mode = str(getattr(result, "auto_chat_mode", "") or "")
+                if auto_mode and not getattr(result, "used_coding_agent", False):
+                    self.update_status(f"Auto-chat ({auto_mode})")
+                elif getattr(result, "used_coding_agent", False):
+                    self.update_status("Coding agent")
+
+                # Replay simple tool traces from payload when present
+                payload = getattr(result, "payload", None) or {}
+                if isinstance(payload, dict):
+                    for row in (payload.get("actions_taken") or payload.get("trace") or [])[:40]:
+                        if not isinstance(row, dict):
+                            continue
+                        tname = str(row.get("tool_name") or row.get("tool") or "tool")
+                        cid = str(row.get("call_id") or row.get("event_id") or f"gw-{tname}-{turn_id}")
+                        self.history.add(
+                            ToolCallEvent(
+                                tool_name=tname,
+                                args=row.get("args") or row.get("args_summary") or {},
+                                call_id=cid,
+                                summary=str(row.get("args_summary") or tname)[:60],
+                                turn_id=turn_id,
+                            )
+                        )
+                        self.history.add(
+                            ToolResultEvent(
+                                call_id=cid,
+                                tool_name=tname,
+                                success=str(row.get("status", "ok")).lower() not in {"failed", "error"},
+                                result=row.get("result_summary") or row.get("result") or "(ok)",
+                                summary=f"{tname} done",
+                                turn_id=turn_id,
+                            )
+                        )
+
+                self.history.add(
+                    AssistantMessageEvent(
+                        content=answer or "(No response)",
+                        turn_id=turn_id,
+                    )
+                )
+                if not route_mode:
+                    self.update_status("Ready")
+                else:
+                    self.update_status(f"Ready ({route_mode})")
+                return
+            except Exception as exc:
+                # Fall through to direct coding_agent / chat_service path
+                self.update_status(f"Gateway turn failed, trying direct path… ({exc})")
 
         # Bridge the old emit_tool_event so *real* tool calls (workers, orchestrator,
         # all passes) become ToolCallEvent/ToolResultEvent → ToolCards inside ChatLog.
