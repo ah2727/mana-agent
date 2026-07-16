@@ -1,0 +1,225 @@
+"""Provider-neutral coding backend powered by the official Codex app-server."""
+
+from __future__ import annotations
+
+import asyncio
+import subprocess
+import uuid
+from collections.abc import AsyncIterator, Callable
+from pathlib import Path
+from typing import Any
+
+from mana_agent.coding.models import AgentEvent, CodingTask, CodingTaskResult, WorkspaceContext
+from mana_agent.integrations.codex.client import AsyncCodexAppServer
+from mana_agent.integrations.codex.config import CodexSettings
+from mana_agent.integrations.codex.event_adapter import adapt_codex_event
+from mana_agent.integrations.codex.exceptions import CodexError, CodexExecutionError, CodexUnavailableError
+from mana_agent.integrations.codex.health import check_codex_health
+from mana_agent.integrations.codex.prompt_builder import build_codex_prompt
+from mana_agent.integrations.codex.result_parser import parse_codex_result
+
+ClientFactory = Callable[[tuple[str, ...]], AsyncCodexAppServer]
+
+
+class CodexCodingBackend:
+    name = "codex"
+
+    def __init__(
+        self,
+        settings: CodexSettings,
+        *,
+        client_factory: ClientFactory | None = None,
+        worker_id: str | None = None,
+    ) -> None:
+        self.settings = settings
+        self.worker_id = worker_id or f"codex-{uuid.uuid4().hex[:8]}"
+        self._client_factory = client_factory or (lambda command: AsyncCodexAppServer(command))
+        self._client: AsyncCodexAppServer | None = None
+        self._active: dict[str, tuple[str, str]] = {}
+        self._results: dict[str, CodingTaskResult] = {}
+        self._run_lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        if self._client is not None and self._client.running:
+            return
+        if not self.settings.enabled:
+            raise CodexUnavailableError("Codex integration is disabled. No fallback backend was executed.")
+        command = (self.settings.codex_bin, "app-server")
+        self._client = self._client_factory(command)
+        await self._client.start()
+
+    async def execute(self, task: CodingTask, workspace: WorkspaceContext) -> CodingTaskResult:
+        async for _event in self.stream(task, workspace):
+            pass
+        result = self._results.get(task.task_id)
+        if result is None:
+            raise CodexExecutionError(f"Codex task produced no result: {task.task_id}")
+        return result
+
+    async def stream(self, task: CodingTask, workspace: WorkspaceContext) -> AsyncIterator[AgentEvent]:
+        await self.start()
+        if self._client is None:
+            raise CodexUnavailableError("Codex app-server did not start")
+        async with self._run_lock:
+            self._validate_workspace(task, workspace)
+            notifications: list[dict[str, Any]] = []
+            thread_id = ""
+            turn_id = ""
+            yield AgentEvent(
+                event_type="codex.worker.created",
+                task_id=task.task_id,
+                title="Codex worker created",
+                summary=self.worker_id,
+            )
+            try:
+                thread_response = await self._client.request("thread/start", self._thread_params(workspace))
+                thread_id = _response_id(thread_response, "thread")
+                if not thread_id:
+                    raise CodexExecutionError("Codex thread/start returned no thread id")
+                yield AgentEvent(
+                    event_type="codex.thread.started",
+                    task_id=task.task_id,
+                    title="Codex thread started",
+                    thread_id=thread_id,
+                )
+                turn_response = await self._client.request(
+                    "turn/start",
+                    {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": build_codex_prompt(task, workspace)}],
+                        "cwd": str(workspace.worktree_path.resolve()),
+                        "approvalPolicy": self.settings.approval_policy,
+                        "sandbox": workspace.sandbox,
+                        **({"model": self.settings.model} if self.settings.model else {}),
+                    },
+                )
+                turn_id = _response_id(turn_response, "turn")
+                if not turn_id:
+                    raise CodexExecutionError("Codex turn/start returned no turn id")
+                self._active[task.task_id] = (thread_id, turn_id)
+                iterator = self._client.notifications(thread_id).__aiter__()
+                deadline = asyncio.get_running_loop().time() + self.settings.task_timeout_seconds
+                while True:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    try:
+                        notification = await asyncio.wait_for(anext(iterator), timeout=remaining)
+                    except StopAsyncIteration:
+                        break
+                    notifications.append(notification)
+                    event = adapt_codex_event(task.task_id, notification)
+                    if event.event_type == "codex.approval.required":
+                        await self._client.deny_server_request(notification)
+                        raise CodexExecutionError(
+                            "Codex requested approval. Mana-Agent denied the request and did not elevate permissions."
+                        )
+                    yield event
+            except asyncio.TimeoutError:
+                if thread_id and turn_id:
+                    await self._client.interrupt(thread_id=thread_id, turn_id=turn_id)
+                notifications.append(
+                    {"method": "turn/failed", "params": {"message": "Codex task timed out"}}
+                )
+                yield AgentEvent(
+                    event_type="codex.worker.failed",
+                    task_id=task.task_id,
+                    status="failed",
+                    title="Codex task timed out",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                )
+            except CodexError as exc:
+                notifications.append({"method": "turn/failed", "params": {"message": str(exc)}})
+                yield AgentEvent(
+                    event_type="codex.worker.failed",
+                    task_id=task.task_id,
+                    status="failed",
+                    title="Codex task failed",
+                    summary=str(exc),
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                )
+            finally:
+                self._active.pop(task.task_id, None)
+                changed_files = await asyncio.to_thread(_git_changed_files, workspace.worktree_path)
+                self._results[task.task_id] = parse_codex_result(
+                    task=task,
+                    workspace=workspace,
+                    worker_id=self.worker_id,
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    notifications=notifications,
+                    changed_files=changed_files,
+                )
+
+    async def cancel(self, task_id: str) -> None:
+        active = self._active.get(str(task_id))
+        if active is None or self._client is None:
+            raise CodexExecutionError(f"No active Codex task: {task_id}")
+        await self._client.interrupt(thread_id=active[0], turn_id=active[1])
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.close()
+        self._client = None
+        self._active.clear()
+
+    def health(self, repository_path: str | Path):
+        return check_codex_health(self.settings, repository_path)
+
+    def _thread_params(self, workspace: WorkspaceContext) -> dict[str, Any]:
+        return {
+            "cwd": str(workspace.worktree_path.resolve()),
+            "approvalPolicy": self.settings.approval_policy,
+            "sandbox": workspace.sandbox,
+            **({"model": self.settings.model} if self.settings.model else {}),
+        }
+
+    def _validate_workspace(self, task: CodingTask, workspace: WorkspaceContext) -> None:
+        if task.requires_repository_write and not self.settings.worktree_isolation:
+            raise CodexExecutionError("Codex writing tasks require worktree isolation")
+        if task.requires_repository_write and workspace.repository_path.resolve() == workspace.worktree_path.resolve():
+            raise CodexExecutionError("Codex writing task was not assigned an isolated worktree")
+        completed = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=workspace.worktree_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise CodexExecutionError("Codex worktree is not a readable Git checkout")
+        if completed.stdout.strip():
+            raise CodexExecutionError("Codex worktree must be clean before execution")
+
+
+def _response_id(response: dict[str, Any], key: str) -> str:
+    value = response.get(key)
+    if isinstance(value, dict) and value.get("id"):
+        return str(value["id"])
+    direct = response.get(f"{key}Id") or response.get("id")
+    return str(direct or "")
+
+
+def _git_changed_files(worktree: Path) -> list[str]:
+    completed = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return []
+    changed: list[str] = []
+    for line in completed.stdout.splitlines():
+        value = line[3:].strip() if len(line) >= 4 else ""
+        if " -> " in value:
+            value = value.split(" -> ", 1)[1]
+        if value:
+            changed.append(value)
+    return sorted(set(changed))
+
+
+__all__ = ["CodexCodingBackend"]

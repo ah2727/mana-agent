@@ -113,7 +113,22 @@ MODEL_LEVEL_1_FAST_TOOL="gpt-4.1-mini"
 DEFAULT_TOP_K=8
 MANA_LLM_LOG_FILE=
 MANA_MANAGED_WORKTREES_ENABLED=true
+MANA_CODEX_ENABLED=false
+MANA_CODEX_BIN=codex
+MANA_CODEX_MAX_WORKERS=2
+MANA_CODEX_STREAM_EVENTS=true
+MANA_CODEX_WORKTREE_ISOLATION=true
+MANA_CODEX_TASK_TIMEOUT_SECONDS=1800
+MANA_CODEX_ALLOW_NETWORK=false
+MANA_CODEX_MODEL=
 ```
+
+### Codex coding backend
+
+Codex is an optional coding executor and is disabled by default. It requires the
+official `codex` CLI; Mana-Agent communicates with `codex app-server` and does
+not depend on an unofficial Python SDK. Writing tasks require an isolated clean
+worktree. See [`20-codex-integration.md`](20-codex-integration.md).
 
 ### Managed agent worktrees
 

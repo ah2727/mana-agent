@@ -65,6 +65,7 @@ from mana_agent.multi_agent import MainAgent
 from .output import build_output_sink, get_shared_console
 from .workspace_cli import impact_command, repo_app, search_command, session_app, workspace_app
 from .worktree_cli import worktree_app
+from .codex_cli import codex_app
 from .email_cli import connector_app
 from mana_agent.workspaces.paths import repository_analysis_dir, repository_dir, repository_id_for_path
 
@@ -85,6 +86,7 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(connector_app, name="connector")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(worktree_app, name="worktree")
+app.add_typer(codex_app, name="codex")
 app.add_typer(repo_app, name="repo")
 app.add_typer(repo_app, name="repository")
 app.add_typer(session_app, name="session")

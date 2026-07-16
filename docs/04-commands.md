@@ -29,6 +29,7 @@ From the CLI implementation, the commands available to users are:
 - `mana-agent chat`
 - `mana-agent continue`
 - `mana-agent worktree` (managed agent Git worktrees for isolated coding)
+- `mana-agent codex` (optional Codex backend status and authentication)
 
 The README’s CLI section only highlights `chat`, but the code shows `continue` is also a first-class command. [README.md:1-337](../README.md#L1-L337) [src/mana_agent/commands/cli_internal.py:191-262](../src/mana_agent/commands/cli_internal.py#L191-L262) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)
 
@@ -127,6 +128,20 @@ mana-agent worktree reconcile --root-dir .
 | `reconcile` | Match metadata to `git worktree list --porcelain` (never auto-deletes user worktrees) |
 
 Implementation: [src/mana_agent/commands/worktree_cli.py](../src/mana_agent/commands/worktree_cli.py), [src/mana_agent/multi_agent/worktrees/](../src/mana_agent/multi_agent/worktrees/).
+
+### `mana-agent codex`
+
+```bash
+mana-agent codex status --repo .
+mana-agent codex doctor --repo .
+mana-agent codex login
+mana-agent codex logout
+```
+
+`status` and `doctor` perform read-only executable, version, enablement, and
+repository checks. Authentication is delegated to the official Codex CLI;
+Mana-Agent never reads Codex credentials. See
+[`20-codex-integration.md`](20-codex-integration.md).
 
 Example:
 

@@ -74,6 +74,14 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "MANA_BROWSER_UPLOAD_ROOTS": "",
     "MANA_BROWSER_ARTIFACT_DIR": "",
     "MANA_BROWSER_PROFILE_MAX_AGE_DAYS": 30,
+    "MANA_CODEX_ENABLED": False,
+    "MANA_CODEX_MAX_WORKERS": 2,
+    "MANA_CODEX_STREAM_EVENTS": True,
+    "MANA_CODEX_WORKTREE_ISOLATION": True,
+    "MANA_CODEX_TASK_TIMEOUT_SECONDS": 1800,
+    "MANA_CODEX_ALLOW_NETWORK": False,
+    "MANA_CODEX_MODEL": "",
+    "MANA_CODEX_BIN": "codex",
     "experience_to_skill": {
         "enabled": True,
         "auto_propose": True,
@@ -126,6 +134,14 @@ FIELD_NAME_BY_ENV: dict[str, str] = {
     "MANA_BROWSER_UPLOAD_ROOTS": "mana_browser_upload_roots",
     "MANA_BROWSER_ARTIFACT_DIR": "mana_browser_artifact_dir",
     "MANA_BROWSER_PROFILE_MAX_AGE_DAYS": "mana_browser_profile_max_age_days",
+    "MANA_CODEX_ENABLED": "mana_codex_enabled",
+    "MANA_CODEX_MAX_WORKERS": "mana_codex_max_workers",
+    "MANA_CODEX_STREAM_EVENTS": "mana_codex_stream_events",
+    "MANA_CODEX_WORKTREE_ISOLATION": "mana_codex_worktree_isolation",
+    "MANA_CODEX_TASK_TIMEOUT_SECONDS": "mana_codex_task_timeout_seconds",
+    "MANA_CODEX_ALLOW_NETWORK": "mana_codex_allow_network",
+    "MANA_CODEX_MODEL": "mana_codex_model",
+    "MANA_CODEX_BIN": "mana_codex_bin",
 }
 
 CONFIG_WRITE_ORDER = [
@@ -171,6 +187,14 @@ CONFIG_WRITE_ORDER = [
     "MANA_BROWSER_UPLOAD_ROOTS",
     "MANA_BROWSER_ARTIFACT_DIR",
     "MANA_BROWSER_PROFILE_MAX_AGE_DAYS",
+    "MANA_CODEX_ENABLED",
+    "MANA_CODEX_MAX_WORKERS",
+    "MANA_CODEX_STREAM_EVENTS",
+    "MANA_CODEX_WORKTREE_ISOLATION",
+    "MANA_CODEX_TASK_TIMEOUT_SECONDS",
+    "MANA_CODEX_ALLOW_NETWORK",
+    "MANA_CODEX_MODEL",
+    "MANA_CODEX_BIN",
 ]
 
 
