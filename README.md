@@ -336,14 +336,6 @@ mana-agent run \
   --plan-id mp_a672168ef9c0
 ```
 
-Example approved mutation plan execution:
-
-```bash
-mana-agent run \
-  --root-dir /path/to/project \
-  --plan-id mp_a2eba224ed4b
-```
-
 ### Work with project documents
 
 ```text

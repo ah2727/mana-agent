@@ -7,7 +7,11 @@ All notable repository changes should be recorded here.
 - Corrected repository index chunk citations so overlapping character slices record the source lines each slice actually covers instead of repeating the parent symbol's full line range.
   - Added a versioned chunk schema so existing indexes are automatically refreshed once, and clarified that the range embedded in chunk text describes the complete parent symbol.
   - Added regression coverage for progressive, bounded line metadata and chunk-schema invalidation.
-  - Verification: Pending.
+  - Verification: `MANA_HOME=/tmp/mana-agent-tests-index-planner-fix-20260716 .venv/bin/python -m pytest -q` passed (963 passed, 1 skipped); regenerated the supplied index and audited 10,873 unique chunks with zero invalid or repeated full-symbol ranges.
+
+- Made the coding execution-scope planner return its decision through a strict structured-output envelope before full `FlowChecklist` validation, preventing successful-but-empty free-form message content from surfacing as `No checklist payload found`.
+  - Missing or invalid `execution_scope` decisions still stop safely; no default or heuristic scope is introduced.
+  - Verification: the exact live `update readme.md` planner request returned a validated edit scope with no warnings; the full suite passed (963 passed, 1 skipped).
 
 - Added an optional, provider-neutral Codex coding backend integration using the official `codex app-server` JSON-RPC protocol.
   - Added typed coding task, workspace, backend-decision, event, and result contracts; a strict backend registry and orchestrator; managed Codex process lifecycle; thread/turn streaming; cancellation; event/result normalization; health checks; and a bounded worker pool that serializes overlapping file scopes.

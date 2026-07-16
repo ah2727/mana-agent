@@ -1229,6 +1229,51 @@ def test_plan_checklist_rejects_literal_without_execution_scope(tmp_path: Path, 
     assert any("missing execution_scope" in warning for warning in warnings)
 
 
+def test_plan_checklist_uses_typed_structured_output_instead_of_empty_message_content(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent._plan_checklist = CodingAgent._plan_checklist.__get__(agent, CodingAgent)  # type: ignore[method-assign]
+
+    class _StructuredRunner:
+        def __init__(self, planner):
+            self.planner = planner
+
+        def invoke(self, _messages):
+            self.planner.structured_invoke_calls += 1
+            return {"checklist_json": _fixed_checklist().model_dump_json()}
+
+    class _StructuredPlanner:
+        def __init__(self):
+            self.plain_invoke_calls = 0
+            self.structured_invoke_calls = 0
+
+        def with_structured_output(self, schema, *, method, strict):
+            assert schema["name"] == "ManaFlowChecklistEnvelopeV1"
+            assert schema["parameters"]["required"] == ["checklist_json"]
+            assert schema["parameters"]["additionalProperties"] is False
+            assert method == "function_calling"
+            assert strict is True
+            return _StructuredRunner(self)
+
+        def invoke(self, _messages):
+            self.plain_invoke_calls += 1
+            return type("_Msg", (), {"content": ""})()
+
+    planner = _StructuredPlanner()
+    agent.planner_llm = planner
+
+    checklist, warnings = agent._plan_checklist("update README.md")
+
+    assert checklist is not None
+    assert checklist.execution_scope is not None
+    assert warnings == []
+    assert planner.structured_invoke_calls == 1
+    assert planner.plain_invoke_calls == 0
+
+
 def test_plan_checklist_rejects_plan_text_without_execution_scope(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)

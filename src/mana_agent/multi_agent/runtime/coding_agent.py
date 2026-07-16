@@ -325,6 +325,27 @@ class CodingAgent:
 
         raise json.JSONDecodeError("No checklist payload found", raw, 0)
 
+    @staticmethod
+    def _flow_checklist_tool_schema() -> dict[str, Any]:
+        return {
+            "name": "ManaFlowChecklistEnvelopeV1",
+            "description": "Return the complete coding flow checklist JSON in checklist_json.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "checklist_json": {
+                        "type": "string",
+                        "description": (
+                            "A JSON-serialized FlowChecklist object including the complete "
+                            "execution_scope decision."
+                        ),
+                    }
+                },
+                "required": ["checklist_json"],
+                "additionalProperties": False,
+            },
+        }
+
     def __init__(
         self,
         *,
@@ -2313,6 +2334,19 @@ class CodingAgent:
             SystemMessage(content=CODING_FLOW_PLANNER_PROMPT),
             HumanMessage(content=human_prompt),
         ]
+        if hasattr(self.planner_llm, "with_structured_output"):
+            structured_planner = self.planner_llm.with_structured_output(
+                self._flow_checklist_tool_schema(),
+                method="function_calling",
+                strict=True,
+            )
+            structured_response = structured_planner.invoke(messages)
+            if not isinstance(structured_response, dict):
+                raise TypeError("planner structured response must be an object")
+            checklist_json = structured_response.get("checklist_json")
+            if not isinstance(checklist_json, str) or not checklist_json.strip():
+                raise ValueError("planner structured response is missing checklist_json")
+            return checklist_json.strip()
         response = self.planner_llm.invoke(messages)
         return str(getattr(response, "content", response) or "").strip()
 
