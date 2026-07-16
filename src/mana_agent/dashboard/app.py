@@ -28,6 +28,7 @@ from mana_agent.dashboard.pages import (
     observability,
     overview,
     reports,
+    skills,
     taskboard,
 )
 from mana_agent.ui.streamlit_helpers import find_mana_root
@@ -61,6 +62,7 @@ pages = {
         _page(chat.render, title="Chat", icon="💬", url_path="chat"),
         _page(analyze.render, title="Analyze", icon="🔬", url_path="analyze"),
         _page(reports.render, title="Reports", icon="📄", url_path="reports"),
+        _page(skills.render, title="Skill Workshop", icon="🧩", url_path="skill-workshop"),
     ],
     "Runtime": [
         _page(taskboard.render, title="Taskboard & Traces", icon="🗂️", url_path="taskboard"),

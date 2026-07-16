@@ -1,5 +1,31 @@
 # Configuration
 
+## Experience-to-Skill Workshop
+
+The workshop reads the `[experience_to_skill]` table from the existing user
+configuration at `~/.mana/config.toml`:
+
+```toml
+[experience_to_skill]
+enabled = true
+auto_propose = true
+minimum_confidence = 0.80
+needs_attention_confidence = 0.60
+minimum_successful_runs = 1
+require_verification = true
+require_user_acceptance = false
+semantic_duplicate_threshold = 0.88
+retain_rejected_days = 90
+quarantine_on_validation_failure = true
+```
+
+`MANA_SKILLS_ROOT`, `MANA_SKILL_PROPOSALS_ROOT`, and
+`MANA_SKILL_QUARANTINE_ROOT` override the three storage roots. Every scalar also
+has a `MANA_EXPERIENCE_TO_SKILL_*` environment override documented in
+[`19-experience-to-skill-workshop.md`](19-experience-to-skill-workshop.md).
+Tests should set these paths to temporary directories and must not use the
+developer's actual `~/.mana` state.
+
 `mana-agent` stores and reads its managed settings from the user-level `~/.mana`
 directory. Repository `.env` files and shell environment variables are not used
 for Mana-managed configuration.

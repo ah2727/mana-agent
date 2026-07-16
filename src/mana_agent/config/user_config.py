@@ -74,6 +74,18 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "MANA_BROWSER_UPLOAD_ROOTS": "",
     "MANA_BROWSER_ARTIFACT_DIR": "",
     "MANA_BROWSER_PROFILE_MAX_AGE_DAYS": 30,
+    "experience_to_skill": {
+        "enabled": True,
+        "auto_propose": True,
+        "minimum_confidence": 0.80,
+        "needs_attention_confidence": 0.60,
+        "minimum_successful_runs": 1,
+        "require_verification": True,
+        "require_user_acceptance": False,
+        "semantic_duplicate_threshold": 0.88,
+        "retain_rejected_days": 90,
+        "quarantine_on_validation_failure": True,
+    },
 }
 
 

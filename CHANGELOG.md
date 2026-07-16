@@ -2,6 +2,17 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-16
+
+- Added the Experience-to-Skill Workshop and trusted built-in `skill-creator` capability.
+  - Completed, verified task experience now passes deterministic eligibility gates and evidence-weighted confidence scoring before any model generation occurs.
+  - Typed proposal drafts are redacted, structurally and safely validated, checked for supported permissions and duplicates, and stored outside active skill loading under configurable `skill-proposals` or `skill-quarantine` roots.
+  - Proposal storage uses stable identifiers, locked atomic writes, duplicate evidence merging, explicit non-recursion guards, and a non-fatal task-completion hook.
+  - Explicit review supports list/show/review/edit/install/reject/quarantine and manual `create-from-session`; installation revalidates, refuses silent overwrite, preserves versioned provenance, and rebuilds the active skill index.
+  - Added shared lifecycle events plus a dashboard proposal page with confidence/risk filters, evidence and warning views, side-by-side editing, review actions, and installed-version history.
+  - Added `[experience_to_skill]` user configuration, environment/path overrides, a complete security and workflow guide, README capability/architecture updates, and focused regression coverage.
+  - Verification: `PYTHONPATH=src venv/bin/pytest -q tests/test_experience_to_skill_workshop.py tests/test_adaptive_skills.py tests/test_cli_modes_skills.py` passed (33 tests); `PYTHONPATH=src venv/bin/pytest -q` completed with 937 passed, 1 skipped, and 2 environment failures because `python` was absent from `PATH`; rerunning those exact two tests with `PATH="$PWD/venv/bin:$PATH"` passed (2 tests).
+
 ## 2026-07-15
 
 - Emit auto-chat tools into the chat CLI/TUI so users can see available tools at session start.

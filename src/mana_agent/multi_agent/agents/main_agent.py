@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import re
 from pathlib import Path
 from typing import Any
@@ -35,6 +35,14 @@ from mana_agent.multi_agent.worktrees import (
     review_task_branch,
 )
 from mana_agent.config.settings import Settings
+from mana_agent.builtin_skills.skill_creator import (
+    ExperienceRecord,
+    ExperienceWorkshopHook,
+    SkillCreator,
+    SkillDraft,
+    WorkshopConfig,
+)
+from mana_agent.services.execution_event_hub import get_execution_event_hub
 
 @dataclass
 class MainAgentResult:
@@ -47,6 +55,24 @@ class MainAgentResult:
     repository_ids: list[str] | None = None
 
 
+class _MainAgentSkillDraftGenerator:
+    """Adapter around the existing model selected for the task lifecycle."""
+
+    def __init__(self, llm: Any) -> None:
+        self.model = llm.with_structured_output(SkillDraft)
+
+    def generate(self, experience: ExperienceRecord, decision) -> SkillDraft:  # noqa: ANN001
+        prompt = (
+            "As Mana-Agent's trusted built-in skill-creator, make a generalized reusable procedure from the recorded, verified experience below. "
+            "Return the SkillDraft schema. Do not include repository-specific paths, source lines, secrets, credentials, private data, or instructions that install the proposal, alter validation, or alter approval records. "
+            "Declare only supported permissions and include deterministic verification and bounded failure recovery.\n\n"
+            f"Eligibility:\n{decision.model_dump_json(indent=2)}\n\n"
+            f"Recorded evidence:\n{experience.model_dump_json(indent=2)}"
+        )
+        value = self.model.invoke(prompt)
+        return value if isinstance(value, SkillDraft) else SkillDraft.model_validate(value)
+
+
 class MainAgent:
     def __init__(
         self,
@@ -57,6 +83,7 @@ class MainAgent:
         workspace_id: str | None = None,
     ) -> None:
         self.root = Path(root).resolve()
+        self.routing_llm = routing_llm
         self.workspace_service = WorkspaceService()
         try:
             self.workspace_context = self.workspace_service.context_for_session(str(session_id)) if session_id else None
@@ -360,6 +387,16 @@ class MainAgent:
                 except WorkspaceError:
                     pass
         self.memory.remember_task(f"Final summary produced for task {task.task_id}: {answer[:500]}")
+        workshop = self._run_experience_workshop(task.task_id, answer, approved=approved)
+        if workshop and workshop.proposal_result and workshop.proposal_result.proposal:
+            proposal = workshop.proposal_result.proposal
+            answer += (
+                "\n\nExperience candidate detected\n"
+                f"Reusable workflow: {proposal.display_name}\n"
+                f"Confidence: {proposal.confidence:.2f}\n"
+                f"Proposal: {proposal.proposal_id}\n"
+                "Review with `mana-agent skill proposal review " + proposal.proposal_id + "`."
+            )
         return MainAgentResult(
             task.task_id,
             route.route_name,
@@ -369,6 +406,76 @@ class MainAgent:
             route.required_subagents,
             scope.repository_ids,
         )
+
+    def _run_experience_workshop(self, task_id: str, summary: str, *, approved: bool):
+        """Evaluate recorded completion facts without affecting task success."""
+        try:
+            config = WorkshopConfig.load()
+            if not config.enabled or not config.auto_propose:
+                return None
+            task = self.taskboard.get_task(task_id)
+            verification_rows = [asdict(item) for item in task.verification_results]
+            verification_passed = bool(verification_rows) and all(bool(item.get("passed")) for item in verification_rows)
+            changed_files = sorted(
+                {
+                    *task.files_touched,
+                    *(path for job in self.queue_manager.jobs_for_task(task_id) for path in job.changed_files),
+                }
+            )
+            decisions = [asdict(item) for item in self.memory_service.agent_decisions if item.task_id == task_id]
+            tools = [asdict(item) for item in self.memory_service.tool_executions.values() if item.task_id == task_id]
+            experience = ExperienceRecord(
+                session_id=task.session_id or self.workspace_context.session.session_id,
+                task_id=task_id,
+                summary=task.user_request,
+                result=summary,
+                workflow_steps=list(task.plan),
+                decisions=decisions,
+                tool_calls=tools,
+                changed_files=changed_files,
+                verification_commands=list(task.verification_commands),
+                verification_results=verification_rows,
+                verification_passed=verification_passed,
+                user_accepted=False,
+                reusable_trigger_present=len(task.plan) >= 2,
+                deterministic_verification=bool(task.verification_commands),
+                repository_specificity="medium",
+                unresolved_warnings=[*task.blockers, *(risk for row in verification_rows for risk in row.get("risks", []))],
+                agent_ids=list(task.assigned_agent_ids),
+                subagent_ids=list(task.assigned_subagent_ids),
+                source_component="task_completion",
+            )
+
+            def event_sink(event_type: str, metadata: dict[str, object]) -> None:
+                get_execution_event_hub().emit(
+                    event_type,
+                    title=event_type.replace("_", " ").title(),
+                    conversation_id=task.session_id,
+                    execution_id=task_id,
+                    repository_id=task.primary_repository_id,
+                    status="success" if event_type in {"skill_proposal_created", "skill_candidate_detected"} else "running",
+                    metadata=metadata,
+                )
+
+            creator = SkillCreator(config=config, event_sink=event_sink)
+            generator = _MainAgentSkillDraftGenerator(self.routing_llm) if self.routing_llm is not None else None
+            return ExperienceWorkshopHook(creator).run(
+                experience,
+                generator=generator,
+                original_task_succeeded=approved,
+            )
+        except Exception as exc:
+            # The workshop is subordinate to the already completed task.
+            get_execution_event_hub().emit(
+                "skill_proposal_validation_failed",
+                title="Skill proposal generation failed",
+                conversation_id=self.workspace_context.session.session_id,
+                execution_id=task_id,
+                repository_id=self.workspace_context.session.primary_repository_id,
+                message=str(exc),
+                status="failed",
+            )
+            return None
 
     def _create_required_subagents(self, task_id: str, subagent_names: list[str]) -> list[str]:
         if not subagent_names:

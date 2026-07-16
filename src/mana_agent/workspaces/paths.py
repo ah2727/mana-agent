@@ -77,6 +77,9 @@ def ensure_home_layout() -> Path:
         "llm_logs",
         "observability",
         "automations",
+        "skills",
+        "skill-proposals",
+        "skill-quarantine",
     ):
         (home / child).mkdir(parents=True, exist_ok=True)
     return home

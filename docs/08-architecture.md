@@ -170,6 +170,22 @@ Important behaviors:
 It also supports building a skill index and reading individual skills.
 See: `src/mana_agent/skills/manager.py:1-441`.
 
+The trusted Experience-to-Skill Workshop is isolated under
+`src/mana_agent/builtin_skills/skill_creator/`. It runs only after the normal
+act, verify, summarize, and outcome-recording lifecycle:
+
+```text
+Task outcome -> deterministic eligibility -> typed model draft -> validation
+  -> ~/.mana/skill-proposals/ -> explicit review -> ~/.mana/skills/
+```
+
+The evaluator and confidence calculation are deterministic. The model-dependent
+generator returns a typed `SkillDraft`; recorded task events remain the evidence
+authority. `ProposalStorage` performs locked atomic writes and keeps proposals
+and quarantine outside active skill loading. Installation revalidates, preserves
+provenance, updates the active index, and refuses silent overwrite. Workshop
+errors emit shared execution events without changing the original task status.
+
 ### UI and rendering layer
 
 - **`src/mana_agent/ui/banner.py`** renders the CLI banner and compact mode headers.
@@ -225,6 +241,7 @@ src/mana_agent/
   renderers/            # HTML rendering and export helpers
   services/             # ask/analyze/report orchestration services
   skills/               # skill loading and skill index matching
+  builtin_skills/       # trusted non-user-loadable capabilities (skill-creator)
   tools/                # repository access + safe mutation tools
   ui/                   # console UI helpers
   utils/                # guards, IO, discovery, helper glue

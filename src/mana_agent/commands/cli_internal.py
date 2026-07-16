@@ -56,6 +56,8 @@ from mana_agent.multi_agent.runtime.run_logger import LlmRunLogger  # noqa: F401
 from mana_agent.utils.project_search import project_search  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.multi_agent.tools import git_tools
 from mana_agent.skills import SkillManager, RepositoryIdentityService, SkillPolicyEngine, SkillStorage
+from mana_agent.builtin_skills.skill_creator import ProposalStorage, SkillCreator, SkillDraft
+from mana_agent.builtin_skills.skill_creator.session_loader import load_session_experience
 from mana_agent.tui.menu import NonInteractivePromptError
 from mana_agent.tui.wizard import ensure_setup
 from mana_agent.ui.banner import render_mode_header
@@ -70,9 +72,13 @@ logger = logging.getLogger(__name__)
 console = get_shared_console()
 app = typer.Typer(help="mana-agent CLI", invoke_without_command=True, no_args_is_help=False)
 skills_app = typer.Typer(help="Manage Mana Agent skills.")
+skill_app = typer.Typer(help="Review and manage Experience-to-Skill proposals.")
+skill_proposal_app = typer.Typer(help="Review a single skill proposal.")
 automation_app = typer.Typer(help="Create, deploy, inspect, and run persistent automations.")
 mcp_app = typer.Typer(help="Connect to or serve Model Context Protocol tools and resources.")
 app.add_typer(skills_app, name="skills")
+app.add_typer(skill_app, name="skill")
+skill_app.add_typer(skill_proposal_app, name="proposal")
 app.add_typer(automation_app, name="automation")
 app.add_typer(automation_app, name="cron")
 app.add_typer(mcp_app, name="mcp")
@@ -1027,6 +1033,176 @@ def skills_explain_permissions(skill_id: str, repo: str | None = typer.Option(No
 @skills_app.command("rebuild-index")
 def skills_rebuild_index(repo: str | None = typer.Option(None, "--repo", "--root-dir")) -> None:
     root=_resolve_repo(repo); console.print(str(SkillStorage().rebuild_index(_adaptive_id(root))))
+
+
+@skill_app.command("proposals")
+def skill_proposals(
+    status: str | None = typer.Option(None, "--status", help="Filter by proposal status."),
+    min_confidence: float = typer.Option(0.0, "--min-confidence", min=0.0, max=1.0),
+    risk: str | None = typer.Option(None, "--risk", help="Filter by low, medium, high, or critical risk."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable output."),
+) -> None:
+    """List pending, installed, rejected, and quarantined proposals."""
+    if risk and risk not in {"low", "medium", "high", "critical"}:
+        raise typer.BadParameter("risk must be low, medium, high, or critical")
+    rows = ProposalStorage().list(status=status, min_confidence=min_confidence, risk=risk)
+    payload = [item.model_dump(mode="json") for item in rows]
+    if json_output:
+        console.print_json(json.dumps(payload, ensure_ascii=False))
+        return
+    if not rows:
+        console.print("No matching skill proposals.")
+        return
+    for item in rows:
+        console.print(f"[bold]{item.proposal_id}[/bold]  {item.display_name}  status={item.status} confidence={item.confidence:.2f} risk={item.risk.get('level')}")
+
+
+def _proposal_payload(proposal_id: str) -> dict[str, Any]:
+    path, manifest, evidence, report, markdown = ProposalStorage().load(proposal_id)
+    return {
+        "path": str(path),
+        "proposal": manifest.model_dump(mode="json"),
+        "evidence": evidence.model_dump(mode="json"),
+        "validation": report.model_dump(mode="json"),
+        "skill": markdown,
+    }
+
+
+@skill_proposal_app.command("show")
+def skill_proposal_show(proposal_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
+    """Show a proposal and its full generated SKILL.md."""
+    try:
+        payload = _proposal_payload(proposal_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"Unknown proposal: {proposal_id}") from exc
+    if json_output:
+        console.print_json(json.dumps(payload, ensure_ascii=False))
+    else:
+        manifest = payload["proposal"]
+        console.print(f"[bold cyan]{manifest['display_name']}[/bold cyan]\nProposal: {proposal_id}\nStatus: {manifest['status']}\nConfidence: {manifest['confidence']:.2f}\nRisk: {manifest['risk'].get('level')}\n")
+        console.print(payload["skill"])
+
+
+@skill_proposal_app.command("review")
+def skill_proposal_review(proposal_id: str) -> None:
+    """Display evidence, duplicate analysis, permissions, and warnings."""
+    try:
+        console.print_json(json.dumps(_proposal_payload(proposal_id), ensure_ascii=False))
+    except KeyError as exc:
+        raise typer.BadParameter(f"Unknown proposal: {proposal_id}") from exc
+
+
+@skill_proposal_app.command("install")
+def skill_proposal_install(
+    proposal_id: str,
+    version: str = typer.Option("1.0.0", "--version", help="Installed skill version."),
+) -> None:
+    """Explicitly approve, revalidate, and install a proposal."""
+    try:
+        target = ProposalStorage().install(proposal_id, approved=True, version=version)
+    except (KeyError, ValueError, FileExistsError, PermissionError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"Installed skill: {target}")
+
+
+@skill_proposal_app.command("edit")
+def skill_proposal_edit(
+    proposal_id: str,
+    draft_file: Path | None = typer.Option(None, "--draft-file", exists=True, dir_okay=False, help="JSON file containing a complete SkillDraft."),
+    skill_file: Path | None = typer.Option(None, "--skill-file", exists=True, dir_okay=False, help="Replacement SKILL.md; metadata remains unchanged."),
+) -> None:
+    """Edit a proposal, rerun validation, and reset it to needs_attention."""
+    if bool(draft_file) == bool(skill_file):
+        raise typer.BadParameter("provide exactly one of --draft-file or --skill-file")
+    try:
+        draft = SkillDraft.model_validate_json(draft_file.read_text(encoding="utf-8")) if draft_file else None
+        manifest = SkillCreator().edit(
+            proposal_id,
+            draft=draft,
+            markdown=skill_file.read_text(encoding="utf-8") if skill_file else None,
+        )
+    except (KeyError, OSError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"Updated proposal {manifest.proposal_id}; status={manifest.status}")
+
+
+@skill_proposal_app.command("reject")
+def skill_proposal_reject(
+    proposal_id: str,
+    reason: str = typer.Option("", "--reason", help="Optional rejection reason."),
+) -> None:
+    """Reject a proposal while retaining metadata against regeneration."""
+    try:
+        path = ProposalStorage().reject(proposal_id, reason)
+    except (KeyError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"Rejected proposal: {path}")
+
+
+@skill_proposal_app.command("quarantine")
+def skill_proposal_quarantine(
+    proposal_id: str,
+    reason: str = typer.Option(..., "--reason", help="Required quarantine reason."),
+) -> None:
+    """Move a proposal outside proposal and active skill loading."""
+    try:
+        path = ProposalStorage().quarantine(proposal_id, reason)
+    except (KeyError, ValueError, FileExistsError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"Quarantined proposal: {path}")
+
+
+class _ConfiguredSkillDraftGenerator:
+    """Structured model generator used only by explicit manual workshop runs."""
+
+    def __init__(self) -> None:
+        settings = Settings()
+        if not str(settings.openai_api_key or "").strip():
+            raise RuntimeError("Model decision failed: skill proposal generation. No fallback action was executed. Reason: no configured model API key.")
+        self.model = create_chat_model(
+            api_key=settings.openai_api_key,
+            model=settings.openai_chat_model,
+            base_url=settings.openai_base_url,
+            temperature=0,
+        ).with_structured_output(SkillDraft)
+
+    def generate(self, experience, decision):
+        prompt = (
+            "You are Mana-Agent's trusted skill-creator. Produce a complete generalized skill draft from recorded task evidence. "
+            "Do not copy repository-specific paths, line numbers, secrets, credentials, or private data. State bounded tools, permissions, safety constraints, deterministic verification, and failure recovery. "
+            "The proposal must never install itself or edit approval/validation records.\n\n"
+            f"Eligibility decision:\n{decision.model_dump_json(indent=2)}\n\n"
+            f"Recorded experience:\n{experience.model_dump_json(indent=2)}"
+        )
+        result = self.model.invoke(prompt)
+        return result if isinstance(result, SkillDraft) else SkillDraft.model_validate(result)
+
+
+@skill_app.command("create-from-session")
+def skill_create_from_session(
+    session_id: str,
+    draft_file: Path | None = typer.Option(None, "--draft-file", exists=True, dir_okay=False, help="Use a pre-generated structured draft; useful for offline review workflows."),
+) -> None:
+    """Run the normal eligibility, evidence, generation, and validation pipeline."""
+    try:
+        experience = load_session_experience(session_id)
+        creator = SkillCreator()
+        result = (
+            creator.create_from_draft(experience, SkillDraft.model_validate_json(draft_file.read_text(encoding="utf-8")))
+            if draft_file
+            else creator.create(experience, _ConfiguredSkillDraftGenerator())
+        )
+    except Exception as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if not result.decision.eligible:
+        console.print_json(result.decision.model_dump_json())
+        raise typer.Exit(code=2)
+    if result.merged_into:
+        console.print(f"Duplicate experience merged into: {result.merged_into}")
+    elif result.path:
+        console.print(f"Skill proposal created: {result.path}")
+    else:
+        raise typer.BadParameter("proposal validation failed; no normal proposal was stored")
 
 
 @app.command("continue")

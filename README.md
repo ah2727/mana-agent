@@ -69,6 +69,7 @@ Use Mana-Agent to:
 | Safe mutation | Explicit plans, constrained file tools, reviewable patches, command gates, and verification after changes. |
 | Git operations | Status, diff, log, branch, switch, commit, push, pull, fetch, merge, rebase, reset, clean, and generic Git help through one policy layer. |
 | Adaptive skills | Repository-specific procedures stored outside the checkout, reviewed before activation, and loaded only when selected. |
+| Experience-to-Skill Workshop | Verified task experience becomes redacted, evidence-backed proposals that require explicit review before installation. |
 | Documents | Detect, read, query, analyze, create, update, and delete supported document formats. |
 | Browser automation | Model-selected navigation, clicking, typing, forms, tabs, uploads, downloads, screenshots, and guarded submissions. |
 | External search | Optional model-selected web and GitHub search with repository-local result caching. |
@@ -106,6 +107,9 @@ flowchart LR
 
     V --> MC["Merge candidate"]
     MC --> O["Answer, artifact, or explicit merge"]
+    O --> E["Experience eligibility"]
+    E --> SP["Skill proposal review"]
+    SP -->|"Explicit install"| AS["Active skills"]
     O --> U
 ```
 
@@ -459,6 +463,22 @@ Useful chat commands:
 ```
 
 A selected skill is loaded only after repository identity, status, required tools, permissions, and selection limits are validated.
+
+### Experience-to-Skill Workshop
+
+After a substantial verified task, Mana-Agent can evaluate whether the recorded workflow is reusable. Eligible experience is redacted and converted by the trusted built-in `skill-creator` into a proposal under `~/.mana/skill-proposals/`. It remains inactive until explicit review and installation; malformed or unsafe proposals are kept under `~/.mana/skill-quarantine/` and are never loaded.
+
+```bash
+mana-agent skill proposals
+mana-agent skill proposal review <proposal-id>
+mana-agent skill proposal install <proposal-id>
+mana-agent skill proposal edit <proposal-id> --draft-file edited.json
+mana-agent skill proposal reject <proposal-id> --reason "too broad"
+mana-agent skill proposal quarantine <proposal-id> --reason "unsafe"
+mana-agent skill create-from-session <session-id>
+```
+
+See [`docs/19-experience-to-skill-workshop.md`](docs/19-experience-to-skill-workshop.md) for eligibility, confidence, storage, configuration, security, versioning, duplicate handling, events, and quarantine recovery.
 
 ### Document files
 
@@ -896,6 +916,7 @@ Optional packages are lazy-loaded. Install only the extras required by the activ
 | [`docs/02-installation.md`](docs/02-installation.md) | Installation and setup. |
 | [`docs/03-quick-start.md`](docs/03-quick-start.md) | First commands and workflows. |
 | [`docs/04-commands.md`](docs/04-commands.md) | CLI command reference. |
+| [`docs/19-experience-to-skill-workshop.md`](docs/19-experience-to-skill-workshop.md) | Verified experience, proposal review, installation, and quarantine. |
 | [`docs/05-configuration.md`](docs/05-configuration.md) | Provider, model, search, and runtime settings. |
 | [`docs/06-workflows.md`](docs/06-workflows.md) | Common analysis and coding workflows. |
 | [`docs/07-diagram.md`](docs/07-diagram.md) | Standalone Mermaid architecture diagram. |

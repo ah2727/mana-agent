@@ -1,5 +1,23 @@
 # Commands
 
+## Skill proposal workshop
+
+```bash
+mana-agent skill proposals [--status STATUS] [--min-confidence SCORE] [--risk LEVEL]
+mana-agent skill proposal show <proposal-id>
+mana-agent skill proposal review <proposal-id>
+mana-agent skill proposal install <proposal-id> [--version VERSION]
+mana-agent skill proposal edit <proposal-id> (--draft-file FILE | --skill-file FILE)
+mana-agent skill proposal reject <proposal-id> [--reason TEXT]
+mana-agent skill proposal quarantine <proposal-id> --reason TEXT
+mana-agent skill create-from-session <session-id> [--draft-file FILE]
+```
+
+`install` is the explicit approval action. It revalidates and refuses to
+overwrite an active skill. `edit` resets the proposal to `needs_attention` and
+reruns validation. `reject` retains metadata to prevent immediate regeneration;
+`quarantine` moves the proposal outside every active or pending loader.
+
 This page documents the commands exposed by `mana-agent` and the `/analyze` slash command used inside chat. The console script is defined in `pyproject.toml` and points to `mana_agent.commands.cli:app`. [pyproject.toml:1-52](../pyproject.toml#L1-L52)
 
 The Typer app is created in `src/mana_agent/commands/cli_internal.py`, where the top-level CLI registers `continue`; the interactive chat command is registered in `src/mana_agent/commands/chat_cli.py`. [src/mana_agent/commands/cli_internal.py:68-69](../src/mana_agent/commands/cli_internal.py#L68-L69) [src/mana_agent/commands/cli_internal.py:191-262](../src/mana_agent/commands/cli_internal.py#L191-L262) [src/mana_agent/commands/chat_cli.py:1-1](../src/mana_agent/commands/chat_cli.py#L1-L1) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)
