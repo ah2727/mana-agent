@@ -45,6 +45,9 @@ def resolve_embed_model(base_url: str | None, explicit_model: str | None = None)
 
 
 class Settings(BaseSettings):
+    mana_ai_provider: str = Field(default="openai", alias="MANA_AI_PROVIDER")
+    mana_primary_model: str = Field(default="openai/gpt-4.1-mini", alias="MANA_PRIMARY_MODEL")
+    mana_embedding_model: str = Field(default="openai/text-embedding-3-small", alias="MANA_EMBEDDING_MODEL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openai_chat_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_CHAT_MODEL")
@@ -68,6 +71,9 @@ class Settings(BaseSettings):
     redis_queue_name: str = Field(default="mana-tools", alias="REDIS_QUEUE_NAME")
     redis_ttl_seconds: int = Field(default=86_400, alias="REDIS_TTL_SECONDS")
     mana_github_token: str = Field(default="", alias="MANA_GITHUB_TOKEN")
+    mana_github_credential_source: str = Field(default="disabled", alias="MANA_GITHUB_CREDENTIAL_SOURCE")
+    mana_github_secret_ref: str = Field(default="", alias="MANA_GITHUB_SECRET_REF")
+    mana_github_metadata_enabled: bool = Field(default=False, alias="MANA_GITHUB_METADATA_ENABLED")
     mana_search_enable_web: bool = Field(default=True, alias="MANA_SEARCH_ENABLE_WEB")
     mana_search_enable_github: bool = Field(default=True, alias="MANA_SEARCH_ENABLE_GITHUB")
     mana_search_max_results: int = Field(default=8, alias="MANA_SEARCH_MAX_RESULTS")

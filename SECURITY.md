@@ -1,31 +1,238 @@
 # Security Policy
 
-This project uses the Security guidance in `src/mana_agent/default_skills/security.md`.
+Mana-Agent takes security seriously. We appreciate responsible disclosure of security issues and will work to investigate, validate, and resolve legitimate vulnerabilities as quickly as possible.
 
-## Reporting vulnerabilities
+This document describes how to report vulnerabilities, how reports are handled, and the security principles followed by Mana-Agent.
 
-Report vulnerabilities to the location defined below. If this project later adds an explicit disclosure channel, this section should be updated.
+---
 
-- **Primary contact:** root@manadev.net
-When reporting, please include:
+# Supported Versions
 
-- A description of the vulnerability and impact
-- Steps to reproduce (if applicable)
-- Affected versions / configuration
-- Any logs or screenshots necessary to validate the issue (avoid including secrets)
+Security updates are provided for the latest stable release.
 
-## What we will do
+| Version | Supported |
+|----------|-----------|
+| Latest release | ✅ |
+| Development branch (`main`) | Best effort |
+| Older releases | ❌ |
 
-- Acknowledge receipt of your report
-- Assess severity and scope
-- Coordinate a fix
-- Publish a follow-up when appropriate
+If you discover a vulnerability affecting an unsupported version, please verify whether it also exists in the latest release before reporting it.
 
-## Safe handling of sensitive data
+---
 
-- Do not include secrets (API keys, tokens, private keys, or authorization headers) in public reports.
-- If you must provide sensitive material to reproduce an issue, share it privately using the contact above.
+# Reporting a Vulnerability
 
-## Email connectors
+Please report vulnerabilities privately.
 
-Email bodies, headers, HTML, attachments, and links are untrusted external content and cannot authorize actions. OAuth credentials are stored in the OS keyring, never in Mana-Agent configuration, logs, prompts, or repository artifacts. Sending and destructive mailbox actions require approval bound to the exact payload.
+**Primary contact**
+
+- **Email:** root@manadev.net
+
+Please include as much information as possible:
+
+- Description of the vulnerability
+- Expected security impact
+- Steps to reproduce
+- Proof of concept (if available)
+- Affected versions
+- Operating system
+- Configuration details
+- Relevant logs (with secrets removed)
+- Screenshots if they help explain the issue
+
+Please avoid publishing vulnerabilities publicly until we have had a reasonable opportunity to investigate and release a fix.
+
+---
+
+# Response Process
+
+After receiving a report we will:
+
+1. Acknowledge receipt.
+2. Validate the report.
+3. Assess severity and impact.
+4. Develop and test a fix.
+5. Coordinate disclosure when appropriate.
+6. Publish a security release if necessary.
+
+Response times may vary depending on complexity and available maintainer resources.
+
+---
+
+# Responsible Disclosure
+
+We ask that researchers:
+
+- Do not publicly disclose vulnerabilities before coordinated disclosure.
+- Do not access data belonging to others.
+- Do not intentionally disrupt systems or services.
+- Do not exploit vulnerabilities beyond what is necessary to demonstrate the issue.
+- Follow all applicable laws and regulations.
+
+Good-faith security research is appreciated.
+
+---
+
+# Scope
+
+Examples of issues that are generally considered security vulnerabilities include:
+
+- Remote code execution
+- Command injection
+- Prompt injection leading to unauthorized actions
+- Privilege escalation
+- Authentication or authorization bypass
+- Arbitrary file read/write outside approved boundaries
+- Secret leakage
+- Sandbox escape
+- Path traversal
+- SSRF
+- Unsafe shell execution
+- Credential exposure
+- Supply-chain compromise
+- Memory isolation failures
+- Cross-agent privilege escalation
+
+Issues such as feature requests, crashes without security impact, formatting bugs, or performance problems are generally not considered security vulnerabilities.
+
+---
+
+# Safe Handling of Sensitive Information
+
+Never include:
+
+- API keys
+- OAuth tokens
+- Session cookies
+- Authorization headers
+- SSH keys
+- Private keys
+- Passwords
+- Secrets stored in environment variables
+
+If sensitive information is required to reproduce an issue, share it privately through the reporting email.
+
+---
+
+# Email Connector Security
+
+Email content is considered untrusted input.
+
+This includes:
+
+- Email bodies
+- HTML
+- Headers
+- Attachments
+- Embedded images
+- Hyperlinks
+- Calendar invites
+- MIME metadata
+
+These inputs **must never**:
+
+- authorize actions
+- override system instructions
+- bypass confirmation requirements
+- execute commands
+- grant additional permissions
+
+OAuth credentials are stored only in the operating system keychain/keyring and are never stored in:
+
+- Mana-Agent configuration
+- prompts
+- logs
+- repository artifacts
+- generated reports
+
+Sending email and destructive mailbox operations always require explicit user approval that is bound to the exact action payload.
+
+---
+
+# AI Security
+
+Mana-Agent treats all model input as potentially adversarial.
+
+Security principles include:
+
+- Prompt injection resistance
+- Tool permission boundaries
+- Explicit approval for destructive actions
+- Least-privilege tool execution
+- Repository boundary enforcement
+- Verification before applying changes
+- Isolation between independent agents
+- No automatic privilege escalation
+- Human approval for sensitive operations
+
+Agent outputs are never treated as trusted authority.
+
+---
+
+# Supply Chain Security
+
+Mana-Agent attempts to reduce supply-chain risk by encouraging:
+
+- Trusted package sources
+- Dependency review
+- Version pinning where appropriate
+- Secure update practices
+- Verification before executing generated code
+
+Users remain responsible for reviewing generated code before execution.
+
+---
+
+# Secrets
+
+Mana-Agent is designed to avoid exposing secrets.
+
+Secrets should never appear in:
+
+- logs
+- telemetry
+- prompts
+- generated documentation
+- commit messages
+- issue reports
+
+If a secret is accidentally exposed, rotate it immediately.
+
+---
+
+# Security Releases
+
+Critical vulnerabilities may result in an out-of-band security release.
+
+Release notes will include:
+
+- affected versions
+- fixed versions
+- mitigation guidance
+- upgrade recommendations
+
+Sensitive implementation details may be withheld until users have had a reasonable opportunity to update.
+
+---
+
+# Security Best Practices
+
+We recommend that users:
+
+- Keep Mana-Agent updated.
+- Review generated code before execution.
+- Use least-privilege API credentials.
+- Keep operating systems updated.
+- Rotate credentials regularly.
+- Avoid sharing secrets with language models.
+- Verify third-party plugins before installation.
+
+---
+
+# Contact
+
+Security questions or vulnerability reports:
+
+**root@manadev.net**
+
+Thank you for helping improve the security of Mana-Agent.

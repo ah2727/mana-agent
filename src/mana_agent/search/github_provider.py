@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -51,8 +52,9 @@ def build_github_query(query: SearchQuery) -> str:
 
 
 class GitHubSearchProvider:
-    def __init__(self, *, token: str = "", timeout_seconds: int = 15) -> None:
+    def __init__(self, *, token: str = "", credential_source: str = "token", timeout_seconds: int = 15) -> None:
         self.token = token
+        self.credential_source = credential_source
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.last_rate_limit = GitHubRateLimit()
 
@@ -77,6 +79,8 @@ class GitHubSearchProvider:
         return self.search(query, max_results=max_results)
 
     def _get_json(self, url: str) -> dict[str, Any]:
+        if self.credential_source == "gh_cli":
+            return self._get_json_with_gh(url)
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "mana-agent-search",
@@ -108,6 +112,26 @@ class GitHubSearchProvider:
             raise GitHubSearchError(f"GitHub search failed with HTTP {exc.code}", rate_limit=rate) from exc
         except urllib.error.URLError as exc:
             raise GitHubSearchError(f"GitHub search failed: {exc.reason}") from exc
+
+    def _get_json_with_gh(self, url: str) -> dict[str, Any]:
+        """Use GitHub CLI authentication by reference; never extract its token."""
+        try:
+            completed = subprocess.run(
+                ["gh", "api", url, "--method", "GET"],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubSearchError("GitHub CLI authentication is unavailable.") from exc
+        if completed.returncode != 0:
+            raise GitHubSearchError("GitHub CLI request failed; run `gh auth status` for details.")
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise GitHubSearchError("GitHub CLI returned an invalid response.") from exc
+        return payload if isinstance(payload, dict) else {}
 
     @staticmethod
     def _is_rate_limit_error(error: urllib.error.HTTPError, rate: GitHubRateLimit) -> bool:

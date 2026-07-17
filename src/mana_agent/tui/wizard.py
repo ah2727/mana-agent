@@ -23,14 +23,15 @@ from mana_agent.tui.menu import MenuOption, NonInteractivePromptError, select_op
 from mana_agent.tui.model_picker import choose_models, load_or_fetch_models
 from mana_agent.tui.search_provider_picker import configure_search_provider
 from mana_agent.tui.status import config_table, error, info, success
+from mana_agent.tui.configuration_app import run_configuration_tui
+from mana_agent.config.provider_registry import PROVIDERS
 
 
 PROVIDER_DEFAULTS = {
-    "openai": ("OpenAI", "https://api.openai.com/v1"),
-    "custom": ("OpenAI-compatible custom endpoint", ""),
-    "nvidia": ("NVIDIA OpenAI-compatible endpoint", "https://integrate.api.nvidia.com/v1"),
-    "manual": ("Manual / skip for now", ""),
+    item.id: (item.display_name, item.default_base_url)
+    for item in PROVIDERS.all()
 }
+PROVIDER_DEFAULTS["manual"] = ("Manual / skip for now", "")
 
 MODEL_ROLE_ENV = {
     "main": "MANA_MODEL_MAIN",
@@ -64,9 +65,7 @@ def configure_model_provider(current: dict[str, object], *, force_refresh: bool 
         title="Model provider",
         text="Select the model provider.",
         options=[
-            MenuOption("openai", PROVIDER_DEFAULTS["openai"][0]),
-            MenuOption("custom", PROVIDER_DEFAULTS["custom"][0]),
-            MenuOption("nvidia", PROVIDER_DEFAULTS["nvidia"][0]),
+            *(MenuOption(item.id, item.display_name) for item in PROVIDERS.all()),
             MenuOption("manual", PROVIDER_DEFAULTS["manual"][0]),
         ],
         default="openai",
@@ -162,35 +161,35 @@ def configure_numeric_defaults(current: dict[str, object]) -> dict[str, object]:
     }
 
 
-def run_setup_wizard(*, console: Console | None = None) -> None:
-    target = console or Console()
-    info("First-run setup will save configuration under ~/.mana. Secrets are stored separately and masked in summaries.", console=target)
-    current = load_effective_settings(include_env=True)
-    values: dict[str, object] = {}
-    values.update(configure_model_provider(current))
-    current = {**current, **values}
-    values.update(configure_model_roles(current))
-    current = {**current, **values}
-    values.update(configure_numeric_defaults(current))
-    current = {**current, **values}
-    values.update(configure_search_provider(current))
-    cleaned = validate_config_values(values)
-    save_effective_user_config(cleaned, merge=True)
-    success("Mana Agent configuration saved under ~/.mana.", console=target)
+def run_setup_wizard(*, console: Console | None = None) -> bool:
+    """Launch the Textual configuration application.
+
+    ``console`` remains accepted for API compatibility; the full-screen app
+    owns rendering so credentials never pass through plain terminal prompts.
+    """
+    _ = console
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise NonInteractivePromptError(
+            "Configuration requires an interactive terminal. Run `mana-agent --configure` from a TTY."
+        )
+    return run_configuration_tui()
 
 
-def ensure_setup(*, no_interactive: bool = False, command_needs_llm: bool = True, console: Console | None = None) -> None:
+def ensure_setup(*, no_interactive: bool = False, command_needs_llm: bool = True, console: Console | None = None) -> bool:
     if os.getenv("PYTEST_CURRENT_TEST"):
-        return
+        return True
     if has_user_config() or is_user_config_valid():
         return
     if no_interactive or not (sys.stdin.isatty() and sys.stdout.isatty()):
         if command_needs_llm:
             raise NonInteractivePromptError(
-                "Mana Agent configuration is missing. Set OPENAI_API_KEY or run `mana-agent` in an interactive terminal to complete first-run setup."
+                "Mana Agent configuration is missing. Run `mana-agent --configure` from an interactive terminal."
             )
-        return
-    run_setup_wizard(console=console)
+        return False
+    saved = run_setup_wizard(console=console)
+    if not saved or not is_user_config_valid():
+        raise NonInteractivePromptError("Configuration was not completed; chat was not started.")
+    return True
 
 
 def refresh_model_list(*, console: Console | None = None) -> None:

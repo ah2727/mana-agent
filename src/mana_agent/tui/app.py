@@ -149,6 +149,7 @@ class ManaChatApp(App):
         self._planning_request: str | None = None
         self._planning_questions: list[str] = []
         self._planning_answers: list[str] = []
+        self._turn_in_progress = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -183,12 +184,24 @@ class ManaChatApp(App):
         if len(self.history.get_events()) == 0:
             root_str = str(self.repo_root)
             model_str = self.model or "default"
+            try:
+                from mana_agent.config.user_config import load_effective_settings
+
+                configured = load_effective_settings(include_env=False)
+                provider = str(configured.get("MANA_AI_PROVIDER") or "openai")
+                search = str(configured.get("MANA_WEB_SEARCH_PROVIDER") or "disabled") if configured.get("MANA_SEARCH_ENABLE_WEB") else "disabled"
+                github = str(configured.get("MANA_GITHUB_CREDENTIAL_SOURCE") or "disabled")
+                warnings = []
+                if not configured.get("OPENAI_API_KEY"):
+                    warnings.append("provider authentication missing")
+                warning_line = f"\nWarnings: {', '.join(warnings)}" if warnings else ""
+            except Exception:
+                provider, search, github, warning_line = "unknown", "unknown", "unknown", "\nWarnings: configuration unavailable"
             welcome = AssistantMessageEvent(
                 content=(
-                    f"**mana-agent** enhanced TUI — root: `{root_str}` model: `{model_str}`\n\n"
-                    "Connected to the shared runtime (model routing + Codex for every coding turn).\n\n"
-                    "Tool calls and results are **always visible** on every turn (ChatHistory subscription).\n\n"
-                    "Type a question to drive the full flow like classic `mana-agent chat`."
+                    f"**Mana-Agent** · `{root_str}`\n"
+                    f"Provider: `{provider}` · Model: `{model_str}` · Search: `{search}` · GitHub: `{github}`"
+                    f"{warning_line}\n\nType a message, or use `/models` to manage configured models."
                 )
             )
             self.history.add(welcome)
@@ -317,6 +330,31 @@ class ManaChatApp(App):
         if not text:
             return
 
+        if text == "/models" or text.startswith("/models "):
+            if self._turn_in_progress:
+                self.notify("Wait for the current turn to finish before changing models.", severity="warning")
+                return
+            if text == "/models":
+                from mana_agent.tui.model_management import ModelManagementScreen
+
+                self.push_screen(ModelManagementScreen(current_model=self.model or "default"), self._apply_model_selection)
+            else:
+                from mana_agent.tui.model_management import plain_models_command
+
+                try:
+                    message, selection = await asyncio.to_thread(
+                        plain_models_command,
+                        text,
+                        current_model=self.model or "default",
+                    )
+                except Exception as exc:
+                    message, selection = f"Model command failed: {exc}", None
+                self.history.add(AssistantMessageEvent(content=message))
+                self._apply_model_selection(selection)
+            if self.input:
+                self.input.value = ""
+            return
+
         # Clear input immediately (premium feel)
         if self.input:
             self.input.value = ""
@@ -333,7 +371,42 @@ class ManaChatApp(App):
         await asyncio.sleep(0)
 
         # Run the turn as a worker so the UI stays responsive and tool events can paint live
-        self.run_worker(self._handle_real_turn(user_event), exclusive=True)
+        self._turn_in_progress = True
+        self.run_worker(self._handle_real_turn_guarded(user_event), exclusive=True)
+
+    async def _handle_real_turn_guarded(self, user_event: UserMessageEvent) -> None:
+        try:
+            await self._handle_real_turn(user_event)
+        finally:
+            self._turn_in_progress = False
+
+    def _apply_model_selection(self, selection: Any) -> None:
+        if selection is None:
+            return
+        self.model = selection.model_id
+        if self.gateway is not None:
+            try:
+                from dataclasses import replace
+
+                from mana_agent.gateway import AgentChatGateway
+
+                old_gateway = self.gateway
+                old_stack = old_gateway.get_stack()
+                worker = getattr(old_stack, "tool_worker_client", None)
+                if worker is not None and hasattr(worker, "stop"):
+                    worker.stop()
+                config = replace(old_gateway.config, model=selection.model_id, session_id=None)
+                self.gateway = AgentChatGateway(self.repo_root, config=config, settings=old_gateway.settings)
+                self._gateway_session_id = self.gateway.create_session(frontend="tui")
+                rich = self.gateway.get_rich_context(self._gateway_session_id)
+                self.chat_service = rich.chat_service
+                self.coding_agent = rich.coding_agent
+                self.tools_orchestrator = rich.tools_orchestrator
+            except Exception as exc:
+                self.history.add(AssistantMessageEvent(content=f"Model selected, but the runtime could not be rebuilt: {exc}"))
+        self.update_status(f"Model changed to {selection.qualified_id}")
+        if selection.persist:
+            self.history.add(AssistantMessageEvent(content=f"Default model saved: `{selection.qualified_id}`"))
 
     async def _send_initial_prompt(self) -> None:
         """Send the prompt that was passed on the command line (e.g. mana-agent chat "foo")."""

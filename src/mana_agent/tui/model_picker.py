@@ -6,6 +6,7 @@ import urllib.request
 from typing import Any
 
 from mana_agent.config.user_config import load_model_cache, save_model_cache
+from mana_agent.config.model_catalog import ModelPurpose, descriptors_from_catalog, filter_models
 from mana_agent.tui.forms import text_input
 from mana_agent.tui.menu import MenuOption, select_option
 from mana_agent.tui.status import error, info
@@ -116,17 +117,20 @@ def choose_models(
         info(f"Loaded {len(models)} model(s) from {base_url}.")
     except ModelFetchError as exc:
         error(f"{exc}\nManual model entry is available.")
+    descriptors = descriptors_from_catalog(provider, models)
+    text_models = [item.id for item in filter_models(descriptors, ModelPurpose.AGENT)]
+    embedding_models = [item.id for item in filter_models(descriptors, ModelPurpose.EMBEDDING)]
     main = select_model(
         title="Main model",
         role_label="the main chat model",
-        models=models,
+        models=text_models,
         current=str(current.get("OPENAI_CHAT_MODEL") or ""),
         allow_manual=True,
     )
     tool = select_model(
         title="Tool worker model",
         role_label="the tool worker model",
-        models=models,
+        models=text_models,
         current=str(current.get("OPENAI_TOOL_WORKER_MODEL") or ""),
         allow_same_as_main=True,
         allow_manual=True,
@@ -134,7 +138,7 @@ def choose_models(
     planner = select_model(
         title="Coding planner model",
         role_label="the coding planner model",
-        models=models,
+        models=text_models,
         current=str(current.get("OPENAI_CODING_PLANNER_MODEL") or ""),
         allow_same_as_main=True,
         allow_manual=True,
@@ -142,7 +146,7 @@ def choose_models(
     embed = select_model(
         title="Embedding model",
         role_label="the embedding model",
-        models=models,
+        models=embedding_models,
         current=str(current.get("OPENAI_EMBED_MODEL") or ""),
         allow_manual=True,
     )

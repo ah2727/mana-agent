@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from . import cli_internal as _cli_internal
 from .cli_internal import *  # noqa: F401,F403
-from .main_cli import main
+from .main_cli import configure, main
 from .chat_cli import chat
 from .ui_helpers import *  # noqa: F401,F403
 from .ui_helpers import (
@@ -33,6 +33,7 @@ app.callback()(main)
 
 # Re-register public commands deterministically.
 _replace_command("chat", chat)
+_replace_command("configure", configure, hidden=True)
 _replace_command("analyze", _cli_internal.analyze_command)
 _replace_command("plan", _cli_internal.plan_command)
 _replace_command("api", _cli_internal.api_command)

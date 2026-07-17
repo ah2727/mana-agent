@@ -2024,6 +2024,22 @@ def chat(
                 else:
                     console.print("[green]Started new chat topic.[/green]")
                 continue
+            if question.strip() == "/models" or question.strip().startswith("/models "):
+                from mana_agent.tui.model_management import plain_models_command
+
+                try:
+                    message, selection = plain_models_command(
+                        question,
+                        current_model=model or settings.openai_chat_model,
+                    )
+                except Exception as exc:
+                    console.print(f"[red]Model command failed: {exc}[/red]")
+                    continue
+                console.print(message)
+                if selection is not None:
+                    model = selection.model_id
+                    console.print("[yellow]The session model will be used by direct model calls; restart chat to rebuild all agent-role clients.[/yellow]")
+                continue
             if question.strip().startswith("/session"):
                 from mana_agent.workspaces.service import WorkspaceService
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from mana_agent.config.user_config import validate_positive_int
 from mana_agent.tui.forms import secret_input, text_input
 from mana_agent.tui.menu import MenuOption, select_option
+from mana_agent.search.registry import SEARCH_PROVIDERS
 
 
 def configure_search_provider(current: dict[str, object]) -> dict[str, object]:
@@ -11,12 +12,7 @@ def configure_search_provider(current: dict[str, object]) -> dict[str, object]:
         text="Select the web search provider.",
         options=[
             MenuOption("disabled", "Disabled"),
-            MenuOption("tavily", "Tavily"),
-            MenuOption("brave", "Brave Search API"),
-            MenuOption("exa", "Exa"),
-            MenuOption("serpapi", "SerpAPI"),
-            MenuOption("google_cse", "Google Programmable Search / Custom Search JSON API"),
-            MenuOption("custom", "Custom HTTP provider"),
+            *(MenuOption(item.id, item.display_name) for item in SEARCH_PROVIDERS),
         ],
         default=str(current.get("MANA_WEB_SEARCH_PROVIDER") or "disabled"),
     )

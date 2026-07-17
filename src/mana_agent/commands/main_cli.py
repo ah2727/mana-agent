@@ -4,10 +4,18 @@ import warnings
 
 from .cli_internal import *
 from .output import build_output_sink
-from mana_agent.cli.menu import MenuOption, select_option
 from mana_agent.tui.menu import NonInteractivePromptError
-from mana_agent.tui.wizard import ensure_setup, settings_menu
-from mana_agent.ui.banner import render_banner, render_repository
+from mana_agent.tui.wizard import ensure_setup, run_setup_wizard
+from mana_agent.ui.banner import render_banner
+
+
+def configure() -> None:
+    """Open the full configuration TUI and return to the terminal."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise typer.BadParameter(
+            "Configuration requires an interactive terminal. Run `mana-agent --configure` from a TTY."
+        )
+    run_setup_wizard(console=console)
 
 
 def main(
@@ -28,6 +36,7 @@ def main(
     log_dir: str | None = typer.Option(None, "--log-dir", help="Directory for application log files."),
     output_dir: str | None = typer.Option(None, "--output-dir", help="Directory for saving command output logs."),
     no_interactive: bool = typer.Option(False, "--no-interactive", help="Disable interactive setup and menus."),
+    configure_now: bool = typer.Option(False, "--configure", help="Open the complete configuration TUI and exit."),
 ) -> None:
     global OUTPUT_DIR, LLM_DEBUG_MODE
     verbose = bool(verbose or debug)
@@ -60,6 +69,9 @@ def main(
             sink = build_output_sink(command_name="main", json_mode=False, console=console)
             sink.emit_warning(warning_msg)
     if ctx.invoked_subcommand is None:
+        if configure_now:
+            configure()
+            return
         root = Path(repo).expanduser().resolve() if repo else Path.cwd().resolve()
         if root.is_file():
             root = root.parent
@@ -97,37 +109,12 @@ def main(
             _invoke_with_multi_agent_route(ctx, "plan", args, root=root, request="root --plan", entrypoint="root")
             return
 
-        render_repository(root, console)
-        if no_interactive:
-            raise typer.BadParameter("No subcommand or mode flag was provided, and --no-interactive disables the root menu.")
-        try:
-            choice = select_option(
-                title="Mana Agent",
-                text="Choose what you want to do:",
-                options=[
-                    MenuOption("chat", "Chat with repo (mana-agent chat)", ("1", "c")),
-                    MenuOption("analyze", "Analyze repo", ("2", "a")),
-                    MenuOption("plan", "Create implementation plan", ("3", "p")),
-                    MenuOption("dashboard", "Launch Web Dashboard (Streamlit)", ("d", "dash")),
-                    MenuOption("settings", "Settings", ("s",)),
-                    MenuOption("exit", "Exit", ("4", "5", "q", "quit")),
-                ],
-            ).strip().lower()
-        except NonInteractivePromptError as exc:
-            raise typer.BadParameter(str(exc)) from exc
-        except (EOFError, KeyboardInterrupt):
-            console.print("\nGoodbye!")
-            return
-        if choice in {"chat", "1", "c"}:
-            _invoke_with_multi_agent_route(ctx, "chat", ["--root-dir", str(root)], root=root, request="root menu chat", entrypoint="root")
-        elif choice in {"analyze", "2", "a"}:
-            _invoke_with_multi_agent_route(ctx, "analyze", ["--repo", str(root)], root=root, request="root menu analyze", entrypoint="root")
-        elif choice in {"plan", "3", "p"}:
-            _invoke_with_multi_agent_route(ctx, "plan", ["--repo", str(root)], root=root, request="root menu plan", entrypoint="root")
-        elif choice in {"dashboard", "d", "dash"}:
-            # Dashboard is UI layer; no forced multi-agent route decision needed here
-            _invoke("dashboard", ["--root-dir", str(root)])
-        elif choice in {"settings", "4", "s"}:
-            settings_menu(console=console)
-        else:
-            console.print("Goodbye!")
+        if no_interactive or not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise typer.BadParameter(
+                "Interactive chat requires a TTY. Use a direct command for automation; "
+                "if configuration is missing, run `mana-agent --configure` from an interactive terminal."
+            )
+        args = ["--root-dir", str(root)]
+        if model:
+            args += ["--model", model]
+        _invoke_with_multi_agent_route(ctx, "chat", args, root=root, request="open chat", entrypoint="root")

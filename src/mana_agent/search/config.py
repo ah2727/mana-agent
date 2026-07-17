@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 from mana_agent.config.settings import Settings
 
@@ -45,6 +46,8 @@ def _int_config(
 @dataclass(frozen=True, slots=True)
 class SearchConfig:
     github_token: str = ""
+    github_credential_source: str = "disabled"
+    github_secret_ref: str = ""
     enable_web: bool = True
     enable_github: bool = True
     max_results: int = 8
@@ -63,8 +66,15 @@ class SearchConfig:
     @classmethod
     def from_env(cls) -> "SearchConfig":
         settings = _settings()
+        github_source = _str_config(settings, "mana_github_credential_source", "disabled")
+        github_ref = _str_config(settings, "mana_github_secret_ref")
+        github_token = _str_config(settings, "mana_github_token")
+        if github_source == "environment" and github_ref:
+            github_token = str(os.getenv(github_ref) or "")
         return cls(
-            github_token=_str_config(settings, "mana_github_token"),
+            github_token=github_token,
+            github_credential_source=github_source,
+            github_secret_ref=github_ref,
             enable_web=_bool_config(settings, "mana_search_enable_web", True),
             enable_github=_bool_config(settings, "mana_search_enable_github", True),
             max_results=_int_config(settings, "mana_search_max_results", 8, min_value=1, max_value=25),

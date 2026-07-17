@@ -26,7 +26,11 @@ def build_search_providers(config: SearchConfig) -> SearchProviders:
         else None
     )
     github = (
-        GitHubSearchProvider(token=config.github_token, timeout_seconds=config.timeout_seconds)
+        GitHubSearchProvider(
+            token=config.github_token,
+            credential_source=config.github_credential_source,
+            timeout_seconds=config.timeout_seconds,
+        )
         if config.enable_github
         else None
     )

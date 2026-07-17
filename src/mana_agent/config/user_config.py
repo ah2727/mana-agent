@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +29,11 @@ SECRET_KEYS = {
 
 
 DEFAULT_USER_CONFIG: dict[str, Any] = {
+    "MANA_CONFIG_SCHEMA_VERSION": 2,
+    "MANA_AI_PROVIDER": "openai",
+    "MANA_PRIMARY_MODEL": "openai/gpt-4.1-mini",
+    "MANA_EMBEDDING_MODEL": "openai/text-embedding-3-small",
+    "MANA_CONFIGURED_PROVIDERS": ["openai"],
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "OPENAI_CHAT_MODEL": "gpt-4.1-mini",
     "OPENAI_TOOL_WORKER_MODEL": "",
@@ -55,6 +62,9 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "MANA_MODEL_TOOL_WORKER": "MODEL_LEVEL_1_FAST_TOOL",
     "MANA_MODEL_SUMMARIZER": "MODEL_LEVEL_1_FAST_TOOL",
     "MANA_GITHUB_TOKEN": "",
+    "MANA_GITHUB_CREDENTIAL_SOURCE": "disabled",
+    "MANA_GITHUB_SECRET_REF": "",
+    "MANA_GITHUB_METADATA_ENABLED": False,
     "MANA_SEARCH_ENABLE_WEB": True,
     "MANA_SEARCH_ENABLE_GITHUB": True,
     "MANA_SEARCH_MAX_RESULTS": 8,
@@ -105,6 +115,9 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
 
 
 FIELD_NAME_BY_ENV: dict[str, str] = {
+    "MANA_AI_PROVIDER": "mana_ai_provider",
+    "MANA_PRIMARY_MODEL": "mana_primary_model",
+    "MANA_EMBEDDING_MODEL": "mana_embedding_model",
     "OPENAI_API_KEY": "openai_api_key",
     "OPENAI_BASE_URL": "openai_base_url",
     "OPENAI_CHAT_MODEL": "openai_chat_model",
@@ -115,6 +128,9 @@ FIELD_NAME_BY_ENV: dict[str, str] = {
     "LLM_MODEL": "llm_model",
     "MANA_LLM_LOG_FILE": "mana_llm_log_file",
     "MANA_GITHUB_TOKEN": "mana_github_token",
+    "MANA_GITHUB_CREDENTIAL_SOURCE": "mana_github_credential_source",
+    "MANA_GITHUB_SECRET_REF": "mana_github_secret_ref",
+    "MANA_GITHUB_METADATA_ENABLED": "mana_github_metadata_enabled",
     "MANA_SEARCH_ENABLE_WEB": "mana_search_enable_web",
     "MANA_SEARCH_ENABLE_GITHUB": "mana_search_enable_github",
     "MANA_SEARCH_MAX_RESULTS": "mana_search_max_results",
@@ -152,6 +168,11 @@ FIELD_NAME_BY_ENV: dict[str, str] = {
 }
 
 CONFIG_WRITE_ORDER = [
+    "MANA_CONFIG_SCHEMA_VERSION",
+    "MANA_AI_PROVIDER",
+    "MANA_PRIMARY_MODEL",
+    "MANA_EMBEDDING_MODEL",
+    "MANA_CONFIGURED_PROVIDERS",
     "OPENAI_BASE_URL",
     "OPENAI_CHAT_MODEL",
     "LLM_MODEL",
@@ -181,6 +202,9 @@ CONFIG_WRITE_ORDER = [
     "MANA_LLM_SUPPORTS_TOOLS_WITH_CHAT_REASONING",
     "MANA_SEARCH_ENABLE_WEB",
     "MANA_SEARCH_ENABLE_GITHUB",
+    "MANA_GITHUB_CREDENTIAL_SOURCE",
+    "MANA_GITHUB_SECRET_REF",
+    "MANA_GITHUB_METADATA_ENABLED",
     "MANA_SEARCH_MAX_RESULTS",
     "MANA_SEARCH_TIMEOUT_SECONDS",
     "MANA_SEARCH_MEMORY_TTL_DAYS",
@@ -275,7 +299,21 @@ def _write_toml(path: Path, values: dict[str, Any], *, mode: int = 0o600) -> Non
         value = values[key]
         if isinstance(value, dict):
             append_tables(key, value)
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    payload = "\n".join(lines).rstrip() + "\n"
+    temp_path: Path | None = None
+    try:
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        temp_path = Path(temp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.chmod(mode)
+        os.replace(temp_path, path)
+    except OSError as exc:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise UserConfigError(f"Could not save {path.name}; the previous configuration was preserved.") from exc
     try:
         path.chmod(mode)
     except OSError:
@@ -305,21 +343,29 @@ def has_user_config() -> bool:
 
 def is_user_config_valid() -> bool:
     effective = load_effective_settings(include_env=True)
-    return bool(str(effective.get("OPENAI_API_KEY", "") or "").strip())
+    return bool(
+        str(effective.get("OPENAI_API_KEY", "") or "").strip()
+        and str(effective.get("OPENAI_CHAT_MODEL", "") or "").strip()
+    )
 
 
 def load_effective_settings(*, include_env: bool = True) -> dict[str, Any]:
     """Load Mana-managed settings exclusively from the user configuration.
 
-    ``include_env`` remains an accepted compatibility argument for callers
-    from older releases, but environment variables and repository ``.env``
-    files must never override the user-selected configuration.
+    Explicit Mana configuration wins over environment variables. Environment
+    variables may fill missing values for CI and automation, but repository
+    ``.env`` files are deliberately never loaded here.
     """
-    _ = include_env
     values = dict(DEFAULT_USER_CONFIG)
     user_values = load_user_config()
     values.update(user_values)
-    values.update(load_user_secrets())
+    secret_values = load_user_secrets()
+    values.update(secret_values)
+    if include_env:
+        explicit = {**user_values, **secret_values}
+        for key in set(DEFAULT_USER_CONFIG) | set(FIELD_NAME_BY_ENV) | SECRET_KEYS:
+            if key not in explicit and key in os.environ:
+                values[key] = os.environ[key]
     if user_values.get("LLM_MODEL") and not user_values.get("OPENAI_CHAT_MODEL"):
         values["OPENAI_CHAT_MODEL"] = user_values["LLM_MODEL"]
     if not values.get("LLM_MODEL") and values.get("OPENAI_CHAT_MODEL"):
@@ -392,7 +438,11 @@ def validate_model_level(value: str) -> str:
         "MODEL_LEVEL_3_HIGH_REASONING",
     }
     text = str(value or "").strip()
-    if text not in allowed:
+    if not text:
+        raise UserConfigError("Model assignment cannot be empty.")
+    # Advanced role mapping may store a direct (preferably provider-qualified)
+    # model ID. Symbolic level names remain strictly validated.
+    if text.startswith("MODEL_LEVEL_") and text not in allowed:
         raise UserConfigError(f"Model level must be one of: {', '.join(sorted(allowed))}.")
     return text
 
@@ -493,8 +543,72 @@ def save_model_cache(provider: str, base_url: str, models: list[str]) -> None:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "models": sorted(dict.fromkeys(models)),
     }
-    MODEL_CACHE_FILE.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    fd, temp_name = tempfile.mkstemp(prefix=".model_cache.", suffix=".tmp", dir=str(CONFIG_DIR))
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        os.replace(temp_path, MODEL_CACHE_FILE)
+    except OSError:
+        temp_path.unlink(missing_ok=True)
+        raise
     try:
         MODEL_CACHE_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
+
+
+def invalidate_model_cache() -> None:
+    MODEL_CACHE_FILE.unlink(missing_ok=True)
+
+
+def migrate_legacy_config() -> list[str]:
+    """Migrate legacy flat settings without losing unknown keys.
+
+    The migration is idempotent. A backup is created only when secrets must be
+    removed from the normal configuration file, which is the sole destructive
+    schema change.
+    """
+    if not CONFIG_FILE.exists():
+        return []
+    config = load_user_config()
+    secrets = load_user_secrets()
+    messages: list[str] = []
+    destructive = False
+    for key in SECRET_KEYS:
+        value = config.pop(key, None)
+        if value not in (None, ""):
+            secrets.setdefault(key, value)
+            destructive = True
+    provider = str(config.get("MANA_AI_PROVIDER") or "").strip()
+    if not provider:
+        base_url = str(config.get("OPENAI_BASE_URL") or "").lower()
+        provider = "nvidia" if "nvidia" in base_url else "openai"
+        config["MANA_AI_PROVIDER"] = provider
+    from mana_agent.config.provider_registry import qualify_model_id
+
+    chat_model = str(config.get("OPENAI_CHAT_MODEL") or config.get("LLM_MODEL") or "").strip()
+    if chat_model and not config.get("MANA_PRIMARY_MODEL"):
+        config["MANA_PRIMARY_MODEL"] = qualify_model_id(provider, chat_model)
+    embed_model = str(config.get("OPENAI_EMBED_MODEL") or "").strip()
+    if embed_model and not config.get("MANA_EMBEDDING_MODEL"):
+        config["MANA_EMBEDDING_MODEL"] = qualify_model_id(provider, embed_model)
+    config.setdefault("MANA_CONFIGURED_PROVIDERS", [provider])
+    config["MANA_CONFIG_SCHEMA_VERSION"] = 2
+    if destructive:
+        backup = CONFIG_FILE.with_suffix(".toml.bak")
+        if not backup.exists():
+            backup.write_bytes(CONFIG_FILE.read_bytes())
+            try:
+                backup.chmod(0o600)
+            except OSError:
+                pass
+        messages.append(f"Moved legacy credentials to {SECRETS_FILE.name}; backup: {backup.name}.")
+    save_user_config(config, merge=False)
+    if secrets:
+        save_user_secrets(secrets, merge=False)
+    return messages
