@@ -521,7 +521,11 @@ def run_dashboard_chat(
                 try:
                     if hasattr(gw, "set_index_dirs"):
                         gw.set_index_dirs(index_dir=idx_dir)
-                    sid = gw.create_session(frontend="dashboard") if hasattr(gw, "create_session") else "dashboard"
+                    sid = (
+                        gw.create_session(frontend="dashboard", session_id=conversation_id)
+                        if hasattr(gw, "create_session")
+                        else conversation_id
+                    )
                     turn = gw.process_turn(sid, prompt, index_dir=str(idx_dir))
                     answer_text = str(getattr(turn, "answer", "") or "")
                     if getattr(turn, "error", None) and not answer_text:

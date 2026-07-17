@@ -57,6 +57,47 @@ def test_workspace_discovers_repositories_and_preserves_stable_identity(tmp_path
     assert not (first / ".mana").exists()
 
 
+def test_automatic_repository_workspace_and_session_are_reused_across_runs(
+    tmp_path: Path, isolated_home: Path
+) -> None:
+    repo_path = _repo(tmp_path / "repo")
+
+    first_service = WorkspaceService()
+    first_repo = first_service.register_repository(repo_path)
+    first_workspace = first_service.workspace_for_repository(first_repo.repository_id)
+    first_session = first_service.restore_or_create_session(repo_path)
+
+    second_service = WorkspaceService()
+    second_repo = second_service.register_repository(repo_path)
+    second_workspace = second_service.workspace_for_repository(second_repo.repository_id)
+    second_session = second_service.restore_or_create_session(repo_path)
+
+    assert second_repo.repository_id == first_repo.repository_id
+    assert second_workspace.workspace_id == first_workspace.workspace_id
+    assert second_session.session_id == first_session.session_id
+    assert len(second_service.store.list_repositories()) == 1
+    assert len(second_service.store.list_workspaces()) == 1
+    assert len(second_service.store.list_sessions()) == 1
+
+
+def test_restore_archives_duplicate_active_sessions_and_reuses_latest(
+    tmp_path: Path, isolated_home: Path
+) -> None:
+    repo_path = _repo(tmp_path / "repo")
+    service = WorkspaceService()
+    repo = service.register_repository(repo_path)
+    workspace = service.workspace_for_repository(repo.repository_id)
+    older = service.create_session(repo_path, workspace_id=workspace.workspace_id)
+    newer = service.create_session(repo_path, workspace_id=workspace.workspace_id)
+
+    restored = service.restore_or_create_session(repo_path)
+    sessions = service.store.list_sessions()
+
+    assert restored.session_id == newer.session_id
+    assert [item.session_id for item in sessions if item.status == "active"] == [newer.session_id]
+    assert service.store.get_session(older.session_id).status == "archived"
+
+
 def test_sessions_and_repository_memory_are_isolated(tmp_path: Path, isolated_home: Path) -> None:
     repo_path = _repo(tmp_path / "repo")
     service = WorkspaceService()

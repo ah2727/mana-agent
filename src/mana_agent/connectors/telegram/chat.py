@@ -60,9 +60,9 @@ class ManaChatGateway:
                 self._core = None
 
     def create_session(self) -> str:
-        if self._core is not None and hasattr(self._core, "create_session"):
+        if self._core is not None and hasattr(self._core, "create_new_session"):
             try:
-                return self._core.create_session(frontend="telegram")
+                return self._core.create_new_session(frontend="telegram")
             except Exception:
                 pass
         return self.workspaces.create_session(self.repository).session_id

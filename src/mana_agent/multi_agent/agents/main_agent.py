@@ -90,8 +90,17 @@ class MainAgent:
         except (FileNotFoundError, ValueError):
             self.workspace_context = None
         if self.workspace_context is None:
-            session = self.workspace_service.create_session(
-                self.root, workspace_id=workspace_id, session_id=session_id
+            session = (
+                self.workspace_service.create_session(
+                    self.root,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                )
+                if session_id
+                else self.workspace_service.restore_or_create_session(
+                    self.root,
+                    workspace_id=workspace_id,
+                )
             )
             self.workspace_context = self.workspace_service.context_for_session(session.session_id)
         self.scope_engine = RepositoryScopeDecisionEngine(routing_llm)
