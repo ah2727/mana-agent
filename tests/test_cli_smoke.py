@@ -1227,6 +1227,8 @@ def test_chat_redis_backend_falls_back_to_local_executor_when_unavailable(monkey
 
 
 def test_chat_planning_mode_auto_executes_after_clarifications(monkeypatch, tmp_path: Path) -> None:
+    codex_calls: list[str] = []
+
     class _PlanningLlm:
         def __init__(self) -> None:
             self.calls = 0
@@ -1292,6 +1294,22 @@ def test_chat_planning_mode_auto_executes_after_clarifications(monkeypatch, tmp_
     monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
     monkeypatch.setattr("mana_agent.commands.chat_cli.QueueManager", _FakeOrchestrator)
     monkeypatch.setattr(
+        "mana_agent.integrations.codex.coding_agent_shim.CodexCodingAgentShim.generate_auto_execute",
+        lambda _self, request, **_kwargs: (
+            codex_calls.append(str(request))
+            or {
+                "answer": "Codex execution complete",
+                "sources": [],
+                "trace": [],
+                "warnings": [],
+                "changed_files": [],
+                "passes": 1,
+                "pass_logs": [],
+                "auto_execute_terminal_reason": "completed",
+            }
+        ),
+    )
+    monkeypatch.setattr(
         "mana_agent.commands.chat_cli._generate_planning_question_llm",
         lambda **kwargs: f"Clarification question {int(kwargs['asked_count']) + 1}?",
     )
@@ -1302,10 +1320,10 @@ def test_chat_planning_mode_auto_executes_after_clarifications(monkeypatch, tmp_
         input="plan auth module\nanswer one\nanswer two\nanswer three\nquit\n",
     )
     assert result.exit_code == 0
-    assert "Auto-executing plan" in result.stdout
-    assert "Auto-execute pass" in result.stdout
+    assert "Codex execution complete" in result.stdout
     assert "Generating decision-complete plan..." not in result.stdout
-    assert _FakeOrchestrator.calls
+    assert codex_calls
+    assert not _FakeOrchestrator.calls
 
 
 def test_chat_planning_mode_no_auto_execute_keeps_plan_only_behavior(monkeypatch, tmp_path: Path) -> None:

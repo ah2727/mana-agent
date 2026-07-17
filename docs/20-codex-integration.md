@@ -1,32 +1,39 @@
-# Codex coding backend
+# Codex-owned coding runtime
 
-Mana-Agent can host Codex as an optional coding executor while retaining control
-of intent decisions, task decomposition, worktree allocation, permissions,
-verification, memory, and final reporting.
+Codex is Mana-Agent's authoritative coding runtime. Once the shared model route
+selects a coding turn, one Codex turn owns repository inspection, coding
+decisions, planning, edits, review, and proportional verification. Mana-Agent
+retains the outer chat route, worktree allocation, permissions, event streaming,
+result normalization, and explicit merge control.
 
 The official Codex SDK is currently TypeScript (`@openai/codex-sdk`) and wraps
 the Codex CLI. There is no official `openai-codex` Python package or
 `AsyncCodex` client. Mana-Agent therefore integrates from Python through the
 official `codex app-server` JSON-RPC protocol, which exposes thread and turn
 lifecycle methods, streaming notifications, and `turn/interrupt` cancellation.
-See the [official Codex SDK package](https://www.npmjs.com/package/@openai/codex-sdk)
-and [Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
+See the [Codex app-server documentation](https://learn.chatgpt.com/docs/app-server).
 
 ## Responsibility boundary
 
 ```text
-Mana model decision
-  → validated coding backend decision
-    → Mana-managed isolated worktree
-      → Codex thread and turn
+Shared model route selects a coding turn
+  → Mana-managed isolated worktree for writes
+    → one authoritative Codex thread and turn
+      → inspect, decide, plan, edit, review, verify
         → normalized events and result
-          → independent Mana verification and review
+          → explicit merge candidate
 ```
 
-Codex never selects itself. `CodingBackendDecision` is a typed model decision
-that names exactly one registered backend. Missing, invalid, unsafe, disabled,
-or unavailable selections stop with an explicit error. Mana-Agent does not
-silently choose the native backend.
+The frontend compatibility class is `CodexCodingAgentShim`. It preserves the
+existing `generate`, `generate_dir_mode`, and `generate_auto_execute` call
+surface, but does not invoke the legacy Mana planner, tool worker, or queue
+executor. Its checklist preview deliberately returns no Mana checklist because
+the plan belongs to the Codex turn.
+
+There is no native coding fallback. If Codex is disabled, unavailable, returns
+an invalid result, or cannot obtain an isolated worktree for a write, the coding
+turn stops with an explicit error. An underspecified edit request must be
+clarified by Codex; the shim instructs it not to invent a repository change.
 
 Writing tasks require a separate clean Git worktree. The Codex prompt prohibits
 commits, pushes, publishing, credential access, and permission elevation.
@@ -62,7 +69,8 @@ MANA_CODEX_ALLOW_NETWORK = false
 MANA_CODEX_MODEL = ""
 ```
 
-Codex is disabled by default. Network access remains disabled by policy unless
+Codex is enabled by default. Setting `MANA_CODEX_ENABLED = false` disables
+coding turns rather than switching to the legacy coding agent. Network access remains disabled by policy unless
 a future validated execution decision and sandbox implementation explicitly
 support it.
 
@@ -72,10 +80,13 @@ support it.
   registry, and orchestrator contracts.
 - `mana_agent.integrations.codex` owns the app-server process, protocol,
   prompts, event mapping, result parsing, health checks, and backend.
+- `CodexCodingAgentShim` is the shared CLI, TUI, and dashboard coding surface.
 - `CodexWorkerPool` bounds concurrency and serializes tasks whose declared file
   scopes overlap. Empty scopes are treated conservatively as overlapping.
 - Each logical coding task starts one Codex thread. Repair turns may reuse that
   thread when the caller retains its thread ID; unrelated tasks must not.
 
-Codex-reported tests are evidence only. The returned `CodingTaskResult` must be
-passed to Mana-Agent's independent verifier before integration or completion.
+Codex owns task-specific verification and reports its commands and results in
+`CodingTaskResult`. Mana-Agent preserves that evidence and leaves the completed
+write worktree as a merge candidate; it does not run a second coding planner or
+silently merge the branch.

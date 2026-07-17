@@ -16,10 +16,11 @@ from typing import Any
 from mana_agent.commands.cli_internal import (
     build_ask_service as _ORIGINAL_BUILD_ASK_SERVICE,
 )
-from mana_agent.config.settings import Settings, default_index_dir, default_logs_dir
+from mana_agent.config.settings import Settings, default_logs_dir
 from mana_agent.gateway.config import ChatGatewayConfig
+from mana_agent.integrations.codex.coding_agent_shim import CodexCodingAgentShim
+from mana_agent.integrations.codex.config import CodexSettings
 from mana_agent.multi_agent.core.types import AgentRole
-from mana_agent.multi_agent.runtime.coding_agent import CodingAgent
 from mana_agent.multi_agent.runtime.model_levels import resolve_model_for_role
 from mana_agent.multi_agent.runtime.tool_worker_process import ToolWorkerClient
 from mana_agent.multi_agent.runtime.tools_executor import (
@@ -33,6 +34,9 @@ from mana_agent.services.chat_service import ChatService
 from mana_agent.services.coding_memory_service import CodingMemoryService
 
 logger = logging.getLogger(__name__)
+
+# Public compatibility name used by CLI/TUI integrations and test injection.
+CodingAgent = CodexCodingAgentShim
 
 # _ORIGINAL_BUILD_ASK_SERVICE is bound at import time so later monkeypatches of
 # cli_internal.build_ask_service (and re-exports on chat_cli/cli) can be detected
@@ -288,7 +292,7 @@ def build_chat_stack(
     tools_manager_orchestrator = cfg.tools_orchestrator
     tools_executor_instance = None
     coding_agent_cls = _public_symbol("CodingAgent", CodingAgent)
-    coding_agent_is_custom = coding_agent_cls is not CodingAgent
+    coding_agent_is_custom = coding_agent_cls is not CodexCodingAgentShim
 
     def _build_tools_executor(worker_client: Any) -> Any:
         helper = _public_symbol("build_tools_executor_with_fallback", build_tools_executor_with_fallback)
@@ -308,57 +312,66 @@ def build_chat_stack(
         )
 
     if coding_agent_instance is None and cfg.coding_agent:
-        if not cfg.agent_tools:
-            raise ValueError("coding_agent requires agent_tools (needs tool loop).")
-        if ask_service is None or getattr(ask_service, "ask_agent", None) is None:
-            raise ValueError("coding_agent requires AskService.ask_agent to be configured.")
-
-        if cfg.coding_memory:
-            coding_memory_service = CodingMemoryService(
-                project_root=root,
-                max_turns=settings.coding_flow_max_turns,
-                max_tasks=settings.coding_flow_max_tasks,
+        if coding_agent_cls is CodexCodingAgentShim:
+            coding_agent_instance = coding_agent_cls(
+                repo_root=root,
+                codex_settings=CodexSettings.from_mana_settings(settings),
+                repository_id=repository_id,
                 session_id=session_id,
+                event_sink=cfg.event_sink,
             )
+        else:
+            if not cfg.agent_tools:
+                raise ValueError("custom coding_agent requires agent_tools (needs tool loop).")
+            if ask_service is None or getattr(ask_service, "ask_agent", None) is None:
+                raise ValueError("custom coding_agent requires AskService.ask_agent to be configured.")
 
-        if hasattr(ask_service.ask_agent, "update_model"):
-            ask_service.ask_agent.update_model(coding_model_assignment.resolved_model)
-        elif hasattr(ask_service.ask_agent, "model"):
-            ask_service.ask_agent.model = coding_model_assignment.resolved_model
+            if cfg.coding_memory:
+                coding_memory_service = CodingMemoryService(
+                    project_root=root,
+                    max_turns=settings.coding_flow_max_turns,
+                    max_tasks=settings.coding_flow_max_tasks,
+                    session_id=session_id,
+                )
 
-        if cfg.tool_worker_process:
-            tool_worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)
-            tool_worker_client = tool_worker_client_cls(
+            if hasattr(ask_service.ask_agent, "update_model"):
+                ask_service.ask_agent.update_model(coding_model_assignment.resolved_model)
+            elif hasattr(ask_service.ask_agent, "model"):
+                ask_service.ask_agent.model = coding_model_assignment.resolved_model
+
+            if cfg.tool_worker_process:
+                tool_worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)
+                tool_worker_client = tool_worker_client_cls(
+                    api_key=settings.openai_api_key,
+                    model=effective_tool_worker_model,
+                    base_url=effective_base_url,
+                    repo_root=root,
+                    project_root=root,
+                    allowed_prefixes=None,
+                    tools_only_strict=cfg.tool_worker_strict,
+                    model_level=tool_worker_model_assignment.model_level,
+                    workspace_id=workspace_id,
+                    repository_id=repository_id,
+                )
+
+            coding_agent_instance = coding_agent_cls(
                 api_key=settings.openai_api_key,
-                model=effective_tool_worker_model,
                 base_url=effective_base_url,
                 repo_root=root,
-                project_root=root,
+                ask_agent=ask_service.ask_agent,
                 allowed_prefixes=None,
-                tools_only_strict=cfg.tool_worker_strict,
-                model_level=tool_worker_model_assignment.model_level,
-                workspace_id=workspace_id,
-                repository_id=repository_id,
+                coding_memory_service=coding_memory_service,
+                coding_memory_enabled=cfg.coding_memory,
+                plan_max_steps=max(1, int(cfg.coding_plan_max_steps or settings.coding_plan_max_steps)),
+                search_budget=max(1, int(cfg.coding_search_budget or settings.coding_search_budget)),
+                read_budget=max(1, int(cfg.coding_read_budget or settings.coding_read_budget)),
+                require_read_files=max(
+                    1, int(cfg.coding_require_read_files or settings.coding_require_read_files)
+                ),
+                tool_worker_client=tool_worker_client,
+                full_auto_mode=(cfg.execution_profile == "full-auto"),
+                planner_model=planner_model_assignment.resolved_model,
             )
-
-        coding_agent_instance = coding_agent_cls(
-            api_key=settings.openai_api_key,
-            base_url=effective_base_url,
-            repo_root=root,
-            ask_agent=ask_service.ask_agent,
-            allowed_prefixes=None,
-            coding_memory_service=coding_memory_service,
-            coding_memory_enabled=cfg.coding_memory,
-            plan_max_steps=max(1, int(cfg.coding_plan_max_steps or settings.coding_plan_max_steps)),
-            search_budget=max(1, int(cfg.coding_search_budget or settings.coding_search_budget)),
-            read_budget=max(1, int(cfg.coding_read_budget or settings.coding_read_budget)),
-            require_read_files=max(
-                1, int(cfg.coding_require_read_files or settings.coding_require_read_files)
-            ),
-            tool_worker_client=tool_worker_client,
-            full_auto_mode=(cfg.execution_profile == "full-auto"),
-            planner_model=planner_model_assignment.resolved_model,
-        )
 
         if (
             coding_agent_instance is not None

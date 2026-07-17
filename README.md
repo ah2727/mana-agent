@@ -652,6 +652,16 @@ MutationCommand(mp_f8864a662ad5)
 
 The contract is executed only through registered repository mutation tools and active permission gates.
 
+### Codex-owned coding turns
+
+CLI, TUI, and dashboard coding routes use the same Codex app-server shim. A
+single Codex turn owns repository inspection, the coding plan, implementation,
+review, and task-specific verification. Mana-Agent supplies an isolated
+worktree for writes and retains permission, event, result, and merge controls.
+It does not run the legacy coding planner before Codex or fall back to that
+planner when Codex fails. Underspecified edit requests must be clarified instead
+of producing an arbitrary repository change.
+
 ---
 
 ## Web dashboard

@@ -56,6 +56,12 @@ class CodexCodingBackend:
             raise CodexExecutionError(f"Codex task produced no result: {task.task_id}")
         return result
 
+    def result_for(self, task_id: str) -> CodingTaskResult:
+        result = self._results.get(str(task_id))
+        if result is None:
+            raise CodexExecutionError(f"Codex task produced no result: {task_id}")
+        return result
+
     async def stream(self, task: CodingTask, workspace: WorkspaceContext) -> AsyncIterator[AgentEvent]:
         await self.start()
         if self._client is None:
@@ -142,7 +148,11 @@ class CodexCodingBackend:
                 )
             finally:
                 self._active.pop(task.task_id, None)
-                changed_files = await asyncio.to_thread(_git_changed_files, workspace.worktree_path)
+                changed_files = (
+                    await asyncio.to_thread(_git_changed_files, workspace.worktree_path)
+                    if task.requires_repository_write
+                    else []
+                )
                 self._results[task.task_id] = parse_codex_result(
                     task=task,
                     workspace=workspace,
@@ -181,6 +191,8 @@ class CodexCodingBackend:
             raise CodexExecutionError("Codex writing tasks require worktree isolation")
         if task.requires_repository_write and workspace.repository_path.resolve() == workspace.worktree_path.resolve():
             raise CodexExecutionError("Codex writing task was not assigned an isolated worktree")
+        if not task.requires_repository_write:
+            return
         completed = subprocess.run(
             ["git", "status", "--short"],
             cwd=workspace.worktree_path,

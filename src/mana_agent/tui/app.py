@@ -186,7 +186,7 @@ class ManaChatApp(App):
             welcome = AssistantMessageEvent(
                 content=(
                     f"**mana-agent** enhanced TUI — root: `{root_str}` model: `{model_str}`\n\n"
-                    "Connected to the real multi-agent runtime (route_for_turn + CodingAgent + tools orchestrator when available).\n\n"
+                    "Connected to the shared runtime (model routing + Codex for every coding turn).\n\n"
                     "Tool calls and results are **always visible** on every turn (ChatHistory subscription).\n\n"
                     "Type a question to drive the full flow like classic `mana-agent chat`."
                 )
@@ -678,7 +678,7 @@ class ManaChatApp(App):
                 # EXACT CODING AGENT PATH (mirrors chat_cli.py ~3127-3330)
                 # Only entered for edit/plan intents (or when auto-execute forces it).
                 # ==========================================================
-                self.update_status("Running coding agent (tools live in chat box)…")
+                self.update_status("Running Codex coding turn (tools live in chat box)…")
 
                 try:
                     from mana_agent.commands.ui_helpers import RichToolCallbackHandler

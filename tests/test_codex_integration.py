@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from mana_agent.coding.registry import CodingBackendDecisionError, CodingBackend
 from mana_agent.coding.routing_policy import validate_backend_decision
 from mana_agent.integrations.codex.backend import CodexCodingBackend
 from mana_agent.integrations.codex.config import CodexSettings
+from mana_agent.integrations.codex.coding_agent_shim import CodexCodingAgentShim
 from mana_agent.integrations.codex.event_adapter import adapt_codex_event
 from mana_agent.integrations.codex.health import check_codex_health
 from mana_agent.integrations.codex.result_parser import parse_codex_result
@@ -175,6 +177,111 @@ def test_codex_backend_uses_thread_turn_protocol_and_normalizes_result(tmp_path:
     assert turn_payload["cwd"].endswith("worktree")
     assert turn_payload["sandbox"] == "workspaceWrite"
     assert "Do not commit, push, publish" in turn_payload["input"][0]["text"]
+
+
+class _ShimBackend:
+    def __init__(self) -> None:
+        self.tasks: list[CodingTask] = []
+        self.workspaces: list[WorkspaceContext] = []
+        self.results: dict[str, Any] = {}
+        self.closed = False
+
+    async def stream(self, task: CodingTask, workspace: WorkspaceContext):
+        self.tasks.append(task)
+        self.workspaces.append(workspace)
+        yield adapt_codex_event(
+            task.task_id,
+            {"method": "turn/started", "params": {"threadId": "thread-shim"}},
+        )
+        self.results[task.task_id] = parse_codex_result(
+            task=task,
+            workspace=workspace,
+            worker_id="codex-shim",
+            thread_id="thread-shim",
+            turn_id="turn-shim",
+            changed_files=["README.md"] if task.requires_repository_write else [],
+            notifications=[
+                {
+                    "method": "item/completed",
+                    "params": {"item": {"type": "agentMessage", "text": "Codex completed the turn."}},
+                },
+                {"method": "turn/completed", "params": {"turn": {"status": "completed"}}},
+            ],
+        )
+
+    def result_for(self, task_id: str):
+        return self.results[task_id]
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _ShimWorkspaceManager:
+    def __init__(self, worktree: Path) -> None:
+        self.worktree = worktree
+        self.transitions: list[str] = []
+
+    def create_for_task(self, task_id: str, **_kwargs: Any):
+        self.worktree.mkdir()
+        return SimpleNamespace(
+            task_id=task_id,
+            worktree_path=str(self.worktree),
+            branch_name="mana/codex-shim",
+        )
+
+    def transition(self, _task_id: str, status, **_kwargs: Any):
+        value = getattr(status, "value", status)
+        self.transitions.append(str(value))
+        return None
+
+
+def test_coding_agent_shim_delegates_plan_decision_to_one_read_only_codex_turn(tmp_path: Path) -> None:
+    backend = _ShimBackend()
+    shim = CodexCodingAgentShim(
+        repo_root=tmp_path,
+        codex_settings=CodexSettings(enabled=True),
+        backend_factory=lambda: backend,
+    )
+
+    result = shim.generate("plan the auth refactor", auto_chat_mode="plan_only")
+
+    assert result["backend"] == "codex"
+    assert result["answer"] == "Codex completed the turn."
+    assert backend.tasks[0].goal == "plan the auth refactor"
+    assert backend.tasks[0].requires_repository_write is False
+    assert backend.workspaces[0].sandbox == "readOnly"
+    assert backend.closed is True
+    assert shim.preview_execution_checklist("plan it")["prechecklist"] is None
+    assert shim.get_active_flow_id() == "thread-shim"
+    assert shim.checkpoint_flow() == "thread-shim"
+    with pytest.raises(RuntimeError, match="Codex owns coding tool selection"):
+        shim._tool_policy_for_request("plan it")
+
+
+def test_coding_agent_shim_delegates_planning_editing_and_verification_to_codex_worktree(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    backend = _ShimBackend()
+    manager = _ShimWorkspaceManager(tmp_path / "worktree")
+    shim = CodexCodingAgentShim(
+        repo_root=repository,
+        codex_settings=CodexSettings(enabled=True),
+        backend_factory=lambda: backend,
+        workspace_manager_factory=lambda: manager,
+    )
+
+    result = shim.generate_auto_execute("fix the login bug", auto_chat_mode="edit")
+
+    task = backend.tasks[0]
+    assert task.goal == "fix the login bug"
+    assert task.requires_repository_write is True
+    assert "inspect, plan, implement, and verify" in task.requirements[0]
+    assert backend.workspaces[0].sandbox == "workspaceWrite"
+    assert result["changed_files"] == ["README.md"]
+    assert result["workspace_path"] == str(manager.worktree)
+    assert manager.transitions == ["running", "merge_candidate"]
 
 
 def test_codex_backend_does_not_self_approve(tmp_path: Path) -> None:

@@ -2,6 +2,14 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-17
+
+- Made Codex the authoritative coding runtime across the shared CLI, TUI, and dashboard stack.
+  - Replaced the production legacy `CodingAgent` construction with a compatibility shim that delegates repository inspection, coding decisions, planning, editing, review, and verification to one Codex app-server turn.
+  - Removed the separate preflight checklist/planner from the Codex path, retained isolated write worktrees and explicit merge candidates, and made missing or disabled Codex fail without a native coding fallback.
+  - Added explicit protection against arbitrary edits for underspecified requests and removed the generated README example that was not requested.
+  - Verification: `MANA_HOME=/tmp/mana-codex-authoritative-full-3 .venv/bin/python -m pytest -q` passed (966 passed, 1 skipped); focused Ruff checks and Python compilation passed; live `mana-agent codex doctor --repo .` reported the installed Codex app-server healthy with repository access.
+
 ## 2026-07-16
 
 - Corrected repository index chunk citations so overlapping character slices record the source lines each slice actually covers instead of repeating the parent symbol's full line range.

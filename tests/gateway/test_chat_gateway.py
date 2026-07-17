@@ -14,14 +14,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
-
 from mana_agent.gateway import (
     AgentChatGateway,
     ChatGatewayConfig,
     ChatTurnResult,
     RichChatContext,
 )
+from mana_agent.integrations.codex.coding_agent_shim import CodexCodingAgentShim
 from mana_agent.multi_agent.routing.agent_decision import AgentDecision
 
 
@@ -195,6 +194,28 @@ def test_gateway_builds_coding_stack_when_enabled(tmp_path: Path, monkeypatch) -
     ctx = gw.get_rich_context()
     assert ctx.coding_agent is not None
     assert isinstance(ctx.coding_agent, _DummyCodingAgent)
+
+
+def test_gateway_uses_codex_shim_without_legacy_coding_workers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "mana_agent.commands.cli_internal.build_ask_service",
+        lambda *a, **k: _DummyAskService(),
+    )
+
+    gw = AgentChatGateway(
+        tmp_path,
+        coding_agent=True,
+        agent_tools=True,
+        tool_worker_process=True,
+        auto_execute_plan=True,
+    )
+
+    ctx = gw.get_rich_context()
+    assert isinstance(ctx.coding_agent, CodexCodingAgentShim)
+    assert ctx.tool_worker_client is None
+    assert ctx.tools_orchestrator is None
 
 
 def test_gateway_process_turn_ask_path(tmp_path: Path, monkeypatch) -> None:

@@ -48,7 +48,10 @@ Constraints:
 - Do not access credentials or elevate permissions.
 - Preserve public behavior unless the task explicitly changes it.
 - Add or update tests for behavior changes.
-- Run only the listed verification commands.
+- When verification commands are listed, run them. Otherwise select and run
+  proportional verification from the repository's own test and validation tools.
+- Own the full coding workflow for this task: evidence gathering, decisions,
+  planning, implementation, review, and verification.
 - Return a concise summary, changed files, tests, warnings, and unresolved issues.
 """.strip()
 

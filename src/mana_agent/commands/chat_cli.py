@@ -46,6 +46,7 @@ from mana_agent.tui.wizard import ensure_setup
 from mana_agent.skills.chat import ChatSkillCoordinator
 from mana_agent.connectors.browser.session import BrowserSessionManager
 from mana_agent.gateway import AgentChatGateway, ChatGatewayConfig
+from mana_agent.integrations.codex.coding_agent_shim import CodexCodingAgentShim
 
 
 _NEW_TOPIC_COMMANDS = {"/new", "/new-topic", "new topic", "new topic chat"}
@@ -1137,7 +1138,7 @@ def chat(
         # Collect the per-session configuration so it renders as one tidy panel
         # instead of a scattered list of single-line prints.
         status_rows: list[tuple[str, str]] = []
-        status_rows.append(("coding agent", "active — all decisions routed through CodingAgent"))
+        status_rows.append(("coding agent", "Codex — owns coding plans, edits, and verification"))
         _ca_flow = flow_id or (coding_agent_instance.get_active_flow_id() if coding_agent_instance else None)
         if coding_memory:
             if _ca_flow:
@@ -1368,6 +1369,18 @@ def chat(
             # We may adopt the flow id the preview attached to, so this name is
             # rebound here rather than only read from the enclosing scope.
             nonlocal active_flow_id
+            if isinstance(coding_agent_instance, CodexCodingAgentShim):
+                payload = coding_agent_instance.generate_auto_execute(
+                    user_question,
+                    auto_chat_mode=(auto_chat_mode.value if auto_chat_mode is not None else "edit"),
+                    flow_id=active_flow_id,
+                )
+                terminal_reason = str(
+                    payload.get("auto_execute_terminal_reason", "") or ""
+                ).strip()
+                if terminal_reason and not payload.get("terminal_reason"):
+                    payload["terminal_reason"] = terminal_reason
+                return payload, ""
             if not agent_tools or not auto_execute_plan:
                 return {}, ""
             orchestrator = _ensure_tools_manager_orchestrator()

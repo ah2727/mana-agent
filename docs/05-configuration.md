@@ -120,7 +120,7 @@ MANA_LLM_SUPPORTS_TOOLS=
 MANA_LLM_SUPPORTS_REASONING=
 MANA_LLM_SUPPORTS_TOOLS_WITH_CHAT_REASONING=
 MANA_MANAGED_WORKTREES_ENABLED=true
-MANA_CODEX_ENABLED=false
+MANA_CODEX_ENABLED=true
 MANA_CODEX_BIN=codex
 MANA_CODEX_MAX_WORKERS=2
 MANA_CODEX_STREAM_EVENTS=true
@@ -130,12 +130,14 @@ MANA_CODEX_ALLOW_NETWORK=false
 MANA_CODEX_MODEL=
 ```
 
-### Codex coding backend
+### Codex coding runtime
 
-Codex is an optional coding executor and is disabled by default. It requires the
-official `codex` CLI; Mana-Agent communicates with `codex app-server` and does
-not depend on an unofficial Python SDK. Writing tasks require an isolated clean
-worktree. See [`20-codex-integration.md`](20-codex-integration.md).
+Codex is the authoritative coding runtime and is enabled by default. It requires
+the official `codex` CLI; Mana-Agent communicates with `codex app-server` and
+does not depend on an unofficial Python SDK. Disabling Codex makes coding turns
+fail explicitly; it does not activate the legacy planner or executor. Writing
+tasks require an isolated clean worktree. See
+[`20-codex-integration.md`](20-codex-integration.md).
 
 ### Managed agent worktrees
 
