@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import shutil
@@ -20,7 +21,7 @@ from mana_agent.workspaces.models import (
     WorkspaceDiscoveryConfig,
     WorkspaceRecord,
 )
-from mana_agent.workspaces.paths import repository_dir
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 from mana_agent.workspaces.store import WorkspaceStore
 
 
@@ -157,7 +158,11 @@ class WorkspaceService:
             self.store.save_repository(existing)
             self._import_legacy_state(existing)
             return existing
-        record = existing or RepositoryRecord(name=root.name or "repository", canonical_path=str(root))
+        record = existing or RepositoryRecord(
+            repository_id=repository_id_for_path(root),
+            name=root.name or "repository",
+            canonical_path=str(root),
+        )
         record.name = root.name or record.name
         record.canonical_path = str(root)
         record.git_root = str(_git_root(root)) if _git_root(root) else None
@@ -277,15 +282,45 @@ class WorkspaceService:
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
-            implicit = [item for item in matches if item.implicit]
-            if len(implicit) == 1:
+            implicit = sorted(
+                (item for item in matches if item.implicit),
+                key=lambda item: (item.created_at, item.workspace_id),
+            )
+            if implicit:
                 return implicit[0]
             raise ValueError("repository belongs to multiple workspaces; select one explicitly")
         repo = self.store.get_repository(repository_id)
         return self._standalone_workspace(repo)
 
     def _standalone_workspace(self, repo: RepositoryRecord) -> WorkspaceRecord:
+        root = str(Path(repo.canonical_path).expanduser().resolve())
+        existing = sorted(
+            (
+                item
+                for item in self.store.list_workspaces()
+                if item.implicit
+                and (
+                    repo.repository_id in item.repository_ids
+                    or root in item.discovery.roots
+                    or root in item.allowed_roots
+                )
+            ),
+            key=lambda item: (item.created_at, item.workspace_id),
+        )
+        if existing:
+            workspace = existing[0]
+            if repo.repository_id not in workspace.repository_ids:
+                workspace.repository_ids.append(repo.repository_id)
+                workspace.repository_ids = list(dict.fromkeys(workspace.repository_ids))
+                workspace.primary_repository_id = workspace.primary_repository_id or repo.repository_id
+                workspace.updated_at = _now()
+                self.store.save_workspace(workspace)
+            return workspace
         workspace = WorkspaceRecord(
+            workspace_id=(
+                "workspace_"
+                + hashlib.sha256(f"standalone:{root}".encode("utf-8")).hexdigest()[:20]
+            ),
             name=f"standalone-{repo.name}",
             repository_ids=[repo.repository_id],
             primary_repository_id=repo.repository_id,
@@ -294,6 +329,64 @@ class WorkspaceService:
             implicit=True,
         )
         return self.store.save_workspace(workspace)
+
+    def restore_or_create_session(
+        self,
+        cwd: str | Path,
+        *,
+        workspace_id: str | None = None,
+    ) -> SessionRecord:
+        """Restore the latest active chat session, creating only the first one."""
+        repo = self.register_repository(cwd)
+        workspace = (
+            self.store.get_workspace(workspace_id)
+            if workspace_id
+            else self.workspace_for_repository(repo.repository_id)
+        )
+        active = [
+            item
+            for item in self.store.list_sessions()
+            if item.status == "active"
+            and item.workspace_id == workspace.workspace_id
+            and item.primary_repository_id == repo.repository_id
+        ]
+        if active:
+            session = active[0]
+            for duplicate in active[1:]:
+                duplicate.status = "archived"
+                duplicate.updated_at = _now()
+                self.store.save_session(duplicate)
+            attached = list(dict.fromkeys(workspace.repository_ids))
+            if session.attached_repository_ids != attached or session.cwd != repo.canonical_path:
+                session.attached_repository_ids = attached
+                session.cwd = repo.canonical_path
+                session.updated_at = _now()
+                self.store.save_session(session)
+            return session
+        previous = [
+            item
+            for item in self.store.list_sessions()
+            if item.workspace_id == workspace.workspace_id
+            and item.primary_repository_id == repo.repository_id
+        ]
+        if previous:
+            session = previous[0]
+            session.status = "active"
+            session.attached_repository_ids = list(dict.fromkeys(workspace.repository_ids))
+            session.cwd = repo.canonical_path
+            session.updated_at = _now()
+            return self.store.save_session(session)
+        initial_session_id = (
+            "session_"
+            + hashlib.sha256(
+                f"initial:{workspace.workspace_id}:{repo.repository_id}".encode("utf-8")
+            ).hexdigest()[:20]
+        )
+        return self.create_session(
+            repo.canonical_path,
+            workspace_id=workspace.workspace_id,
+            session_id=initial_session_id,
+        )
 
     def create_session(
         self,

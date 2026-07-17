@@ -792,11 +792,29 @@ def chat(
     root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
     if root.is_file():
         root = root.parent
-    _record_multi_agent_request(root, "chat command", entrypoint="chat", command_scope=True, session_id=session_id)
+    from mana_agent.workspaces.service import WorkspaceService as _WorkspaceService
+
+    workspace_service = _WorkspaceService()
+    if session_id:
+        restored_context = workspace_service.context_for_session(session_id)
+        if restored_context.primary_root != root:
+            raise typer.BadParameter(
+                f"session {session_id} belongs to {restored_context.primary_root}, not {root}"
+            )
+        gateway_session_id = restored_context.session.session_id
+    else:
+        gateway_session_id = workspace_service.restore_or_create_session(root).session_id
+    _record_multi_agent_request(
+        root,
+        "chat command",
+        entrypoint="chat",
+        command_scope=True,
+        session_id=gateway_session_id,
+    )
 
     recorded_initial_prompt = False
     if prompt:
-        _record_multi_agent_request(root, prompt, entrypoint="chat", session_id=session_id)
+        _record_multi_agent_request(root, prompt, entrypoint="chat", session_id=gateway_session_id)
         recorded_initial_prompt = True
         direct_edit_result = handle_small_direct_edit(root, prompt)
         if direct_edit_result.handled:
@@ -823,7 +841,6 @@ def chat(
     # Gateway owns stack construction (ask / chat / coding agent / tools).
     # chat_cli is a frontend: flags → config → gateway → I/O loops.
     # ------------------------------------------------------------------
-    gateway_session_id = session_id or f"sess-{uuid.uuid4().hex}"
     gateway_config = ChatGatewayConfig(
         model=model,
         index_dir=index_dir,
@@ -2118,14 +2135,7 @@ def chat(
                     )
                     continue
                 if action == "new":
-                    from mana_agent.connectors.browser.session import default_browser_manager
-                    default_browser_manager().close(chat_ui_state.session_id)
-                    created = service.create_session(root)
-                    chat_ui_state.activate_session(created.session_id)
-                    gateway.create_session(frontend="cli", session_id=created.session_id)
-                    session_turns.clear()
-                    active_flow_id = None
-                    console.print(f"[green]New isolated session:[/green] {created.session_id}")
+                    console.print("[yellow]Use /new to start a new conversation.[/yellow]")
                     continue
                 if action == "switch" and len(parts) > 2:
                     from mana_agent.connectors.browser.session import default_browser_manager

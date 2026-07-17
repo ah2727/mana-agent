@@ -1,6 +1,7 @@
 import json
 from io import StringIO
 from pathlib import Path
+import pytest
 from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
 
 from typer.testing import CliRunner
@@ -11,6 +12,12 @@ from mana_agent.commands.ui_helpers import emit_tool_event
 from mana_agent.multi_agent.routing.agent_decision import AgentDecision
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_mana_home(tmp_path: Path, monkeypatch) -> None:
+    """Keep persistent chat identity isolated between independent CLI tests."""
+    monkeypatch.setenv("MANA_HOME", str(tmp_path / "mana-home"))
 
 
 class FakeIndexService:

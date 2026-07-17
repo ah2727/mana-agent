@@ -4,6 +4,11 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-17
 
+- Made automatic repository, workspace, and chat-session ownership idempotent across process restarts.
+  - Canonical repository paths now receive a deterministic record on first registration, automatic standalone workspaces are restored instead of recreated, and chat startup restores the latest active session rather than generating a new session ID.
+  - Only an explicit conversation boundary such as `/new` creates another chat session; duplicate active sessions are archived without deleting their persisted history, and `/session new` now directs users to `/new`.
+  - Verification: focused workspace, gateway, CLI, TUI, and connector tests passed; full-suite result recorded after completion.
+
 - Fixed CLI/TUI chat-session persistence so every turn reuses one workspace session, persists chronological user/assistant/tool-summary messages, restores exact session history into later model prompts, and records failed/interrupted turns without promoting chat text into long-term memory.
   - `/new` now archives the active session and starts an isolated conversation, while `/models`, gateway rebuilds, routing, and tool execution retain the existing session ID.
   - Added compatibility reads for older message records plus regression coverage for same-session recall, stable IDs/session-creation counts, duplicate prevention, `/new` isolation, tool-result continuity, and failed-turn persistence.

@@ -320,8 +320,10 @@ support `/models current`, `/models refresh`, and
 Chat messages remain attached to one durable workspace session for the lifetime
 of the conversation. Both the plain CLI and Textual TUI accept `/new` to archive
 the current session and start an isolated conversation; `/models`, UI refreshes,
-tool calls, and model routing preserve the active session. A stored conversation
-can be restored explicitly with `mana-agent chat --session <session-id>`.
+tool calls, model routing, and restarting chat preserve and automatically restore
+the active session. Mana also reuses one automatic repository record and one
+standalone workspace for each canonical repository path. A specific stored
+conversation can be selected with `mana-agent chat --session <session-id>`.
 
 ### Start a planning and coding session
 

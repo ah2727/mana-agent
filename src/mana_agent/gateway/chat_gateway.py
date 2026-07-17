@@ -216,18 +216,25 @@ class AgentChatGateway:
     # ------------------------------------------------------------------
 
     def create_session(self, *, frontend: str = "cli", session_id: str | None = None) -> str:
-        """Create a logical session id for a frontend conversation."""
+        """Restore the active repository session, or bind an explicit session id."""
         if session_id:
             sid = session_id
         else:
             try:
-                ws = self._workspaces.create_session(self.root)
+                ws = self._workspaces.restore_or_create_session(self.root)
                 sid = ws.session_id
             except Exception:
                 sid = f"gw-{frontend}-{id(self)}-{len(self._sessions)}"
 
         if sid not in self._sessions:
             self._sessions[sid] = self._new_session_state(sid, frontend=frontend)
+        return sid
+
+    def create_new_session(self, *, frontend: str = "cli") -> str:
+        """Create a fresh session only at an explicit conversation boundary."""
+        created = self._workspaces.create_session(self.root)
+        sid = created.session_id
+        self._sessions[sid] = self._new_session_state(sid, frontend=frontend)
         return sid
 
     def _new_session_state(self, session_id: str, *, frontend: str = "cli") -> dict[str, Any]:
@@ -273,12 +280,9 @@ class AgentChatGateway:
             self._workspaces.archive_session(session_id)
         except (FileNotFoundError, ValueError):
             pass
-        created = self._workspaces.create_session(self.root)
-        sid = created.session_id
-        self._sessions[sid] = self._new_session_state(
-            sid, frontend=frontend or str(state.get("frontend") or "cli")
+        return self.create_new_session(
+            frontend=frontend or str(state.get("frontend") or "cli")
         )
-        return sid
 
     def session_messages(self, session_id: str) -> list[dict[str, Any]]:
         """Return the durable chronological message log for diagnostics and UIs."""

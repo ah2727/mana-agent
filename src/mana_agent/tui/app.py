@@ -144,8 +144,6 @@ class ManaChatApp(App):
         self._gateway_session_id: str | None = None
         if self.gateway is not None and hasattr(self.gateway, "create_session"):
             configured_session = getattr(getattr(self.gateway, "config", None), "session_id", None)
-            if not configured_session and hasattr(self.gateway, "get_stack"):
-                configured_session = getattr(self.gateway.get_stack(), "session_id", None)
             self._gateway_session_id = self.gateway.create_session(
                 frontend="tui",
                 session_id=configured_session,

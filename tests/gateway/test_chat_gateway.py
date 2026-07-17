@@ -728,8 +728,37 @@ def test_gateway_does_not_create_sessions_per_message(tmp_path: Path, monkeypatc
     for message in ("one", "two", "three"):
         gateway.process_turn(session_id, message)
 
-    assert create_calls == 1
+    # Gateway construction/MainAgent startup already restored or created the one
+    # active session. Opening it and sending turns must not create another.
+    assert create_calls == 0
     assert {row["session_id"] for row in gateway.session_messages(session_id)} == {session_id}
+
+
+def test_gateway_startup_restores_session_and_only_new_creates_another(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "mana_agent.commands.cli_internal.build_ask_service",
+        lambda *args, **kwargs: _DummyAskService(),
+    )
+    first_gateway = AgentChatGateway(tmp_path, coding_agent=False, agent_tools=False)
+    first_session = first_gateway.create_session(frontend="cli")
+
+    second_gateway = AgentChatGateway(tmp_path, coding_agent=False, agent_tools=False)
+    restored_session = second_gateway.create_session(frontend="cli")
+    new_session = second_gateway.start_new_conversation(restored_session, frontend="cli")
+
+    assert restored_session == first_session
+    assert new_session != restored_session
+    repository_id = second_gateway._workspaces.register_repository(tmp_path).repository_id
+    sessions = [
+        item
+        for item in second_gateway._workspaces.store.list_sessions()
+        if item.primary_repository_id == repository_id
+    ]
+    assert len(sessions) == 2
+    assert second_gateway._workspaces.store.get_session(restored_session).status == "archived"
+    assert second_gateway._workspaces.store.get_session(new_session).status == "active"
 
 
 def test_chat_session_history_redacts_secrets(monkeypatch, tmp_path: Path) -> None:
