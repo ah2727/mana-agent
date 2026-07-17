@@ -215,7 +215,19 @@ Invoke-WebRequest `
 
 ## Configuration
 
-Run `mana-agent` in an interactive terminal for first-run setup. When no saved user configuration exists, Mana-Agent opens a keyboard-selectable setup wizard.
+Run the full-screen configuration application from an interactive terminal:
+
+```bash
+mana-agent --configure
+```
+
+The first bare `mana-agent` launch also opens this configuration TUI when the
+minimum inference route is missing, then continues directly into chat after a
+successful save. The old startup mode menu no longer exists. Provider,
+capability-filtered agent models, the separate embedding model, web search, and
+GitHub authentication are configured here. Existing provider credentials can
+be left unchanged, replaced, or explicitly removed; masked placeholders are
+never saved as credentials.
 
 Mana-managed settings are stored under:
 
@@ -225,30 +237,18 @@ Mana-managed settings are stored under:
 ~/.mana/model_cache.json
 ```
 
-Normal settings belong in `config.toml`; API keys, bot tokens, webhook secrets, and other credentials belong in `secrets.toml`.
+Normal settings belong in `config.toml`; API keys, bot tokens, webhook secrets, and other credentials belong in `secrets.toml`. Writes are atomic and secret files use restrictive permissions where the platform supports them.
 
-Repository `.env` files and shell variables should not silently replace the provider credentials selected in Mana-Agent settings. In CI, use `--no-interactive` to prevent prompts.
+Repository `.env` files and shell variables do not replace explicitly selected Mana-Agent credentials. Environment variables may fill missing values for CI without being written back. Textual never starts when stdin or stdout is not a TTY; missing non-interactive configuration produces an actionable `mana-agent --configure` error instead of prompting.
 
-### Minimal provider configuration
+### Model routing and catalogs
 
-```toml
-# ~/.mana/config.toml
-
-[provider]
-base_url = "https://api.openai.com/v1"
-chat_model = "gpt-4.1"
-embedding_model = "text-embedding-3-small"
-
-[retrieval]
-default_top_k = 8
-```
-
-```toml
-# ~/.mana/secrets.toml
-
-[provider]
-api_key = "sk-..."
-```
+Provider model catalogs are normalized into capabilities. Agent-role selectors
+show text-generation models only; embedding, image-generation, speech, audio,
+and video-only models are excluded. The embedding selector shows only embedding
+models. Unknown models are not assumed compatible and remain available only as
+an explicit Advanced manual entry. Canonical selections use provider-qualified
+IDs such as `openai/gpt-4.1`.
 
 ### Model-level routing
 
@@ -293,15 +293,29 @@ MANA_MODEL_SUMMARIZER=MODEL_LEVEL_1_FAST_TOOL
 ### Start Mana-Agent
 
 ```bash
+mana-agent --configure
 cd /path/to/project
 mana-agent
 ```
+
+Bare `mana-agent` opens the chat TUI for the current directory and focuses the
+message input. It shows the active repository, provider, primary model, web
+search and GitHub status, plus configuration warnings. There is no startup mode
+selector.
 
 ### Open repository chat directly
 
 ```bash
 mana-agent chat --root-dir .
 ```
+
+`mana-agent chat` is a compatibility alias for the same chat experience. Inside
+the chat TUI, `/models` opens model management for providers that are already
+configured. It can refresh compatible catalogs, switch the current session, or
+save a new default, but it cannot collect credentials. Use
+`mana-agent --configure` to add or re-authenticate a provider. Plain terminals
+support `/models current`, `/models refresh`, and
+`/models set <provider/model>`.
 
 ### Start a planning and coding session
 

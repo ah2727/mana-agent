@@ -249,14 +249,13 @@ def test_no_source_file_contains_analyzor() -> None:
     assert offenders == [], f"'analyzor' still present in: {offenders}"
 
 
-def test_root_command_shows_mode_menu() -> None:
+def test_root_command_non_tty_does_not_show_removed_mode_menu() -> None:
     result = runner.invoke(app, ["--no-banner"], input="4\n")
 
-    assert result.exit_code == 0
-    assert "mana-agent chat" in result.output
-    assert "Analyze repo" in result.output
-    assert "Create implementation plan" in result.output
-    assert "Goodbye!" in result.output
+    assert result.exit_code == 2
+    assert "Interactive chat requires a TTY" in result.output
+    assert "Choose what you want to do" not in result.output
+    assert "Analyze repo" not in result.output
 
 
 class FakeStructureService:

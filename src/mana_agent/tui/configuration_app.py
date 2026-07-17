@@ -6,7 +6,7 @@ from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, Select, Static, Switch, TabbedContent, TabPane
 
@@ -14,7 +14,7 @@ from mana_agent.config.catalog_service import ModelCatalogService, ProviderValid
 from mana_agent.config.model_catalog import ModelPurpose, filter_models
 from mana_agent.config.provider_registry import PROVIDERS
 from mana_agent.config.session import ConfigurationDraft
-from mana_agent.config.user_config import mask_secret, migrate_legacy_config
+from mana_agent.config.user_config import migrate_legacy_config
 from mana_agent.search.registry import SEARCH_PROVIDERS
 
 
@@ -57,6 +57,11 @@ class ManaConfigurationApp(App[bool]):
         self.catalog_service = catalog_service or ModelCatalogService()
         self.saved = False
         self._models: list[Any] = []
+        self._provider_validated = bool(
+            self.draft.original.get("OPENAI_API_KEY")
+            and self.draft.original.get("OPENAI_BASE_URL")
+            and self.draft.original.get("OPENAI_CHAT_MODEL")
+        )
 
     def compose(self) -> ComposeResult:
         values = self.draft.values
@@ -86,6 +91,16 @@ class ManaConfigurationApp(App[bool]):
                 yield Select(self._initial_model_options("OPENAI_CODING_PLANNER_MODEL"), id="coding-model", allow_blank=False)
                 yield Select(self._initial_model_options("OPENAI_TOOL_WORKER_MODEL"), id="fast-model", allow_blank=False)
                 yield Static(self._role_mapping_text(), id="role-mapping")
+                yield Label("Advanced role mappings", classes="section-title")
+                yield Static("Assign a logical level or a direct configured model to each role.", classes="hint")
+                yield Select(self._role_options("MANA_MODEL_MAIN"), id="role-main", allow_blank=False)
+                yield Select(self._role_options("MANA_MODEL_HEAD_DECISION"), id="role-head", allow_blank=False)
+                yield Select(self._role_options("MANA_MODEL_PLANNER"), id="role-planner", allow_blank=False)
+                yield Select(self._role_options("MANA_MODEL_CODING"), id="role-coding", allow_blank=False)
+                yield Select(self._role_options("MANA_MODEL_VERIFIER"), id="role-verifier", allow_blank=False)
+                yield Select(self._role_options("MANA_MODEL_REVIEWER"), id="role-reviewer", allow_blank=False)
+                yield Select(self._role_options("MANA_MODEL_TOOL"), id="role-tool", allow_blank=False)
+                yield Select(self._role_options("MANA_MODEL_SUMMARIZER"), id="role-summarizer", allow_blank=False)
             with TabPane("Embeddings", id="embeddings"):
                 yield Label("Embedding model", classes="section-title")
                 yield Static("Only embedding-capable models are offered after catalog refresh.", classes="hint")
@@ -141,6 +156,17 @@ class ManaConfigurationApp(App[bool]):
         value = current or fallback
         return [(f"{value}  · manual/current", value)]
 
+    def _role_options(self, key: str) -> list[tuple[str, str]]:
+        current = str(self.draft.values.get(key) or "MODEL_LEVEL_3_HIGH_REASONING")
+        levels = [
+            ("High reasoning", "MODEL_LEVEL_3_HIGH_REASONING"),
+            ("Coding", "MODEL_LEVEL_2_CODING"),
+            ("Fast/tool", "MODEL_LEVEL_1_FAST_TOOL"),
+        ]
+        if current not in {value for _, value in levels}:
+            levels.append((f"Direct: {current}", current))
+        return levels
+
     def _overview_text(self) -> str:
         v = self.draft.values
         key_status = "Configured" if v.get("OPENAI_API_KEY") else "Not configured"
@@ -179,6 +205,14 @@ class ManaConfigurationApp(App[bool]):
                 "MANA_GITHUB_METADATA_ENABLED": self.query_one("#github-metadata-enabled", Switch).value,
                 "MANA_GITHUB_CREDENTIAL_SOURCE": str(self.query_one("#github-source", Select).value),
                 "MANA_GITHUB_SECRET_REF": self.query_one("#github-secret-ref", Input).value.strip(),
+                "MANA_MODEL_MAIN": str(self.query_one("#role-main", Select).value),
+                "MANA_MODEL_HEAD_DECISION": str(self.query_one("#role-head", Select).value),
+                "MANA_MODEL_PLANNER": str(self.query_one("#role-planner", Select).value),
+                "MANA_MODEL_CODING": str(self.query_one("#role-coding", Select).value),
+                "MANA_MODEL_VERIFIER": str(self.query_one("#role-verifier", Select).value),
+                "MANA_MODEL_REVIEWER": str(self.query_one("#role-reviewer", Select).value),
+                "MANA_MODEL_TOOL": str(self.query_one("#role-tool", Select).value),
+                "MANA_MODEL_SUMMARIZER": str(self.query_one("#role-summarizer", Select).value),
             }
         )
         self.draft.set_secret("OPENAI_API_KEY", self.query_one("#provider-api-key", Input).value)
@@ -213,6 +247,7 @@ class ManaConfigurationApp(App[bool]):
                 status.update(f"Validation failed: {exc}")
                 return
             self._models = models
+            self._provider_validated = True
             text_models = filter_models(models, ModelPurpose.AGENT)
             embedding_models = filter_models(models, ModelPurpose.EMBEDDING)
             for selector in ("#high-model", "#coding-model", "#fast-model"):
@@ -271,6 +306,8 @@ class ManaConfigurationApp(App[bool]):
     def action_save(self) -> None:
         try:
             self._collect()
+            if not self._provider_validated:
+                raise ValueError("Test the selected inference provider before saving.")
             self.draft.save()
         except Exception as exc:
             self.notify(str(exc), title="Configuration not saved", severity="error")
@@ -287,6 +324,14 @@ class ManaConfigurationApp(App[bool]):
     def _finish_cancel(self, discard: bool | None) -> None:
         if discard:
             self.exit(False)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "provider-select":
+            self._provider_validated = False
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id in {"provider-api-key", "provider-base-url"} and event.value:
+            self._provider_validated = False
 
 
 def run_configuration_tui() -> bool:

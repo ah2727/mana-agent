@@ -9,9 +9,16 @@ from mana_agent.tui.wizard import ensure_setup, run_setup_wizard
 from mana_agent.ui.banner import render_banner
 
 
+def _is_interactive_terminal() -> bool:
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:
+        return False
+
+
 def configure() -> None:
     """Open the full configuration TUI and return to the terminal."""
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+    if not _is_interactive_terminal():
         raise typer.BadParameter(
             "Configuration requires an interactive terminal. Run `mana-agent --configure` from a TTY."
         )
@@ -109,7 +116,7 @@ def main(
             _invoke_with_multi_agent_route(ctx, "plan", args, root=root, request="root --plan", entrypoint="root")
             return
 
-        if no_interactive or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        if no_interactive or not _is_interactive_terminal():
             raise typer.BadParameter(
                 "Interactive chat requires a TTY. Use a direct command for automation; "
                 "if configuration is missing, run `mana-agent --configure` from an interactive terminal."

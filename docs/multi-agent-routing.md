@@ -51,8 +51,9 @@ has been recorded.
 
 ## CLI Behavior
 
-- Root mode flags and menu selections record a MainAgent route before dispatching
-  to the selected command.
+- Bare `mana-agent` records a MainAgent route and opens chat directly; there is
+  no root application-mode menu. Explicit legacy mode flags still dispatch
+  through the same route boundary.
 - `mana-agent chat` records command start and each substantive user turn through MainAgent.
 - `/analyze` inside chat records an analyze route before running the analyzer.
 - `/plan` inside chat records a planning route before generating a plan answer.

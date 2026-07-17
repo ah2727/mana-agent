@@ -10,14 +10,13 @@ from mana_agent.commands.cli import app
 from mana_agent.config import user_config
 from mana_agent.config.catalog_service import ModelCatalogService
 from mana_agent.config.model_catalog import (
-    ModelCapability,
     ModelPurpose,
     descriptors_from_catalog,
     filter_models,
 )
 from mana_agent.config.session import ConfigurationDraft
 from mana_agent.search.config import SearchConfig
-from mana_agent.tui.model_management import ModelSelection, configured_agent_models, plain_models_command, save_default_model
+from mana_agent.tui.model_management import ModelSelection, plain_models_command, save_default_model
 
 
 @pytest.fixture()
@@ -34,8 +33,7 @@ def test_root_dispatches_chat_without_mode_menu(monkeypatch: pytest.MonkeyPatch,
 
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(main_cli, "ensure_setup", lambda **_kwargs: True)
-    monkeypatch.setattr(main_cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(main_cli.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(main_cli, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(
         main_cli,
         "_invoke_with_multi_agent_route",
@@ -56,8 +54,7 @@ def test_configure_flag_launches_configuration_tui(monkeypatch: pytest.MonkeyPat
     import mana_agent.commands.main_cli as main_cli
 
     calls: list[bool] = []
-    monkeypatch.setattr(main_cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(main_cli.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(main_cli, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(main_cli, "run_setup_wizard", lambda **_kwargs: calls.append(True) or True)
 
     result = CliRunner().invoke(app, ["--configure"])
@@ -70,8 +67,7 @@ def test_root_non_tty_never_launches_textual(monkeypatch: pytest.MonkeyPatch) ->
     import mana_agent.commands.main_cli as main_cli
 
     monkeypatch.setattr(main_cli, "ensure_setup", lambda **_kwargs: True)
-    monkeypatch.setattr(main_cli.sys.stdin, "isatty", lambda: False)
-    monkeypatch.setattr(main_cli.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(main_cli, "_is_interactive_terminal", lambda: False)
     result = CliRunner().invoke(app, ["--no-banner"])
     assert result.exit_code != 0
     assert "interactive" in result.output.lower()
@@ -210,16 +206,19 @@ def test_search_and_github_credential_sources_remain_separate(isolated_config: P
     assert config.github_token == "github-secret"
 
 
-@pytest.mark.asyncio
-async def test_models_slash_command_opens_modal() -> None:
+def test_models_slash_command_opens_modal() -> None:
+    import asyncio
     from mana_agent.tui.app import ManaChatApp
     from mana_agent.tui.model_management import ModelManagementScreen
 
-    chat = ManaChatApp(model="gpt-4.1-mini")
-    async with chat.run_test() as pilot:
-        await pilot.pause()
-        input_widget = chat.query_one("#chat-input")
-        input_widget.value = "/models"
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(chat.screen, ModelManagementScreen)
+    async def run() -> None:
+        chat = ManaChatApp(model="gpt-4.1-mini")
+        async with chat.run_test() as pilot:
+            await pilot.pause()
+            input_widget = chat.query_one("#chat-input")
+            input_widget.value = "/models"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(chat.screen, ModelManagementScreen)
+
+    asyncio.run(run())

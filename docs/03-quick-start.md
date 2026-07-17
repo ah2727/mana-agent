@@ -31,23 +31,35 @@ python -m pip install pytest ruff mypy
 
 ## Configure
 
-Run `mana-agent` in an interactive terminal and enter your provider settings in
-the first-run wizard. Mana-Agent saves the values under `~/.mana`; it does not
-read credentials from the current repository's `.env` file.
+Run the Textual configuration application in an interactive terminal. It stores
+normal settings in `~/.mana/config.toml`, credentials in
+`~/.mana/secrets.toml`, and capability-filtered catalogs in
+`~/.mana/model_cache.json`.
 
 ```bash
-OPENAI_API_KEY="sk-..."
-OPENAI_BASE_URL="https://api.openai.com/v1"
-OPENAI_CHAT_MODEL="gpt-4.1"
-OPENAI_TOOL_WORKER_MODEL="gpt-4.1"
-OPENAI_CODING_PLANNER_MODEL="gpt-4.1"
-OPENAI_EMBED_MODEL="text-embedding-3-small"
-DEFAULT_TOP_K=8
+mana-agent --configure
 ```
 
-Use the Settings menu to update the saved provider configuration later.
+The TUI configures provider authentication, logical High reasoning/Coding/Fast
+model levels, advanced role mappings, embeddings, web search, and GitHub.
+Repository `.env` files do not override an explicitly selected credential.
 
-## First run
+## Open chat
+
+Bare `mana-agent` immediately opens chat for the current directory. If required
+configuration is missing on the first run, setup opens automatically and chat
+continues after saving. The old startup mode menu is not used.
+
+```bash
+cd /path/to/project
+mana-agent
+```
+
+`mana-agent chat` remains an alias. Use `/models` in the interactive TUI to
+switch among already configured compatible models. Credentials remain isolated
+to `mana-agent --configure`.
+
+## Direct analysis
 
 From a repository you want to inspect, run unified analysis:
 
@@ -91,9 +103,7 @@ mana-agent ask "How is configuration loaded?" --root-dir /path/to/project
 
 The `ask` command supports an optional index directory, directory-aware mode, ephemeral indexes, agent tool use, and JSON output. It returns sources when available. [src/mana_agent/commands/ask_cli.py:1-262](src/mana_agent/commands/ask_cli.py:1-262)
 
-## Open chat
-
-Start the interactive chat session with a project root:
+Start the same interactive chat session with an explicit project root:
 
 ```bash
 mana-agent chat --root-dir /path/to/project
@@ -104,10 +114,10 @@ The chat command supports classic and directory-aware index modes, coding-agent 
 ## Typical workflow
 
 1. Install the package in a virtual environment.
-2. Configure `OPENAI_API_KEY` and model settings.
+2. Run `mana-agent --configure`.
 3. Run `mana-agent analyze <project>` to build the initial index and reports.
 4. Use `mana-agent ask ...` for targeted questions.
-5. Use `mana-agent chat ...` for interactive repository analysis or coding tasks.
+5. Run bare `mana-agent` for interactive repository analysis or coding tasks.
 
 ## Optional browser tasks
 
