@@ -372,12 +372,7 @@ class ManaChatApp(App):
                 return
             if not self._gateway_session_id:
                 self._gateway_session_id = self.gateway.create_session(frontend="tui")
-            self._gateway_session_id = self.gateway.start_new_conversation(
-                self._gateway_session_id, frontend="tui"
-            )
-            self.active_flow_id = None
-            self.history.clear()
-            self.history.add(AssistantMessageEvent(content="Started a new conversation."))
+            self._start_new_conversation()
             if self.input:
                 self.input.value = ""
             self.update_status("Ready")
@@ -401,6 +396,20 @@ class ManaChatApp(App):
         # Run the turn as a worker so the UI stays responsive and tool events can paint live
         self._turn_in_progress = True
         self.run_worker(self._handle_real_turn_guarded(user_event), exclusive=True)
+
+    def _start_new_conversation(self) -> str:
+        """Apply the same gateway-owned conversation boundary as the plain CLI."""
+        if self.gateway is None or not hasattr(self.gateway, "start_new_conversation"):
+            raise RuntimeError("A gateway session is required to start a new conversation.")
+        if not self._gateway_session_id:
+            self._gateway_session_id = self.gateway.create_session(frontend="tui")
+        self._gateway_session_id = self.gateway.start_new_conversation(
+            self._gateway_session_id, frontend="tui"
+        )
+        self.active_flow_id = None
+        self.history.clear()
+        self.history.add(AssistantMessageEvent(content="Started a new conversation."))
+        return self._gateway_session_id
 
     async def _handle_real_turn_guarded(self, user_event: UserMessageEvent) -> None:
         try:

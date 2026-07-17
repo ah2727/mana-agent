@@ -7,7 +7,7 @@ All notable repository changes should be recorded here.
 - Fixed CLI/TUI chat-session persistence so every turn reuses one workspace session, persists chronological user/assistant/tool-summary messages, restores exact session history into later model prompts, and records failed/interrupted turns without promoting chat text into long-term memory.
   - `/new` now archives the active session and starts an isolated conversation, while `/models`, gateway rebuilds, routing, and tool execution retain the existing session ID.
   - Added compatibility reads for older message records plus regression coverage for same-session recall, stable IDs/session-creation counts, duplicate prevention, `/new` isolation, tool-result continuity, and failed-turn persistence.
-  - Verification: focused gateway, conversation, CLI state, and TUI tests passed; full-suite result recorded below after completion.
+  - Verification: `MANA_HOME=/tmp/mana-agent-session-persistence-full-final .venv/bin/python -m pytest -q` passed (994 passed, 1 skipped); focused gateway, conversation, CLI selection/topic compatibility, CLI state, and TUI tests passed; new-file/test Ruff checks, Python compilation, CLI help, and `git diff --check` passed.
 
 - Redesigned terminal startup and configuration around a chat-first Textual experience.
   - Bare `mana-agent` now opens chat for the current directory without a mode menu; `mana-agent chat` remains an alias, `mana-agent --configure` is the preferred settings entry point, and non-TTY startup fails without launching Textual or hanging.
