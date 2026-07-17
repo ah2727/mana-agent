@@ -6,7 +6,7 @@ All notable repository changes should be recorded here.
 
 - Fixed Codex turns being rejected by the current app-server because Mana's internal `readOnly` / `workspaceWrite` sandbox values were sent without protocol translation.
   - The Codex boundary now emits `read-only` / `workspace-write`, with regression coverage for both modes; failed turn summaries also retain the first backend error instead of only reporting `Codex task did not complete.`
-  - Verification: Pending.
+  - Verification: `MANA_HOME=/tmp/mana-agent-codex-sandbox-tests .venv/bin/python -m pytest -q tests/test_codex_integration.py tests/gateway/test_chat_gateway.py` passed (30 tests); a live read-only turn using the configured `gpt-5.6-luna` model completed successfully and returned the repository title; Ruff, Python compilation, and `git diff --check` passed.
 
 - Hid the available auto-chat tools catalog from the Textual TUI welcome screen while preserving live tool-call/result cards and the explicit `/tools` command.
   - Verification: `MANA_HOME=/tmp/mana-agent-tui-hidden-tools-tests .venv/bin/python -m pytest -q tests/test_auto_chat_tools_catalog.py tests/test_tui_auto_chat_tool_events.py tests/test_tui_live_tools_scroll.py` passed (12 tests); Ruff passed for the changed test, and Python compilation plus `git diff --check` passed.

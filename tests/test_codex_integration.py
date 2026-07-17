@@ -8,7 +8,12 @@ from typing import Any
 
 import pytest
 
-from mana_agent.coding.models import CodingBackendDecision, CodingTask, WorkspaceContext
+from mana_agent.coding.models import (
+    CodingBackendDecision,
+    CodingTask,
+    CodingTaskResult,
+    WorkspaceContext,
+)
 from mana_agent.coding.registry import CodingBackendDecisionError, CodingBackendRegistry
 from mana_agent.coding.routing_policy import validate_backend_decision
 from mana_agent.integrations.codex.backend import CodexCodingBackend
@@ -205,6 +210,29 @@ def test_codex_backend_translates_read_only_sandbox_for_protocol(tmp_path: Path)
     assert fake is not None
     assert fake.requests[0][1]["sandbox"] == "read-only"
     assert fake.requests[1][1]["sandbox"] == "read-only"
+
+
+def test_codex_shim_failed_payload_retains_backend_error() -> None:
+    result = CodingTaskResult(
+        task_id="failed-task",
+        worker_id="codex-test",
+        backend="codex",
+        status="failed",
+        summary="Codex task did not complete.",
+        errors=["turn/start rejected the sandbox value"],
+    )
+
+    payload = CodexCodingAgentShim._result_payload(
+        result,
+        events=[],
+        workspace_path="",
+    )
+
+    assert payload["auto_execute_terminal_reason"] == "codex_failed"
+    assert payload["answer"] == (
+        "Codex task did not complete. Reason: turn/start rejected the sandbox value"
+    )
+    assert "turn/start rejected the sandbox value" in payload["warnings"]
 
 
 class _ShimBackend:
