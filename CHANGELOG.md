@@ -12,7 +12,7 @@ All notable repository changes should be recorded here.
   - Session records now include `active`, `closed`, and `abandoned` states, opening/closing timestamps, and process ownership; legacy `archived` records remain readable.
   - CLI exit, TUI quit/unmount, dashboard shutdown, and `/new` share an idempotent gateway finalizer. `/new` closes the previous session and opens a new one, while persisted message history remains available.
   - Removed gateway-initialization task recording that silently created an additional workspace session; connector/model/coding calls now reuse the frontend-opened identity, and dead-process sessions are finalized as abandoned.
-  - Verification: `MANA_HOME=/tmp/mana-agent-entry-routing-full-20260718 .venv/bin/python -m pytest -q` passed (1009 passed, 1 skipped); focused entry-routing, gateway, and workspace tests passed (37 tests); CLI, TUI, dashboard, and smoke regression tests passed (77 tests).
+  - Verification: `MANA_HOME=/tmp/mana-agent-entry-routing-full-20260718 .venv/bin/python -m pytest -q` passed (1009 passed, 1 skipped); focused entry-routing, gateway, and workspace tests passed (37 tests); CLI, TUI, dashboard, and smoke regression tests passed (77 tests); a live configured routing-model decision selected `gmail` with confidence 1.0 for “Check my latest Gmail” without executing mailbox access; Python compilation, targeted Ruff `F,E9`, CLI help, and `git diff --check` passed.
 
 ## 2026-07-17
 
