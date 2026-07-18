@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -111,6 +112,11 @@ class Settings(BaseSettings):
     mana_codex_allow_network: bool = Field(default=False, alias="MANA_CODEX_ALLOW_NETWORK")
     mana_codex_model: str | None = Field(default=None, alias="MANA_CODEX_MODEL")
     mana_codex_bin: str = Field(default="codex", alias="MANA_CODEX_BIN")
+    mana_lane_contracts: dict[str, Any] | str = Field(default_factory=dict, alias="MANA_LANE_CONTRACTS")
+    mana_lane_global_worker_limit: int = Field(default=8, alias="MANA_LANE_GLOBAL_WORKER_LIMIT")
+    mana_lane_provider_limits: dict[str, int] | str = Field(default_factory=dict, alias="MANA_LANE_PROVIDER_LIMITS")
+    mana_lane_session_token_budget: int | None = Field(default=None, alias="MANA_LANE_SESSION_TOKEN_BUDGET")
+    mana_lane_global_token_budget: int | None = Field(default=None, alias="MANA_LANE_GLOBAL_TOKEN_BUDGET")
 
     # Mana-managed settings are intentionally repository-independent.  Loading
     # a project's ``.env`` here can silently replace the API key selected in

@@ -99,6 +99,11 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "MANA_CODEX_ALLOW_NETWORK": False,
     "MANA_CODEX_MODEL": "",
     "MANA_CODEX_BIN": "codex",
+    "MANA_LANE_CONTRACTS": {},
+    "MANA_LANE_GLOBAL_WORKER_LIMIT": 8,
+    "MANA_LANE_PROVIDER_LIMITS": {},
+    "MANA_LANE_SESSION_TOKEN_BUDGET": 0,
+    "MANA_LANE_GLOBAL_TOKEN_BUDGET": 0,
     "experience_to_skill": {
         "enabled": True,
         "auto_propose": True,
@@ -165,6 +170,11 @@ FIELD_NAME_BY_ENV: dict[str, str] = {
     "MANA_CODEX_ALLOW_NETWORK": "mana_codex_allow_network",
     "MANA_CODEX_MODEL": "mana_codex_model",
     "MANA_CODEX_BIN": "mana_codex_bin",
+    "MANA_LANE_CONTRACTS": "mana_lane_contracts",
+    "MANA_LANE_GLOBAL_WORKER_LIMIT": "mana_lane_global_worker_limit",
+    "MANA_LANE_PROVIDER_LIMITS": "mana_lane_provider_limits",
+    "MANA_LANE_SESSION_TOKEN_BUDGET": "mana_lane_session_token_budget",
+    "MANA_LANE_GLOBAL_TOKEN_BUDGET": "mana_lane_global_token_budget",
 }
 
 CONFIG_WRITE_ORDER = [
@@ -233,6 +243,11 @@ CONFIG_WRITE_ORDER = [
     "MANA_CODEX_ALLOW_NETWORK",
     "MANA_CODEX_MODEL",
     "MANA_CODEX_BIN",
+    "MANA_LANE_CONTRACTS",
+    "MANA_LANE_GLOBAL_WORKER_LIMIT",
+    "MANA_LANE_PROVIDER_LIMITS",
+    "MANA_LANE_SESSION_TOKEN_BUDGET",
+    "MANA_LANE_GLOBAL_TOKEN_BUDGET",
 ]
 
 
@@ -457,9 +472,16 @@ def validate_config_values(values: dict[str, Any]) -> dict[str, Any]:
         "MANA_SEARCH_TIMEOUT_SECONDS",
         "MANA_SEARCH_MEMORY_TTL_DAYS",
         "MANA_WEB_SEARCH_MAX_RESULTS",
+        "MANA_LANE_GLOBAL_WORKER_LIMIT",
     ):
         if name in cleaned:
             cleaned[name] = validate_positive_int(name, cleaned[name], minimum=1, maximum=1000)
+    for name in ("MANA_LANE_SESSION_TOKEN_BUDGET", "MANA_LANE_GLOBAL_TOKEN_BUDGET"):
+        if name in cleaned:
+            value = int(cleaned[name] or 0)
+            if value < 0:
+                raise UserConfigError(f"{name} must be zero (unlimited) or a positive integer.")
+            cleaned[name] = value
     for name in (
         "MANA_SEARCH_ENABLE_WEB",
         "MANA_SEARCH_ENABLE_GITHUB",

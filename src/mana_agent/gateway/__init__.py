@@ -19,6 +19,8 @@ from .entry_routing import (
     RouteRegistration,
 )
 from .stack import ChatStack, build_chat_stack
+from .lane_coordinator import LaneCoordinator
+from .lanes import LaneContract, LaneId, LanePriority, LaneTaskState, LockMode
 from .turn_engine import (
     ChatTurnResult,
     is_auto_chat_connector_turn,
@@ -39,6 +41,12 @@ __all__ = [
     "RouteRegistration",
     "ChatStack",
     "build_chat_stack",
+    "LaneCoordinator",
+    "LaneContract",
+    "LaneId",
+    "LanePriority",
+    "LaneTaskState",
+    "LockMode",
     "ChatTurnResult",
     "process_chat_turn",
     "should_use_coding_agent_turn",

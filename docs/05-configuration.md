@@ -128,7 +128,35 @@ MANA_CODEX_WORKTREE_ISOLATION=true
 MANA_CODEX_TASK_TIMEOUT_SECONDS=1800
 MANA_CODEX_ALLOW_NETWORK=false
 MANA_CODEX_MODEL=
+MANA_LANE_GLOBAL_WORKER_LIMIT=8
+MANA_LANE_SESSION_TOKEN_BUDGET=0
+MANA_LANE_GLOBAL_TOKEN_BUDGET=0
 ```
+
+### Specialist lane coordinator
+
+All frontends use the gateway's six specialist lanes. Defaults are conservative and require no configuration. `0` means unlimited for the optional session/global token caps. Provider/model concurrency can be supplied as a JSON object through `MANA_LANE_PROVIDER_LIMITS`.
+
+Lane overrides use the existing user configuration as a table/object. Only `enabled`, `max_concurrent_jobs`, `max_subagents`, `token_budget`, `cost_budget`, `priority`, `timeout_seconds`, and `allowed_models` are configurable; invalid lane names, fields, priorities, or non-positive limits stop gateway construction with an actionable validation error.
+
+```toml
+MANA_LANE_GLOBAL_WORKER_LIMIT = 8
+MANA_LANE_SESSION_TOKEN_BUDGET = 120000
+
+[MANA_LANE_PROVIDER_LIMITS]
+"openai/gpt-4.1" = 3
+
+[MANA_LANE_CONTRACTS.coding]
+max_concurrent_jobs = 2
+max_subagents = 2
+token_budget = 80000
+cost_budget = 25.0
+priority = "interactive"
+timeout_seconds = 1800
+allowed_models = ["openai/gpt-4.1"]
+```
+
+Coordinator events are written to the existing taskboard/event history. Normal clients show concise lane/lock progress; `lane.*`, `lock.*`, and `resource.*` metadata is intended for verbose diagnostics and the dashboard.
 
 ### Codex coding runtime
 

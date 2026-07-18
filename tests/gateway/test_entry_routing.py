@@ -239,8 +239,10 @@ def test_conversation_and_coding_use_their_selected_routes(tmp_path: Path, monke
     coding_result = gateway.process_turn(session_id, "Change the parser implementation")
 
     assert conversation.mode == "route-conversation"
+    assert conversation.payload["lane_id"] == "research"
     assert len(chat.conversation_calls) == 1
     assert coding_result.used_coding_agent is True
+    assert coding_result.payload["lane_id"] == "coding"
     assert coding.calls
     assert coding.session_id == session_id
     assert coding_result.payload["session_id"] == session_id

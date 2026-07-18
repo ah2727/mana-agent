@@ -13,6 +13,7 @@ building AskService / CodingAgent directly.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -32,6 +33,8 @@ from mana_agent.gateway.entry_routing import (
     gmail_route_availability,
 )
 from mana_agent.gateway.stack import ChatStack, build_chat_stack
+from mana_agent.gateway.lane_coordinator import LaneCoordinator, LaneCoordinatorError
+from mana_agent.gateway.lanes import LaneTaskState
 from mana_agent.gateway.turn_engine import (
     ChatTurnResult,
     _serialize_tool_traces,
@@ -126,6 +129,11 @@ class AgentChatGateway:
         agent_max_steps: int = 6,
         agent_unlimited: bool = False,
         agent_timeout_seconds: int = 30,
+        lane_overrides: dict[str, Any] | None = None,
+        lane_global_worker_limit: int | None = None,
+        lane_provider_limits: dict[str, int] | None = None,
+        lane_session_token_budget: int | None = None,
+        lane_global_token_budget: int | None = None,
         session_id: str | None = None,
         event_sink: Callable[..., None] | None = None,
         # Allow passing pre-built objects (tests / transitional)
@@ -172,6 +180,23 @@ class AgentChatGateway:
                 agent_max_steps=agent_max_steps,
                 agent_unlimited=agent_unlimited,
                 agent_timeout_seconds=agent_timeout_seconds,
+                lane_overrides=lane_overrides or self._json_setting("mana_lane_contracts"),
+                lane_global_worker_limit=(
+                    lane_global_worker_limit
+                    if lane_global_worker_limit is not None
+                    else int(getattr(self.settings, "mana_lane_global_worker_limit", 8) or 8)
+                ),
+                lane_provider_limits=lane_provider_limits or self._json_setting("mana_lane_provider_limits"),
+                lane_session_token_budget=(
+                    lane_session_token_budget
+                    if lane_session_token_budget is not None
+                    else (getattr(self.settings, "mana_lane_session_token_budget", None) or None)
+                ),
+                lane_global_token_budget=(
+                    lane_global_token_budget
+                    if lane_global_token_budget is not None
+                    else (getattr(self.settings, "mana_lane_global_token_budget", None) or None)
+                ),
                 session_id=session_id,
                 chat_service=chat_service,
                 coding_agent_instance=coding_agent_instance,
@@ -223,6 +248,15 @@ class AgentChatGateway:
             llm=route_llm or agent_decision_llm(self.get_ask_service()),
             registry=self._entry_route_registry,
         )
+        self._lane_coordinator = LaneCoordinator(
+            self.root,
+            contracts=self.config.lane_overrides,
+            event_sink=self._event_sink,
+            global_worker_limit=self.config.lane_global_worker_limit,
+            provider_limits=self.config.lane_provider_limits,
+            session_token_budget=self.config.lane_session_token_budget,
+            global_token_budget=self.config.lane_global_token_budget,
+        )
 
         # Default session state seed
         self._default_flow_id = self.config.flow_id
@@ -237,6 +271,18 @@ class AgentChatGateway:
     @staticmethod
     def _available(value: bool = True, reason: str = "") -> RouteAvailability:
         return RouteAvailability(available=value, reason=reason)
+
+    def _json_setting(self, name: str) -> dict[str, Any]:
+        value = getattr(self.settings, name, "{}")
+        if isinstance(value, dict):
+            return dict(value)
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid {name} JSON configuration: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Invalid {name} configuration: expected a JSON object")
+        return parsed
 
     def _build_entry_route_registry(self) -> EntryRouteRegistry:
         registry = EntryRouteRegistry()
@@ -568,15 +614,87 @@ class AgentChatGateway:
                 )
             else:
                 state["active_route"] = entry_decision.route
-                result = self._execute_entry_route(
-                    decision=entry_decision,
-                    context=route_context,
-                    text=text,
-                    state=state,
-                    ask_service=ask_service,
-                    sink=sink,
-                    options=options,
-                )
+                try:
+                    lane_id = self._lane_coordinator.select_lane(
+                        entry_route=entry_decision.route,
+                        model_lane=options.pop("lane_id", None),
+                    )
+                    target_files = [str(item) for item in options.pop("target_files", [])]
+                    requested_input = max(1, len(text) // 4)
+                    requested_output = max(256, int(options.pop("reserved_output_tokens", 2048)))
+                    route_capabilities = {
+                        "coding": ("repository_read", "repository_write", "shell_read", "shell_write", "git_read", "test_execution"),
+                        "repository": ("repository_read",),
+                        "search": ("web_search",),
+                        "gmail": ("email",),
+                        "calendar": ("calendar",),
+                        "automation": ("deployment", "shell_read", "shell_write"),
+                    }.get(entry_decision.route, ())
+                    reservation = self._lane_coordinator.reserve(
+                        normalized_intent=text,
+                        lane_id=lane_id,
+                        session_id=session_id,
+                        workspace_id=self._lane_coordinator.taskboard.store.workspace_id,
+                        repository_id=self._lane_coordinator.taskboard.store.repository_id,
+                        target_files=target_files,
+                        model=str(self.config.model or ""),
+                        requested_input_tokens=requested_input,
+                        requested_output_tokens=requested_output,
+                        capabilities=route_capabilities,
+                    )
+                    if reservation.duplicate:
+                        result = ChatTurnResult(
+                            answer="Equivalent work is already active in the gateway.",
+                            mode="lane-duplicate",
+                            payload={
+                                "lane_id": lane_id.value,
+                                "lane_task_id": reservation.execution.task_id,
+                                "duplicate": True,
+                            },
+                        )
+                    else:
+                        self._lane_coordinator.start(reservation)
+                        options["_lane_task_id"] = reservation.execution.task_id
+                        try:
+                            result = self._execute_entry_route(
+                                decision=entry_decision,
+                                context=route_context,
+                                text=text,
+                                state=state,
+                                ask_service=ask_service,
+                                sink=sink,
+                                options=options,
+                            )
+                        except BaseException as exc:
+                            self._lane_coordinator.finish(
+                                reservation.execution.task_id,
+                                state=LaneTaskState.FAILED,
+                                error=str(exc),
+                            )
+                            raise
+                        self._lane_coordinator.finish(
+                            reservation.execution.task_id,
+                            state=(LaneTaskState.FAILED if result.error else LaneTaskState.COMPLETED),
+                            changed_files=result.changed_files,
+                            consumed_input_tokens=requested_input,
+                            consumed_output_tokens=max(0, len(result.answer or "") // 4),
+                            verification_state={"mode": result.mode, "error": result.error},
+                            error=str(result.error or ""),
+                        )
+                        result.payload.update(
+                            {
+                                "lane_id": lane_id.value,
+                                "lane_task_id": reservation.execution.task_id,
+                                "duplicate": False,
+                            }
+                        )
+                except LaneCoordinatorError as exc:
+                    result = ChatTurnResult(
+                        answer=f"Gateway lane coordination failed: {exc}. No agent action was executed.",
+                        error=getattr(exc, "code", "lane_coordinator_error"),
+                        mode="lane-error",
+                        payload={"route": entry_decision.route},
+                    )
             result.payload.update(
                 {
                     "session_id": session_id,
@@ -647,6 +765,7 @@ class AgentChatGateway:
         sink: Callable[..., None] | None,
         options: dict[str, Any],
     ) -> ChatTurnResult:
+        lane_task_id = str(options.get("_lane_task_id") or "")
         registration = self._entry_route_registry.get(decision.route)
         availability = registration.availability()
         if not availability.available:
@@ -683,6 +802,14 @@ class AgentChatGateway:
                 payload={"route": decision.route},
             )
         if decision.route == "gmail":
+            if lane_task_id:
+                from mana_agent.connectors.email.tools import email_tool_contracts
+
+                tool_names = registration.tools or tuple(
+                    contract.name for contract in email_tool_contracts()
+                )
+                for tool_name in tool_names:
+                    self._lane_coordinator.authorize_tool(lane_task_id, tool_name)
             return self._execute_gmail_route(
                 decision=decision,
                 context=context,
@@ -725,6 +852,9 @@ class AgentChatGateway:
                 decision=decision,
                 payload={"route": decision.route},
             )
+        if lane_task_id:
+            for tool_name in mapped.selected_tools:
+                self._lane_coordinator.authorize_tool(lane_task_id, tool_name)
         result = process_chat_turn(
             root=self.root,
             text=text,
@@ -852,6 +982,10 @@ class AgentChatGateway:
 
     def get_stack(self) -> ChatStack:
         return self._stack
+
+    def get_lane_coordinator(self) -> LaneCoordinator:
+        """Return the single coordinator shared by this gateway's frontends."""
+        return self._lane_coordinator
 
     def get_ask_service(self) -> Any:
         return getattr(self._chat_service, "_ask_service", None) or self._stack.ask_service

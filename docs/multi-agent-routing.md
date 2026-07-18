@@ -42,6 +42,14 @@ with locks, and delegates execution to ToolsManager. ToolsManager wraps the
 existing repository-safe commands and blocks dangerous shell operations such as
 `rm -rf /`, `.env` reads, `printenv`, `git reset --hard`, and `git clean -fd`.
 
+## Gateway specialist lanes
+
+The production `AgentChatGateway` is the outer resource owner for CLI, TUI, dashboard, API, connector, and automation turns. It coordinates the `coding`, `research`, `review`, `verify`, `release`, and `operations` lanes before dispatching into the existing agent/taskboard/queue runtime. There is no second orchestration entry point.
+
+Lane contracts define ownership, handoffs, tool capabilities, model restrictions, per-lane concurrency, subagent limits, token/cost budgets, priority, repository/write requirements, lock policy, timeout, and retry policy. The coordinator also applies global, provider/model, repository-mutation, and per-session limits. Capacity-constrained work remains queued and interactive priority precedes background priority without changing task identity.
+
+Active-task fingerprints include normalized intent, repository, workspace, session, target files, lane, and parent relationship. Equivalent active work attaches to the existing task. Review and verification remain distinct lane stages in the same lineage and therefore are not collapsed into their coding stage.
+
 ## Verification
 
 VerifierAgent records verification requirements for every mutation route and

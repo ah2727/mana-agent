@@ -57,6 +57,13 @@ class ChatGatewayConfig:
     agent_unlimited: bool = False
     agent_timeout_seconds: int = 30
 
+    # Gateway specialist-lane coordinator
+    lane_overrides: dict[str, Any] = field(default_factory=dict)
+    lane_global_worker_limit: int = 8
+    lane_provider_limits: dict[str, int] = field(default_factory=dict)
+    lane_session_token_budget: int | None = None
+    lane_global_token_budget: int | None = None
+
     # Session
     session_id: str | None = None
 
@@ -115,6 +122,22 @@ class ChatGatewayConfig:
             agent_max_steps=int(self.agent_max_steps),
             agent_unlimited=bool(self.agent_unlimited),
             agent_timeout_seconds=int(self.agent_timeout_seconds),
+            lane_overrides=dict(self.lane_overrides or {}),
+            lane_global_worker_limit=max(1, int(self.lane_global_worker_limit or 8)),
+            lane_provider_limits={
+                str(key): max(1, int(value))
+                for key, value in (self.lane_provider_limits or {}).items()
+            },
+            lane_session_token_budget=(
+                max(1, int(self.lane_session_token_budget))
+                if self.lane_session_token_budget is not None
+                else None
+            ),
+            lane_global_token_budget=(
+                max(1, int(self.lane_global_token_budget))
+                if self.lane_global_token_budget is not None
+                else None
+            ),
             session_id=self.session_id,
             chat_service=self.chat_service,
             coding_agent_instance=self.coding_agent_instance,

@@ -4,6 +4,16 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-18
 
+- Fixed gateway lane-state persistence on Windows CI by using collision-safe temporary files and retrying transient atomic-replace sharing violations.
+  - Added regression coverage for `PermissionError(13, "Access is denied")` during state replacement and temporary-file cleanup.
+  - Verification: Pending targeted and broader checks.
+
+- Added gateway-owned resource-aware specialist lanes for `coding`, `research`, `review`, `verify`, `release`, and `operations`.
+  - Added typed serializable lane contracts, priorities, lock modes, execution states, budgets, handoffs, capability-based tool permissions, duplicate detection, concurrency/provider limits, parent-budget sharing, persistent lock leases, restart recovery, and structured `lane.*`, `lock.*`, and `resource.*` events.
+  - `AgentChatGateway.process_turn` now reserves and releases lane resources around the existing entry-route/turn-engine path, preserving task, session, workspace, repository, Codex integration, and frontend identities across execution and handoffs.
+  - Added existing-config overrides and architecture/configuration documentation for lane responsibilities, default handoffs, locking, budgets, recovery, and diagnostics.
+  - Verification: Pending final test, lint, type, and compilation checks.
+
 - Enforced one fresh persisted session per chat start and one additional fresh session per `/new`.
   - Root chat startup now preserves the CLI dispatch boundary while deferring its mandatory route decision until the chat frontend has created the session, avoiding a hidden pre-chat session. The legacy restoration API now abandons prior active sessions and opens a new identity instead of reusing or reopening one.
   - Verification: `MANA_HOME=<isolated> PYTHONPATH=src venv/bin/python -m pytest -q tests/test_chat_first_configuration.py tests/test_workspaces.py tests/gateway/test_entry_routing.py tests/gateway/test_chat_gateway.py tests/test_main_cli_session_lifecycle.py` passed (58 tests); the reported `test_root_dispatches_chat_without_mode_menu` regression passed; Python compilation and `git diff --check` passed.
