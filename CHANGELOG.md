@@ -4,6 +4,9 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-20
 
+- Fixed the eval runner patch-capture test on Windows by replacing its POSIX-only shell assertion with a platform-native Python verification command.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/evals` passed (27 tests); focused Ruff, Python compilation, and `git diff --check` passed.
+
 - Added optional ACP v1 and A2A 1.0 protocol gateway adapters around the shared `AgentChatGateway`, durable workspace sessions/history, task board, lane coordinator, memory, and tool policy.
   - Added ACP stdio initialization, durable new/load/list session mapping and replay, prompts, cancellation, modes/configuration, resource links, per-session MCP forwarding, safe event conversion, editor documentation, and `mana-agent acp serve|doctor|info`.
   - Added an authenticated A2A server with runtime Agent Cards, JSON-RPC/HTTP+JSON routes, caller-scoped durable task storage, gateway executor, state/artifact streaming, cancellation, remote registry/discovery/invocation, explicit delegation policy, SSRF/path/size controls, and loop protection through `mana-agent a2a` commands.
