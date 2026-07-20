@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from mana_agent.evals.ids import stable_hash
+from mana_agent.evals.recorder import record_current
 
 
 EntryRouteName = Literal[
@@ -215,6 +218,7 @@ class EntryRouter:
             "direct_url_signals": _public_urls(user_prompt),
         }
         try:
+            started = time.perf_counter()
             response = self.llm.invoke(
                 [
                     SystemMessage(content=ENTRY_ROUTER_PROMPT),
@@ -227,10 +231,24 @@ class EntryRouter:
                     str(part.get("text", part)) if isinstance(part, dict) else str(part)
                     for part in content
                 )
-            return self._validate(_extract_json(str(content)))
+            decision = self._validate(_extract_json(str(content)))
+            record_current(
+                "model.decision",
+                {
+                    "boundary": "entry_router",
+                    "prompt_template": "ENTRY_ROUTER_PROMPT",
+                    "prompt_hash": stable_hash(ENTRY_ROUTER_PROMPT),
+                    "request_hash": stable_hash(payload),
+                    "response": decision.to_dict(),
+                    "usage": getattr(response, "usage_metadata", None),
+                    "latency_seconds": time.perf_counter() - started,
+                },
+            )
+            return decision
         except EntryRoutingError:
             raise
         except Exception as exc:
+            record_current("model.call.failed", {"boundary": "entry_router", "error_type": type(exc).__name__, "error": str(exc)})
             raise EntryRoutingError(
                 "Model decision failed: entry_route. No response was generated. "
                 f"Reason: {exc}"
