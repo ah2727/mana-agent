@@ -4,6 +4,10 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-20
 
+- Fixed the Windows release test synchronization for dynamically appended TUI chat messages.
+  - The regression test now waits for Textual's layout cycle and the subsequently posted resize cycle before asserting the new message's wrapped document, matching both Windows Proactor and POSIX event-loop scheduling without changing chat behavior.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_tui_tool_card_layout.py tests/test_tui_multiline_input.py` passed (6 tests); focused Ruff, Python compilation, and `git diff --check` passed.
+
 - Fixed the eval runner patch-capture test on Windows by replacing its POSIX-only shell assertion with a platform-native Python verification command.
   - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/evals` passed (27 tests); focused Ruff, Python compilation, and `git diff --check` passed.
 

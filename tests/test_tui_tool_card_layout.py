@@ -101,6 +101,11 @@ def test_history_messages_wrap_at_available_card_width_after_replay_append_and_r
 
             history.add(AssistantMessageEvent(content="short assistant message"))
             await pilot.pause()
+            # A dynamic mount is a two-phase operation in Textual: the first
+            # idle cycle lays out the child and posts its Resize event, and the
+            # second processes that event and rewraps the TextArea. Windows'
+            # Proactor loop does not collapse both phases into one cycle.
+            await pilot.pause()
             live_assistant = list(chat_log.query(".assistant-message"))[-1]
             assert live_assistant.wrapped_document.height == 1
             assert live_assistant.wrap_width == live_assistant.content_size.width - 1
