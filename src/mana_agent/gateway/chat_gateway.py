@@ -55,6 +55,7 @@ from mana_agent.memory.errors import MemoryError
 from mana_agent.services.chat_service import ChatService
 from mana_agent.services.chat_session_history import ChatSessionHistory
 from mana_agent.workspaces.service import WorkspaceService
+from mana_agent.evals.recorder import record_current
 
 logger = logging.getLogger(__name__)
 
@@ -724,6 +725,7 @@ class AgentChatGateway:
         """Run one full chat turn through the gateway-owned engine."""
         self._active.add(session_id)
         turn_id = str(options.pop("turn_id", "") or f"turn_{uuid.uuid4().hex[:20]}")
+        record_current("gateway.turn.started", {"session_id": session_id, "turn_id": turn_id, "original_task": text})
         self._append_session_message(session_id, role="user", content=text, turn_id=turn_id)
         try:
             state = self._session(session_id)
@@ -764,6 +766,7 @@ class AgentChatGateway:
                     payload={"route": "unsupported", "error_code": "entry_route_invalid"},
                 )
             else:
+                record_current("gateway.entry_route", {"decision": entry_decision.to_dict(), "turn_id": turn_id})
                 state["active_route"] = entry_decision.route
                 try:
                     lane_id = self._lane_coordinator.select_lane(
@@ -906,8 +909,21 @@ class AgentChatGateway:
             )
             if write_warning:
                 result.warnings.append(write_warning)
+            record_current(
+                "gateway.turn.finished",
+                {
+                    "turn_id": turn_id,
+                    "mode": result.mode,
+                    "answer": result.answer,
+                    "error": result.error,
+                    "warnings": result.warnings,
+                    "changed_files": result.changed_files,
+                    "payload": result.payload,
+                },
+            )
             return result
         except BaseException as exc:
+            record_current("gateway.turn.failed", {"turn_id": turn_id, "error_type": type(exc).__name__, "error": str(exc)})
             self._append_session_message(
                 session_id,
                 role="system",

@@ -4,6 +4,11 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-20
 
+- Added Mana Eval Lab for reproducible multi-variant gateway evaluations, immutable redacted run artifacts, isolated Git worktrees, task and trajectory replay, configurable objective scoring, leaderboards, baselines, paired regression reports, and fail-closed CI gates.
+  - Instrumented the existing gateway, routing-model, lane, tool, Codex, reviewer, and verifier boundaries through an optional context-propagated recorder; normal chat continues through the no-op recorder with no evaluation configuration.
+  - Added the `mana-agent eval` command group, protected routing suite, evaluation CI workflow, security and architecture documentation, and stable exit codes. Docker and remote evaluation workspaces remain explicit unsupported backends; P0 fully implements `local-worktree`.
+  - Verification: `PYTHONPATH=src MANA_HOME=/tmp/mana-eval-final-model-home .venv/bin/python -m pytest -q tests/evals` passed (27 tests); the focused gateway/routing/lane/tool/Codex/CLI compatibility suite passed (181 tests); the final full repository suite passed (1,103 passed, 1 skipped); touched-file Ruff, Python compilation, `git diff --check`, source/wheel builds, and `twine check` passed.
+
 - Fixed Windows Textual layout timing for multiline chat input and dynamically mounted selectable chat messages.
   - Composer sizing now treats explicit newlines as immediately authoritative when the virtual document refresh is delayed, while mounted message cards proactively rewrap after their first layout instead of waiting for a paint callback.
   - Verification: `PYTHONPATH=src venv/bin/python -m pytest -q tests/test_tui_multiline_input.py tests/test_tui_tool_card_layout.py` passed (6 tests); `git diff --check` passed.

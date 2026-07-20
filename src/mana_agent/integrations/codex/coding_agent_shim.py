@@ -17,6 +17,7 @@ from mana_agent.coding.models import AgentEvent, CodingTask, CodingTaskResult, W
 from mana_agent.integrations.codex.backend import CodexCodingBackend
 from mana_agent.integrations.codex.config import CodexSettings
 from mana_agent.multi_agent.worktrees import WorkspaceManager, WorkspaceStatus
+from mana_agent.evals.recorder import record_current
 
 BackendFactory = Callable[[], CodexCodingBackend]
 WorkspaceManagerFactory = Callable[[], WorkspaceManager]
@@ -143,6 +144,16 @@ class CodexCodingAgentShim:
         if not goal:
             raise ValueError("Codex coding request is required")
         task_id = f"codex_task_{uuid.uuid4().hex[:16]}"
+        record_current(
+            "codex.turn.started",
+            {
+                "task_id": task_id,
+                "model": self.codex_settings.model,
+                "sandbox": "workspaceWrite" if requires_repository_write else "readOnly",
+                "approval_policy": self.codex_settings.approval_policy,
+                "repository_identity": str(self.repo_root),
+            },
+        )
         task = CodingTask(
             task_id=task_id,
             goal=goal,
@@ -211,6 +222,7 @@ class CodexCodingAgentShim:
         try:
             result = asyncio.run(run())
         except Exception as exc:
+            record_current("codex.turn.failed", {"task_id": task_id, "error_type": type(exc).__name__, "error": str(exc)})
             if manager is not None:
                 manager.transition(
                     task_id,
@@ -247,9 +259,11 @@ class CodexCodingAgentShim:
         payload["flow_id"] = selected_flow_id
         self._active_flow_id = selected_flow_id
         self._flow_results[selected_flow_id] = dict(payload)
+        record_current("codex.turn.finished", {"task_id": task_id, "result": result.model_dump(mode="json"), "workspace_path": str(workspace.worktree_path)})
         return payload
 
     def _emit_event(self, event: AgentEvent) -> None:
+        record_current(event.event_type, event.model_dump(mode="json"))
         if self.event_sink is None:
             return
         payload = event.model_dump(mode="json")

@@ -30,6 +30,7 @@
 - [Web dashboard](#web-dashboard)
 - [Documentation](#documentation)
 - [Development](#development)
+- [Mana Eval Lab](#mana-eval-lab)
 
 ---
 
@@ -78,6 +79,20 @@ Use Mana-Agent to:
 | Dashboard | Repository overview, chat, analysis, taskboard, traces, observability, automations, cron jobs, and settings. |
 | Automations | Persistent scheduled actions deployed to local cron, GitHub Actions, or both. |
 | Artifacts | JSON, Markdown, HTML, DOT, GraphML, Mermaid, traces, and repository-local runtime data. |
+| Mana Eval Lab | Reproducible multi-variant runs, immutable trajectories, replay, leaderboards, paired regression reports, and fail-closed CI gates. |
+
+## Mana Eval Lab
+
+Mana Eval Lab evaluates the real gateway, router, Codex coding path, tools, lanes, reviewer, and verifier in isolated Git worktrees. It records versioned, redacted artifacts and supports task replay, command-only trajectory replay, leaderboards, baselines, and regression gates.
+
+```bash
+mana-agent eval run evals/suites/routing-smoke.yaml --variant candidate
+mana-agent eval list
+mana-agent eval inspect <run-id>
+mana-agent eval leaderboard --suite routing-smoke
+```
+
+See [the Eval Lab overview](docs/evals/overview.md), [suite format](docs/evals/suites.md), [replay](docs/evals/replay.md), [scoring](docs/evals/scoring.md), [CI gates](docs/evals/ci-gate.md), and [artifact security](docs/evals/artifacts.md).
 
 ---
 

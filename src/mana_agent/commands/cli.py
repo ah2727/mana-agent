@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import typer
+
 from . import cli_internal as _cli_internal
 from .cli_internal import *  # noqa: F401,F403
 from .main_cli import configure, main
@@ -14,10 +16,13 @@ from .ui_helpers import (
 )
 from mana_agent.doctor.reporter import render as render_doctor_report
 from mana_agent.doctor.runner import run_doctor
+from mana_agent.evals.cli import eval_app
 
 # Use exactly one canonical Typer app.
 # Do not create a second typer.Typer() here.
 app = _cli_internal.app
+if not any(group.name == "eval" for group in app.registered_groups):
+    app.add_typer(eval_app, name="eval")
 
 
 def _replace_command(name: str, callback, **kwargs) -> None:

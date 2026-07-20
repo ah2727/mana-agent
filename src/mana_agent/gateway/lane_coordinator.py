@@ -30,6 +30,7 @@ from mana_agent.gateway.lanes import (
 from mana_agent.multi_agent.taskboard.taskboard import TaskBoard
 from mana_agent.multi_agent.core.types import TaskStatus
 from mana_agent.workspaces.paths import workspace_dir
+from mana_agent.evals.recorder import record_current
 
 if os.name == "nt":  # pragma: no cover - exercised on Windows CI
     import msvcrt
@@ -355,6 +356,7 @@ class LaneCoordinator:
 
     def emit(self, event_type: str, *, task_id: str, lane_id: LaneId | None, **metadata: Any) -> None:
         payload = {"event_type": event_type, "task_id": task_id, "lane_id": lane_id.value if lane_id else None, **metadata}
+        record_current(event_type, payload)
         try:
             self.taskboard.store.append_history({"event_type": event_type, "payload": payload, "created_at": _iso()})
         except OSError:
