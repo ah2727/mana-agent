@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import subprocess
+import sys
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -47,6 +50,12 @@ from mana_agent.multi_agent.runtime.compatibility import CompatibleChatOpenAI, M
 def git(root: Path, *args: str) -> str:
     result = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True)
     return result.stdout.strip()
+
+
+def native_shell_command(*args: str) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(args)
+    return shlex.join(args)
 
 
 @pytest.fixture
@@ -308,7 +317,12 @@ def test_runner_creates_complete_artifacts_without_mutating_source(repository: P
 
 def test_runner_captures_patch_and_test(repository: Path, tmp_path: Path) -> None:
     storage = EvalStorage(tmp_path / "evals")
-    selected_task = task(repository, test_commands=["test \"$(cat sample.txt)\" = after"])
+    test_command = native_shell_command(
+        sys.executable,
+        "-c",
+        "from pathlib import Path; assert Path('sample.txt').read_text(encoding='utf-8') == 'after\\n'",
+    )
+    selected_task = task(repository, test_commands=[test_command])
     selected_task = selected_task.model_copy(update={"expected": ExpectedOutcome(route="repository", required_changed_files=["sample.txt"])})
     selected_suite = EvalSuite(name="fixture", version="1", tasks=[selected_task], variants=[variant()])
     runner = EvalRunner(storage=storage, gateway_factory=lambda root, selected: FakeGateway(root, selected, mutate=True))
