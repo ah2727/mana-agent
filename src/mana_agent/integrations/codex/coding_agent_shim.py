@@ -184,8 +184,22 @@ class CodexCodingAgentShim:
                 for profile in self.routing_authority.router.profiles
             ),
         ))
+        routed_settings = CodexSettings.from_mana_settings(
+            self.routing_authority.settings,
+            provider=routing_decision.provider,
+        )
         self.codex_settings = self.codex_settings.model_copy(
-            update={"model": routing_decision.selected_model}
+            update={
+                "model": routing_decision.selected_model,
+                "provider": routed_settings.provider,
+                "provider_display_name": routed_settings.provider_display_name,
+                "api_key": routed_settings.api_key,
+                "base_url": routed_settings.base_url,
+                "http_headers": routed_settings.http_headers,
+                "env_http_headers": routed_settings.env_http_headers,
+                "query_params": routed_settings.query_params,
+                "supports_responses_api": routed_settings.supports_responses_api,
+            }
         )
         record_current(
             "codex.turn.started",

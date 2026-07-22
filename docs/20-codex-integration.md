@@ -48,17 +48,22 @@ backend never self-approves them.
 
 ## Installation and authentication
 
-Install the official Codex CLI using an OpenAI-supported installation method,
-then authenticate it:
+Install the official Codex CLI using an OpenAI-supported installation method.
+Mana-Agent runs do not require `codex login`; they use the provider credential
+already selected in Mana-Agent configuration:
 
 ```bash
-codex login
 mana-agent codex status --repo .
 mana-agent codex doctor --repo .
 ```
 
-`mana-agent codex login` and `mana-agent codex logout` delegate directly to the
-official CLI. Mana-Agent does not read or copy Codex credentials.
+For each app-server process, Mana-Agent creates an owner-only runtime directory
+under `~/.mana/runtime/codex/`, writes a generated `config.toml` selecting the
+custom `mana_runtime` Responses provider, and passes its API key only through
+the child environment. It removes the directory after shutdown. It does not
+read or modify `~/.codex/config.toml` or `~/.codex/auth.json`, and it never
+falls back to a global Codex login when the Mana provider configuration is
+missing, invalid, or not Responses-compatible.
 
 ## Configuration
 
@@ -90,7 +95,8 @@ isolated managed worktree under Mana's state directory.
 - `mana_agent.coding` contains provider-neutral task, workspace, result, event,
   registry, and orchestrator contracts.
 - `mana_agent.integrations.codex` owns the app-server process, protocol,
-  prompts, event mapping, result parsing, health checks, and backend.
+  prompts, event mapping, result parsing, health checks, per-run provider
+  configuration/environment isolation, and backend.
 - `CodexCodingAgentShim` is the shared CLI, TUI, and dashboard coding surface.
 - `CodexWorkerPool` bounds concurrency and serializes tasks whose declared file
   scopes overlap. Empty scopes are treated conservatively as overlapping.

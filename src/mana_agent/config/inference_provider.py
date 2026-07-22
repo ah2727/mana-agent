@@ -16,9 +16,13 @@ from mana_agent.config.provider_registry import PROVIDERS
 @dataclass(frozen=True, slots=True)
 class InferenceConnection:
     provider: str
+    display_name: str
     api_key: str
     base_url: str
     headers: dict[str, str]
+    env_headers: dict[str, str]
+    query_params: dict[str, str]
+    supports_responses_api: bool
 
 
 class ProviderConfigurationError(ValueError):
@@ -47,4 +51,13 @@ def resolve_inference_connection(settings: Any, *, provider: str | None = None, 
         raise ProviderConfigurationError(
             f"{definition.display_name} authentication is not configured. Set {definition.api_key_env}."
         )
-    return InferenceConnection(provider=provider_id, api_key=api_key, base_url=base_url.rstrip("/"), headers=headers)
+    return InferenceConnection(
+        provider=provider_id,
+        display_name=definition.display_name,
+        api_key=api_key,
+        base_url=base_url.rstrip("/"),
+        headers=headers,
+        env_headers=dict(definition.default_env_headers),
+        query_params=dict(definition.default_query_params),
+        supports_responses_api=definition.supports_responses_api,
+    )

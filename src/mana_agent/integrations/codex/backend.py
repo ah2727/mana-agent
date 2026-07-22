@@ -17,6 +17,8 @@ from mana_agent.integrations.codex.exceptions import CodexError, CodexExecutionE
 from mana_agent.integrations.codex.health import check_codex_health
 from mana_agent.integrations.codex.prompt_builder import build_codex_prompt
 from mana_agent.integrations.codex.result_parser import parse_codex_result
+from mana_agent.integrations.codex.runtime_config import CodexRuntimeConfigBuilder
+from mana_agent.integrations.codex.runtime_environment import CodexRuntimeContext, CodexRuntimeEnvironment
 
 ClientFactory = Callable[[tuple[str, ...]], AsyncCodexAppServer]
 
@@ -43,11 +45,17 @@ class CodexCodingBackend:
         self._uses_default_client = client_factory is None
         self._client_factory = client_factory or (lambda command: AsyncCodexAppServer(command))
         self._client: AsyncCodexAppServer | None = None
+        self._runtime_context: CodexRuntimeContext | None = None
         self._active: dict[str, tuple[str, str]] = {}
         self._results: dict[str, CodingTaskResult] = {}
         self._run_lock = asyncio.Lock()
 
-    async def start(self, repository_path: str | Path | None = None) -> None:
+    async def start(
+        self,
+        repository_path: str | Path | None = None,
+        *,
+        sandbox_mode: str = "workspace-write",
+    ) -> None:
         if self._client is not None and self._client.running:
             return
         if not self.settings.enabled:
@@ -66,9 +74,26 @@ class CodexCodingBackend:
                     f"Reason: {detail}"
                 )
             executable = report.executable
+            runtime_config = CodexRuntimeConfigBuilder.build(
+                self.settings,
+                sandbox_mode=sandbox_mode,
+            )
         command = (executable, "app-server")
-        self._client = self._client_factory(command)
-        await self._client.start()
+        if self._uses_default_client:
+            self._runtime_context = CodexRuntimeEnvironment.create(runtime_config)
+            self._client = AsyncCodexAppServer(
+                command,
+                environment=self._runtime_context.environment,
+                provider_name=runtime_config.provider_display_name,
+                model=runtime_config.model,
+            )
+        else:
+            self._client = self._client_factory(command)
+        try:
+            await self._client.start()
+        except BaseException:
+            await self.close()
+            raise
 
     async def execute(self, task: CodingTask, workspace: WorkspaceContext) -> CodingTaskResult:
         async for _event in self.stream(task, workspace):
@@ -85,7 +110,10 @@ class CodexCodingBackend:
         return result
 
     async def stream(self, task: CodingTask, workspace: WorkspaceContext) -> AsyncIterator[AgentEvent]:
-        await self.start(workspace.repository_path)
+        await self.start(
+            workspace.repository_path,
+            sandbox_mode=_codex_sandbox(workspace),
+        )
         if self._client is None:
             raise CodexUnavailableError("Codex app-server did not start")
         async with self._run_lock:
@@ -200,10 +228,15 @@ class CodexCodingBackend:
         await self._client.interrupt(thread_id=active[0], turn_id=active[1])
 
     async def close(self) -> None:
-        if self._client is not None:
-            await self._client.close()
-        self._client = None
-        self._active.clear()
+        try:
+            if self._client is not None:
+                await self._client.close()
+        finally:
+            self._client = None
+            self._active.clear()
+            if self._runtime_context is not None:
+                self._runtime_context.close()
+                self._runtime_context = None
 
     def health(self, repository_path: str | Path):
         return check_codex_health(self.settings, repository_path)
