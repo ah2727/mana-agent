@@ -23,18 +23,19 @@ EntryRouteName = Literal[
     "repository",
     "memory",
     "automation",
+    "artifact",
     "unsupported",
     "capability_error",
 ]
 
 RequiredSource = Literal[
     "repository", "browser", "search", "gmail", "calendar", "github",
-    "memory", "internal_knowledge", "none",
+    "memory", "artifact", "internal_knowledge", "none",
 ]
 
 REQUIRED_SOURCES: set[str] = {
     "repository", "browser", "search", "gmail", "calendar", "github",
-    "memory", "internal_knowledge", "none",
+    "memory", "artifact", "internal_knowledge", "none",
 }
 TOOL_SOURCES = REQUIRED_SOURCES - {"internal_knowledge", "none"}
 
@@ -67,8 +68,9 @@ class EntryRouteContext:
     turn_id: str
     previous_route: str = ""
     conversation_summary: str = ""
+    artifact_evidence: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -143,6 +145,7 @@ request to conversation merely because its connector is unavailable.
 Route semantics:
 - conversation: ordinary discussion that needs no tool, connector, repository, or coding action.
 - coding: repository code/file changes handled by the Codex coding workflow.
+- artifact: creation, editing, conversion, inspection, or export of a user-provided document, spreadsheet, presentation, PDF, or image. A user artifact is not repository code, even when it has a filename. Use the supplied artifact_evidence, including provenance and repository membership. Only select coding when the resolved target is a repository member and the requested change is a repository edit.
 - gmail: inspect or act on the user's Gmail/email account through registered email tools.
 - calendar: calendar account operations through a registered calendar connector.
 - browser: direct public-page inspection using browser tools. A supplied public HTTP(S) URL is a
@@ -171,7 +174,7 @@ fallback. Direct URL signals are supplied separately; do not treat them as repos
 
 Return JSON only:
 {
-  "route": "conversation|coding|gmail|calendar|browser|search|github|repository|memory|automation|unsupported|capability_error",
+  "route": "conversation|coding|artifact|gmail|calendar|browser|search|github|repository|memory|automation|unsupported|capability_error",
   "confidence": 0.0,
   "reason": "short routing reason",
   "required_sources": ["browser"],

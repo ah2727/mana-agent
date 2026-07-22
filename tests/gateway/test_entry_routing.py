@@ -30,6 +30,7 @@ class _RouteModel:
             "gmail": ["gmail"], "calendar": ["calendar"], "browser": ["browser"],
             "search": ["search"], "github": ["github"], "repository": ["repository"],
             "memory": ["memory"], "automation": ["repository"],
+            "artifact": ["artifact"],
             "capability_error": ["gmail"],
         }
         return SimpleNamespace(
@@ -122,6 +123,7 @@ def _registry(gmail: RouteAvailability | None = None) -> EntryRouteRegistry:
         ("repository", "repository inspection"),
         ("memory", "memory retrieval"),
         ("automation", "automation"),
+        ("artifact", "artifact operations"),
         ("unsupported", "safe stop"),
         ("capability_error", "missing capability"),
     ):
@@ -173,6 +175,26 @@ def test_latest_gmail_routes_to_connector_and_preserves_identifiers(tmp_path: Pa
     assert result.payload["session_id"] == session_id
     assert result.payload["conversation_id"] == session_id
     assert result.payload["turn_id"] == "turn_exact"
+
+
+def test_uploaded_spreadsheet_routes_to_artifact_lane_without_coding_agent(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MANA_HOME", str(tmp_path / "home"))
+    upload = tmp_path / "uploads" / "test.xls"
+    upload.parent.mkdir()
+    upload.write_bytes(b"worksheet")
+    coding = _CodingAgent()
+    gateway, _chat, _ask = _gateway(tmp_path, _RouteModel("artifact"), coding_agent=coding)
+
+    result = gateway.process_turn(
+        gateway.create_session(frontend="test"),
+        "test.xls\nin cell under age add average of age.",
+        attachments=[{"path": str(upload), "mime_type": "application/vnd.ms-excel"}],
+    )
+
+    assert result.payload["route"] == "artifact"
+    assert result.payload["lane_id"] == "artifact"
+    assert result.payload["routing_evidence"]["artifact_families"] == ["spreadsheet"]
+    assert coding.calls == []
 
 
 def test_missing_gmail_configuration_returns_truthful_setup_error(tmp_path: Path, monkeypatch) -> None:

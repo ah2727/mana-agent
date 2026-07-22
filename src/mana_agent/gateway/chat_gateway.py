@@ -15,12 +15,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from mana_agent.config.settings import Settings
+from mana_agent.config.settings import Settings, mana_home
 from mana_agent.gateway.config import ChatGatewayConfig
 from mana_agent.gateway.entry_routing import (
     EntryRouteContext,
@@ -35,6 +36,7 @@ from mana_agent.gateway.entry_routing import (
 from mana_agent.gateway.stack import ChatStack, build_chat_stack
 from mana_agent.gateway.lane_coordinator import LaneCoordinator, LaneCoordinatorError
 from mana_agent.gateway.lanes import LaneTaskState
+from mana_agent.gateway.artifact_routing import artifact_handler_availability, artifact_routing_evidence
 from mana_agent.gateway.turn_engine import (
     ChatTurnResult,
     _serialize_tool_traces,
@@ -60,6 +62,13 @@ from mana_agent.model_routing.models import Complexity, LatencyClass, RiskLevel,
 from mana_agent.multi_agent.runtime.model_levels import routing_budgets_from_settings
 
 logger = logging.getLogger(__name__)
+
+
+class _RoutePreflightComplete(RuntimeError):
+    """Internal control flow for a truthful pre-dispatch capability response."""
+
+    def __init__(self, result: ChatTurnResult) -> None:
+        self.result = result
 
 
 @dataclass
@@ -309,6 +318,7 @@ class AgentChatGateway:
                 "Codex coding workflow for repository file changes.",
                 lambda: self._available(self._coding_agent is not None, "Coding agent is not configured."),
             ),
+            RouteRegistration("artifact", "User-provided document and media artifact operations.", lambda: self._available(True), ("artifact_read", "artifact_write")),
             RouteRegistration(
                 "gmail",
                 "Connected Gmail inbox, message, thread, and email operations.",
@@ -886,6 +896,10 @@ class AgentChatGateway:
                 turn_id=turn_id,
                 previous_route=str(state.get("active_route") or ""),
                 conversation_summary=_conversation_prompt(state, text)[-12000:],
+                artifact_evidence=artifact_routing_evidence(
+                    root=self.root, user_prompt=text,
+                    attachments=options.get("attachments", ()), target_files=options.get("target_files", ()),
+                ),
             )
             entry_model_decision = self.routing_authority.route(RoutingRequest(
                 role="head_decision",
@@ -919,6 +933,11 @@ class AgentChatGateway:
             else:
                 record_current("gateway.entry_route", {"decision": entry_decision.to_dict(), "turn_id": turn_id})
                 state["active_route"] = entry_decision.route
+                registration = self._entry_route_registry.get(entry_decision.route)
+                availability = registration.availability()
+                if entry_decision.route == "artifact":
+                    available, reason = artifact_handler_availability(route_context.artifact_evidence)
+                    availability = RouteAvailability(available, reason=reason)
                 execution_role = {
                     "coding": "coding",
                     "search": "research",
@@ -929,13 +948,14 @@ class AgentChatGateway:
                     "gmail": "tool",
                     "calendar": "tool",
                     "automation": "tool",
+                    "artifact": "tool",
                 }.get(entry_decision.route, "main")
                 parallel_requested = bool(options.pop("request_parallel_candidates", False))
                 route_tools = self._entry_route_registry.get(entry_decision.route).tools
                 execution_decision = self.routing_authority.route(RoutingRequest(
                     role=execution_role,
                     task_description=text,
-                    task_type="coding" if entry_decision.route == "coding" else "routine",
+                    task_type="coding" if entry_decision.route == "coding" else "artifact" if entry_decision.route == "artifact" else "routine",
                     complexity=Complexity.MEDIUM if entry_decision.route == "coding" else Complexity.LOW,
                     risk=RiskLevel.MEDIUM if entry_decision.route in {"coding", "automation"} else RiskLevel.LOW,
                     required_tools=frozenset(route_tools),
@@ -947,7 +967,7 @@ class AgentChatGateway:
                     workspace_id=str(self._stack.workspace_id or ""),
                     repository_id=str(self._stack.repository_id or ""),
                     execution_lane=entry_decision.route,
-                    expected_output_type="repository_patch" if entry_decision.route == "coding" else "text",
+                    expected_output_type="repository_patch" if entry_decision.route == "coding" else "artifact" if entry_decision.route == "artifact" else "text",
                     subagents_allowed=bool(options.pop("subagents_allowed", False)),
                     parallel_execution_allowed=bool(options.pop("parallel_execution_allowed", False)),
                     main_model_requested_multi_agent=bool(options.pop("request_multi_agent", False)),
@@ -963,6 +983,9 @@ class AgentChatGateway:
                 state["latest_routing_decision"] = execution_decision.concise()
                 self._apply_selected_model(getattr(ask_service, "ask_agent", None), execution_decision.selected_model)
                 try:
+                    if entry_decision.route not in {"capability_error", "unsupported"} and not availability.available:
+                        result = ChatTurnResult(answer=availability.reason, error="route_unavailable", mode=f"route-{entry_decision.route}-unavailable", decision=entry_decision, payload={"route": entry_decision.route, "availability": availability.to_dict(), "routing_evidence": route_context.artifact_evidence})
+                        raise _RoutePreflightComplete(result)
                     lane_id = self._lane_coordinator.select_lane(
                         entry_route=entry_decision.route,
                         model_lane=options.pop("lane_id", None),
@@ -980,6 +1003,7 @@ class AgentChatGateway:
                         "gmail": ("email",),
                         "calendar": ("calendar",),
                         "automation": ("deployment", "shell_read", "shell_write"),
+                        "artifact": ("artifact_read", "artifact_write"),
                     }.get(entry_decision.route, ())
                     reservation = self._lane_coordinator.reserve(
                         normalized_intent=text,
@@ -1049,6 +1073,8 @@ class AgentChatGateway:
                         mode="lane-error",
                         payload={"route": entry_decision.route},
                     )
+                except _RoutePreflightComplete as complete:
+                    result = complete.result
             result.payload.update(
                 {
                     "session_id": session_id,
@@ -1243,6 +1269,12 @@ class AgentChatGateway:
                 callbacks=options.get("callbacks"),
             )
 
+        if decision.route == "artifact":
+            return self._execute_artifact_route(
+                decision=decision, context=context, text=text, ask_service=ask_service,
+                callbacks=options.get("callbacks"),
+            )
+
         mapped = {
             "coding": AgentDecision(
                 intent="edit",
@@ -1285,7 +1317,7 @@ class AgentChatGateway:
                 decision=decision,
                 payload={"route": decision.route},
             )
-        if lane_task_id:
+        if lane_task_id and decision.route != "artifact":
             for tool_name in mapped.selected_tools:
                 self._lane_coordinator.authorize_tool(lane_task_id, tool_name)
         result = process_chat_turn(
@@ -1307,6 +1339,91 @@ class AgentChatGateway:
         )
         result.payload.setdefault("route", decision.route)
         return result
+
+    def _execute_artifact_route(
+        self,
+        *,
+        decision: EntryRoutingDecision,
+        context: EntryRouteContext,
+        text: str,
+        ask_service: Any,
+        callbacks: Any,
+    ) -> ChatTurnResult:
+        """Run model-selected document tools in an isolated artifact workspace."""
+        agent = getattr(ask_service, "ask_agent", None)
+        if agent is None or not callable(getattr(agent, "run", None)):
+            return ChatTurnResult(
+                answer="Artifact handling is configured, but its local document tool executor is unavailable.",
+                error="artifact_executor_unavailable", mode="route-artifact-error", decision=decision,
+                payload={"route": "artifact", "routing_evidence": context.artifact_evidence},
+            )
+        workspace = (mana_home() / "artifacts" / context.session_id / context.turn_id).resolve()
+        workspace.mkdir(parents=True, exist_ok=True)
+        staged: list[str] = []
+        for reference in context.artifact_evidence.get("references", []):
+            if not isinstance(reference, dict) or reference.get("provenance") != "attachment":
+                continue
+            source = Path(str(reference.get("path") or "")).expanduser()
+            if not source.is_file():
+                continue
+            destination = workspace / Path(str(reference.get("filename") or source.name)).name
+            shutil.copy2(source, destination)
+            staged.append(destination.name)
+        original_root = getattr(agent, "project_root", None)
+        if original_root is None:
+            return ChatTurnResult(
+                answer="Artifact handling requires an executor that supports isolated local files.",
+                error="artifact_executor_incompatible", mode="route-artifact-error", decision=decision,
+                payload={"route": "artifact", "routing_evidence": context.artifact_evidence},
+            )
+        prompt = (
+            "You are the artifact executor. Complete the requested operation using only document tools. "
+            "The working directory is an isolated artifact workspace; do not use repository or shell tools. "
+            "Inspect the staged artifact first, preserve the original, and write any modified output in this workspace. "
+            f"Staged inputs: {', '.join(staged) or 'none'}.\n\nUser request:\n{text}"
+        )
+        before = {
+            path.name: (path.stat().st_mtime_ns, path.stat().st_size)
+            for path in workspace.iterdir() if path.is_file()
+        }
+        try:
+            agent.project_root = workspace
+            response = agent.run(
+                question=prompt,
+                index_dir=None,
+                k=self._resolved_k,
+                max_steps=max(6, int(self.config.agent_max_steps or 6)),
+                timeout_seconds=max(30, self._agent_timeout_seconds),
+                callbacks=callbacks,
+                system_prompt="Use document tools only; report unsupported formats precisely.",
+                tool_policy={
+                    "allowed_tools": ["document_detect", "document_read", "document_analyze", "document_create", "document_update"],
+                    "disable_external_search": True,
+                    "require_initial_tool_call": True,
+                },
+                flow_id=context.session_id,
+                run_id=context.turn_id,
+            )
+        except Exception as exc:
+            return ChatTurnResult(answer=str(exc), error=f"Artifact route failed: {exc}", mode="route-artifact-error", decision=decision, payload={"route": "artifact", "routing_evidence": context.artifact_evidence})
+        finally:
+            agent.project_root = original_root
+        outputs = [
+            str(path) for path in workspace.iterdir() if path.is_file()
+            and before.get(path.name) != (path.stat().st_mtime_ns, path.stat().st_size)
+        ]
+        answer = str(getattr(response, "answer", response) or "").strip()
+        trace = _serialize_tool_traces(response)
+        return ChatTurnResult(
+            answer=answer,
+            sources=[{"path": path} for path in outputs],
+            changed_files=outputs,
+            mode="route-artifact",
+            decision=decision,
+            trace=trace,
+            warnings=[str(item) for item in (getattr(response, "warnings", []) or [])],
+            payload={"route": "artifact", "routing_evidence": context.artifact_evidence, "output_artifacts": outputs, "selected_handler": sorted(context.artifact_evidence.get("artifact_families") or [])},
+        )
 
     def _execute_required_sources(
         self,

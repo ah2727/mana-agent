@@ -4,6 +4,9 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-22
 
+- Added a shared, provenance-aware artifact routing registry to the gateway. It recognizes spreadsheet (`.xls`, `.xlsx`, `.xlsm`, `.csv`, `.ods`), document, presentation, PDF, and image categories; user attachments and explicitly named targets now supply family, MIME/extension, repository-membership, and handler evidence to the model before lane selection. The new artifact lane is lock-free for standalone user files, validates handler availability before dispatch, stages user inputs in an isolated artifact workspace, and invokes local document tools without requiring Codex. Repository-member source edits remain eligible for the coding route.
+  - Verification: focused artifact, entry-routing, lane-coordinator, chat-gateway, and routing-authority tests passed (66 tests); Python compilation and `git diff --check` passed. Ruff is not installed in the repository virtual environment.
+
 - Isolated pytest runtime state in a per-run temporary Mana home, added a write guard for the real `~/.mana`, and removed import-time user-config path snapshots so repository, session, workspace, cache, database, and configuration artifacts are cleaned without touching user data.
   - Verification: focused isolation, configuration, repository, session, workspace, CLI, and subprocess tests passed (70 direct focused tests plus the persistence-focused run); Python compilation and `git diff --check` passed. A full-suite attempt started successfully but could not be completed in the local terminal integration, which detached from its still-running pytest processes; those test processes and their temporary Mana homes were then removed. Ruff is not installed in the repository virtual environment.
 

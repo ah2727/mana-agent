@@ -13,6 +13,7 @@ class _ValueEnum(str, Enum):
 
 
 class LaneId(_ValueEnum):
+    ARTIFACT = "artifact"
     CODING = "coding"
     RESEARCH = "research"
     REVIEW = "review"
@@ -155,6 +156,14 @@ WRITE_CAPABILITIES = (
 
 def default_lane_contracts() -> dict[LaneId, LaneContract]:
     contracts = {
+        LaneId.ARTIFACT: LaneContract(
+            lane_id=LaneId.ARTIFACT, display_name="Artifact", description="Creates and updates user artifacts outside repository workflows.",
+            owns=("document artifacts", "spreadsheet artifacts", "PDF artifacts"), handoff_targets=(),
+            allowed_tools=("artifact_read", "artifact_write"), denied_tools=WRITE_CAPABILITIES + ("secrets",), allowed_models=(),
+            max_concurrent_jobs=2, max_subagents=0, token_budget=30_000, cost_budget=10.0,
+            default_priority=LanePriority.INTERACTIVE, can_create_subagents=False, requires_repository=False,
+            requires_write_access=False, lock_policy=LockMode.NONE, timeout_seconds=900,
+        ),
         LaneId.CODING: LaneContract(
             lane_id=LaneId.CODING, display_name="Coding", description="Implements repository changes.",
             owns=("implementation", "repository mutations"),
@@ -262,6 +271,7 @@ INTENT_LANES: dict[str, LaneId] = {
 }
 
 ENTRY_ROUTE_LANES: dict[str, LaneId] = {
+    "artifact": LaneId.ARTIFACT,
     "coding": LaneId.CODING,
     "browser": LaneId.RESEARCH,
     "search": LaneId.RESEARCH,
