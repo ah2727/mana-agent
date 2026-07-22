@@ -522,7 +522,13 @@ def test_chat_normal_mode_renders_answer_without_diagnostic_panels(monkeypatch, 
 
     result = runner.invoke(
         app,
-        ["chat", "--no-agent-tools", "--no-coding-agent"],
+        [
+            "chat",
+            "--no-agent-tools",
+            "--no-coding-agent",
+            "--root-dir",
+            str(tmp_path),
+        ],
         input="first question\nsecond question\nquit\n",
     )
     assert result.exit_code == 0

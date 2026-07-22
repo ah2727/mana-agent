@@ -9,6 +9,9 @@ All notable repository changes should be recorded here.
   - Added the coding-runtime configuration controls and documented the backward-compatible default rule: missing backend settings select Codex when enabled and internal when disabled; contradictory explicit Codex settings fail validation.
   - Verification: the affected backend-selection, internal-agent, Codex, gateway, TUI layout/live-tool, user-config, conversation persistence, WebSocket, and API suite passed (220 tests); the isolated full suite passed (1,201 passed, 2 skipped); touched-file Ruff, Python source/test compilation, and `git diff --check` passed with the repository Python 3.12 environment.
 
+- Fixed the normal-mode two-turn chat smoke test to use its isolated temporary workspace, preventing the Windows CI checkout from being used for session and telemetry state.
+  - Verification: targeted CLI smoke regression passed locally.
+
 - Fixed the tool-backed chat rendering smoke test to use its isolated temporary workspace instead of the CI checkout, preventing Windows checkout-permission failures while preserving its telemetry assertion.
   - Verification: targeted CLI smoke regression passed locally.
 
