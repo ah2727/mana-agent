@@ -361,7 +361,14 @@ def build_chat_stack(
 
     if coding_agent_instance is None and cfg.coding_agent:
         if coding_agent_cls is CodexCodingAgentShim:
-            codex_settings = CodexSettings.from_mana_settings(settings).model_copy(
+            codex_settings = CodexSettings.from_mana_settings(
+                settings,
+                provider=(
+                    coding_model_assignment.routing_decision.provider
+                    if coding_model_assignment.routing_decision is not None
+                    else None
+                ),
+            ).model_copy(
                 update={"model": coding_model_assignment.resolved_model}
             )
             coding_agent_instance = coding_agent_cls(

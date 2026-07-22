@@ -134,13 +134,12 @@ Implementation: [src/mana_agent/commands/worktree_cli.py](../src/mana_agent/comm
 ```bash
 mana-agent codex status --repo .
 mana-agent codex doctor --repo .
-mana-agent codex login
-mana-agent codex logout
 ```
 
 `status` and `doctor` perform read-only executable, version, enablement, and
-repository checks. Authentication is delegated to the official Codex CLI;
-Mana-Agent never reads Codex credentials. See
+repository checks. Mana-Agent supplies its selected provider credential only to
+the isolated Codex child process; this command group does not mutate the user's
+normal Codex authentication. See
 [`20-codex-integration.md`](20-codex-integration.md).
 
 Example:

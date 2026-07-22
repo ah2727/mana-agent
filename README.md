@@ -775,6 +775,17 @@ It does not run the legacy coding planner before Codex or fall back to that
 planner when Codex fails. Underspecified edit requests must be clarified instead
 of producing an arbitrary repository change.
 
+Mana-Agent Codex turns use the provider, model, base URL, and API key selected
+in Mana-Agent; they do not require a separate `codex login`. Each turn receives
+a unique, temporary `CODEX_HOME` under `~/.mana/runtime/codex/` containing a
+generated custom-provider `config.toml`. The API key is passed only in the
+Codex child-process environment and is never written to that file. The runtime
+directory is removed when the app-server exits, and the user's normal
+`~/.codex/config.toml` and `~/.codex/auth.json` are neither read nor changed.
+The selected provider must expose a Responses-compatible API; Mana-Agent stops
+with an actionable configuration error instead of using global Codex login,
+credentials, configuration, another provider, or a default model.
+
 ---
 
 ## Web dashboard
