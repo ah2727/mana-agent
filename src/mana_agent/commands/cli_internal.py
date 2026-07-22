@@ -190,8 +190,10 @@ def _build_main_agent_routing_llm(routing_authority: Any | None = None) -> Any |
     except Exception as exc:  # noqa: BLE001 - missing env should not break CLI routing
         logger.debug("MainAgent model routing disabled (settings unavailable): %s", exc)
         return None
-    api_key = str(getattr(settings, "openai_api_key", "") or "").strip()
-    if not api_key:
+    from mana_agent.config.inference_provider import ProviderConfigurationError, resolve_inference_connection
+    try:
+        connection = resolve_inference_connection(settings)
+    except ProviderConfigurationError:
         return None
     model = resolve_model_for_role(
         AgentRole.HEAD_DECISION,
@@ -200,9 +202,11 @@ def _build_main_agent_routing_llm(routing_authority: Any | None = None) -> Any |
         task_description="Route a CLI request into the model-driven task lifecycle.",
     ).resolved_model
     return create_chat_model(
-        api_key=api_key,
+        api_key=connection.api_key,
         model=model,
-        base_url=getattr(settings, "openai_base_url", None),
+        base_url=connection.base_url,
+        provider=connection.provider,
+        default_headers=connection.headers,
         temperature=0,
     )
 
@@ -1719,21 +1723,21 @@ def build_ask_service(
         **route_context,
     ).resolved_model
 
+    from mana_agent.config.inference_provider import resolve_inference_connection
+    connection = resolve_inference_connection(settings)
     qna_chain = qna_chain_cls(
-        api_key=settings.openai_api_key,
+        api_key=connection.api_key,
         model=model,
-        base_url=settings.openai_base_url,
+        base_url=connection.base_url,
     )
     ask_agent = ask_agent_cls(
-        api_key=settings.openai_api_key,
+        api_key=connection.api_key,
         model=model,
         search_service=build_search_service(settings),
-        base_url=settings.openai_base_url,
+        base_url=connection.base_url,
         project_root=root,
     )
-    router_kwargs = {"api_key": settings.openai_api_key, "model": router_model}
-    if settings.openai_base_url:
-        router_kwargs["base_url"] = settings.openai_base_url
+    router_kwargs = {"api_key": connection.api_key, "model": router_model, "base_url": connection.base_url, "provider": connection.provider, "default_headers": connection.headers}
     router_llm = create_chat_model(**router_kwargs)
 
     return ask_service_cls(

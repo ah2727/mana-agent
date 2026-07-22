@@ -17,6 +17,7 @@ from mana_agent.commands.cli_internal import (
     build_ask_service as _ORIGINAL_BUILD_ASK_SERVICE,
 )
 from mana_agent.config.settings import Settings, default_logs_dir
+from mana_agent.config.inference_provider import resolve_inference_connection
 from mana_agent.gateway.config import ChatGatewayConfig
 from mana_agent.integrations.codex.coding_agent_shim import CodexCodingAgentShim
 from mana_agent.integrations.codex.config import CodexSettings
@@ -328,7 +329,10 @@ def build_chat_stack(
         **route_context,
     )
     effective_tool_worker_model = tool_worker_model_assignment.resolved_model
-    effective_base_url = settings.openai_base_url
+    # Stack construction is deliberately credential-free for diagnostics and
+    # injected test services. The actual model construction validates keys.
+    inference_connection = resolve_inference_connection(settings, require_api_key=False)
+    effective_base_url = inference_connection.base_url
 
     coding_agent_instance = cfg.coding_agent_instance
     coding_memory_service = None
@@ -391,7 +395,7 @@ def build_chat_stack(
             if cfg.tool_worker_process:
                 tool_worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)
                 tool_worker_client = tool_worker_client_cls(
-                    api_key=settings.openai_api_key,
+                    api_key=inference_connection.api_key,
                     model=effective_tool_worker_model,
                     base_url=effective_base_url,
                     repo_root=root,
@@ -404,7 +408,7 @@ def build_chat_stack(
                 )
 
             coding_agent_instance = coding_agent_cls(
-                api_key=settings.openai_api_key,
+                api_key=inference_connection.api_key,
                 base_url=effective_base_url,
                 repo_root=root,
                 ask_agent=ask_service.ask_agent,
@@ -431,9 +435,9 @@ def build_chat_stack(
             tools_executor_instance = _build_tools_executor(tool_worker_client)
             tools_manager_orchestrator_cls = _public_symbol("QueueManager", QueueManager)
             tools_manager_orchestrator = tools_manager_orchestrator_cls(
-                api_key=settings.openai_api_key,
+                api_key=inference_connection.api_key,
                 model=effective_model,
-                base_url=settings.openai_base_url,
+                base_url=effective_base_url,
                 worker_client=tool_worker_client,
                 repo_root=root,
                 execution_config=tools_execution_config,

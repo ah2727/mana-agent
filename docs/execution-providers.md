@@ -1,5 +1,12 @@
 # Execution provider configuration and operations
 
+## Inference providers: OpenRouter
+
+OpenRouter is a separately selectable inference provider, not an OpenAI alias.
+Set `OPENROUTER_API_KEY` in the configuration UI (or secure Mana configuration), select **OpenRouter**, and refresh models. Mana-Agent preserves canonical catalog IDs such as `anthropic/...` and `meta-llama/...:free` and stores the provider together with each selected model.
+
+The model catalog is fetched from `https://openrouter.ai/api/v1/models`, cached after a successful request, and shown with its source. OpenRouter's advertised tool, structured-output, reasoning, and image-input capabilities are used to filter incompatible role assignments. You can override the optional attribution values with `OPENROUTER_HTTP_REFERER` and `OPENROUTER_TITLE`; they are sent only to OpenRouter. `OPENROUTER_PROVIDER_PREFERENCES` is reserved for OpenRouter request preferences and is never passed to other providers.
+
 The execution fabric is local-only by default. Existing users need no remote
 configuration: trusted tool commands are explicitly routed to `local-process`.
 Provider configuration contains credential references, never credential values.

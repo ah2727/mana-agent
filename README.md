@@ -140,7 +140,7 @@ Every chat turn first passes through the gateway's typed entry router. It select
 ## Requirements
 
 - Python **3.10 through 3.14**
-- an OpenAI-compatible chat endpoint;
+- OpenAI, OpenRouter, or another configured OpenAI-compatible chat endpoint;
 - an OpenAI-compatible embedding endpoint;
 - local access to the repository being analyzed;
 - provider credentials stored in Mana-Agent's user configuration;

@@ -21,6 +21,7 @@ MODEL_CACHE_FILE = CONFIG_DIR / "model_cache.json"
 
 SECRET_KEYS = {
     "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
     "MANA_GITHUB_TOKEN",
     "MANA_WEB_SEARCH_API_KEY",
     "MANA_API_TOKEN",
@@ -38,6 +39,10 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "MANA_EMBEDDING_MODEL": "openai/text-embedding-3-small",
     "MANA_CONFIGURED_PROVIDERS": ["openai"],
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
+    "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
+    "OPENROUTER_HTTP_REFERER": "https://github.com/mana-agent/mana-agent",
+    "OPENROUTER_TITLE": "Mana-Agent",
+    "OPENROUTER_PROVIDER_PREFERENCES": {},
     "OPENAI_CHAT_MODEL": "gpt-4.1-mini",
     "OPENAI_TOOL_WORKER_MODEL": "",
     "OPENAI_CODING_PLANNER_MODEL": "",
@@ -184,6 +189,11 @@ FIELD_NAME_BY_ENV: dict[str, str] = {
     "MANA_EMBEDDING_MODEL": "mana_embedding_model",
     "OPENAI_API_KEY": "openai_api_key",
     "OPENAI_BASE_URL": "openai_base_url",
+    "OPENROUTER_API_KEY": "openrouter_api_key",
+    "OPENROUTER_BASE_URL": "openrouter_base_url",
+    "OPENROUTER_HTTP_REFERER": "openrouter_http_referer",
+    "OPENROUTER_TITLE": "openrouter_title",
+    "OPENROUTER_PROVIDER_PREFERENCES": "openrouter_provider_preferences",
     "OPENAI_CHAT_MODEL": "openai_chat_model",
     "OPENAI_TOOL_WORKER_MODEL": "openai_tool_worker_model",
     "OPENAI_CODING_PLANNER_MODEL": "openai_coding_planner_model",
@@ -685,7 +695,7 @@ class CachedModels:
     provider: str
     base_url: str
     created_at: str
-    models: list[str]
+    models: list[str | dict[str, Any]]
 
 
 def provider_cache_key(provider: str, base_url: str) -> str:
@@ -703,7 +713,7 @@ def load_model_cache(provider: str, base_url: str) -> CachedModels | None:
     item = data.get(provider_cache_key(provider, base_url))
     if not isinstance(item, dict):
         return None
-    models = [str(model) for model in item.get("models", []) if str(model).strip()]
+    models = [model for model in item.get("models", []) if (isinstance(model, dict) and str(model.get("id") or "").strip()) or (not isinstance(model, dict) and str(model).strip())]
     return CachedModels(
         provider=str(item.get("provider") or provider),
         base_url=str(item.get("base_url") or base_url),
@@ -712,7 +722,7 @@ def load_model_cache(provider: str, base_url: str) -> CachedModels | None:
     )
 
 
-def save_model_cache(provider: str, base_url: str, models: list[str]) -> None:
+def save_model_cache(provider: str, base_url: str, models: list[str | dict[str, Any]]) -> None:
     ensure_user_config_dir()
     data: dict[str, Any] = {}
     if MODEL_CACHE_FILE.exists():
@@ -726,7 +736,10 @@ def save_model_cache(provider: str, base_url: str, models: list[str]) -> None:
         "provider": provider,
         "base_url": base_url.rstrip("/"),
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "models": sorted(dict.fromkeys(models)),
+        "models": sorted(
+            {str(item.get("id")) if isinstance(item, dict) else str(item): item for item in models if (isinstance(item, dict) and item.get("id")) or (not isinstance(item, dict) and str(item).strip())}.values(),
+            key=lambda item: str(item.get("id")) if isinstance(item, dict) else str(item),
+        ),
     }
     payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
     fd, temp_name = tempfile.mkstemp(prefix=".model_cache.", suffix=".tmp", dir=str(CONFIG_DIR))

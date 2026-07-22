@@ -1254,3 +1254,10 @@ from mana_agent.ui.streamlit_helpers import *; from mana_agent.automations.self_
 - Added `agents.md` with repository instructions for future agent work.
 - Added `CHANGELOG.md` and documented the rule that it must be updated with each repository change.
 - Verification: documentation-only change; no tests run.
+## 2026-07-22
+
+- Added first-class OpenRouter provider configuration, dynamic model catalog metadata, capability-aware selection, and provider-preserving runtime connection construction.
+  - Verification: focused OpenRouter/provider configuration tests.
+
+- Fixed shared OpenRouter fast/tool assignments being rejected by the evidence-based router solely because the same model also serves a higher-reasoning role.
+  - Verification: focused OpenRouter gateway-routing regression test.

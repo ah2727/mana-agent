@@ -96,7 +96,7 @@ class ManaConfigurationApp(App[bool]):
     Screen { background: #0f1117; color: #e5e7eb; }
     Header, Footer { background: #1a1d27; color: #a5b4fc; }
     TabbedContent { height: 1fr; }
-    TabPane { padding: 1 2; }
+    TabPane { padding: 1 2; overflow-y: auto; }
     .section-title { text-style: bold; color: #a5b4fc; margin-bottom: 1; }
     .hint { color: #94a3b8; margin-bottom: 1; }
     .status { min-height: 1; color: #86efac; margin: 1 0; }
@@ -116,8 +116,8 @@ class ManaConfigurationApp(App[bool]):
         self.saved = False
         self._models: list[Any] = []
         self._provider_validated = bool(
-            self.draft.original.get("OPENAI_API_KEY")
-            and self.draft.original.get("OPENAI_BASE_URL")
+            self._provider_api_key(self.draft.original, str(self.draft.original.get("MANA_AI_PROVIDER") or "openai"))
+            and self._provider_base_url(self.draft.original, str(self.draft.original.get("MANA_AI_PROVIDER") or "openai"))
             and self.draft.original.get("OPENAI_CHAT_MODEL")
         )
         self._search_validated = bool(
@@ -147,8 +147,8 @@ class ManaConfigurationApp(App[bool]):
             with TabPane("AI providers", id="providers"):
                 yield Label("Inference provider", classes="section-title")
                 yield Select(provider_options, value=provider_id, id="provider-select", allow_blank=False)
-                yield Input(value=str(values.get("OPENAI_BASE_URL") or ""), placeholder="https://api.example.com/v1", id="provider-base-url")
-                yield Input(password=True, placeholder=self._secret_placeholder("OPENAI_API_KEY"), id="provider-api-key")
+                yield Input(value=self._provider_base_url(values, provider_id), placeholder="https://api.example.com/v1", id="provider-base-url")
+                yield Input(password=True, placeholder=self._secret_placeholder(self._provider_secret_name(provider_id)), id="provider-api-key")
                 yield Input(value=str(values.get("MANA_PROVIDER_DISPLAY_NAME") or ""), placeholder="Custom provider display name (optional)", id="provider-display-name")
                 with Horizontal(classes="actions-inline"):
                     yield Button("Test", id="test-provider", variant="primary")
@@ -256,6 +256,20 @@ class ManaConfigurationApp(App[bool]):
     def _secret_placeholder(self, key: str) -> str:
         return "Configured •••••••• (leave blank to preserve)" if self.draft.values.get(key) else "Not configured"
 
+    @staticmethod
+    def _provider_secret_name(provider: str) -> str:
+        return "OPENROUTER_API_KEY" if provider == "openrouter" else "OPENAI_API_KEY"
+
+    @staticmethod
+    def _provider_base_key(provider: str) -> str:
+        return "OPENROUTER_BASE_URL" if provider == "openrouter" else "OPENAI_BASE_URL"
+
+    def _provider_base_url(self, values: dict[str, Any], provider: str) -> str:
+        return str(values.get(self._provider_base_key(provider)) or PROVIDERS.get(provider).default_base_url)
+
+    def _provider_api_key(self, values: dict[str, Any], provider: str) -> str:
+        return str(values.get(self._provider_secret_name(provider)) or "")
+
     def _initial_model_options(self, key: str, *, embedding: bool = False) -> list[tuple[str, str]]:
         current = str(self.draft.values.get(key) or "").strip()
         fallback = "text-embedding-3-small" if embedding else "gpt-4.1-mini"
@@ -275,7 +289,8 @@ class ManaConfigurationApp(App[bool]):
 
     def _overview_text(self) -> str:
         v = self.draft.values
-        key_status = "Configured" if v.get("OPENAI_API_KEY") else "Not configured"
+        provider = str(v.get("MANA_AI_PROVIDER") or "openai")
+        key_status = "Configured" if self._provider_api_key(v, provider) else "Not configured"
         search = str(v.get("MANA_WEB_SEARCH_PROVIDER") or "Disabled") if v.get("MANA_SEARCH_ENABLE_WEB") else "Disabled"
         github = str(v.get("MANA_GITHUB_CREDENTIAL_SOURCE") or "Disabled")
         memory = f"{v.get('MANA_MEMORY_MODE', 'internal')} / {v.get('MANA_MEMORY_PROVIDER', 'mana')}"
@@ -309,10 +324,11 @@ class ManaConfigurationApp(App[bool]):
 
     def _collect(self) -> None:
         provider = str(self.query_one("#provider-select", Select).value)
+        base_key = self._provider_base_key(provider)
         self.draft.values.update(
             {
                 "MANA_AI_PROVIDER": provider,
-                "OPENAI_BASE_URL": self.query_one("#provider-base-url", Input).value.strip(),
+                base_key: self.query_one("#provider-base-url", Input).value.strip() or PROVIDERS.get(provider).default_base_url,
                 "MANA_PROVIDER_DISPLAY_NAME": self.query_one("#provider-display-name", Input).value.strip(),
                 "MANA_SEARCH_ENABLE_WEB": self.query_one("#search-enabled", Switch).value,
                 "MANA_WEB_SEARCH_PROVIDER": "" if str(self.query_one("#search-provider", Select).value) == "disabled" else str(self.query_one("#search-provider", Select).value),
@@ -349,7 +365,7 @@ class ManaConfigurationApp(App[bool]):
                 "MANA_A2A_MAX_DELEGATION_DEPTH": int(self.query_one("#a2a-depth", Input).value),
             }
         )
-        self.draft.set_secret("OPENAI_API_KEY", self.query_one("#provider-api-key", Input).value)
+        self.draft.set_secret(self._provider_secret_name(provider), self.query_one("#provider-api-key", Input).value)
         self.draft.set_secret("MANA_WEB_SEARCH_API_KEY", self.query_one("#search-api-key", Input).value)
         self.draft.set_secret("MANA_GITHUB_TOKEN", self.query_one("#github-token", Input).value)
         self.draft.set_secret("MANA_A2A_SERVER_TOKEN", self.query_one("#a2a-token", Input).value)
@@ -374,8 +390,8 @@ class ManaConfigurationApp(App[bool]):
                 models = await self.run_worker(
                     lambda: self.catalog_service.refresh(
                         provider=str(self.draft.values["MANA_AI_PROVIDER"]),
-                        base_url=str(self.draft.values["OPENAI_BASE_URL"]),
-                        api_key=str(self.draft.values.get("OPENAI_API_KEY") or ""),
+                        base_url=self._provider_base_url(self.draft.values, str(self.draft.values["MANA_AI_PROVIDER"])),
+                        api_key=self._provider_api_key(self.draft.values, str(self.draft.values["MANA_AI_PROVIDER"])),
                         timeout_seconds=int(self.draft.values.get("MANA_SEARCH_TIMEOUT_SECONDS") or 15),
                     ),
                     thread=True,
@@ -424,7 +440,7 @@ class ManaConfigurationApp(App[bool]):
             return
         if button_id in {"remove-provider-secret", "remove-search-secret", "remove-github-secret"}:
             key = {
-                "remove-provider-secret": "OPENAI_API_KEY",
+                "remove-provider-secret": self._provider_secret_name(str(self.draft.values.get("MANA_AI_PROVIDER") or "openai")),
                 "remove-search-secret": "MANA_WEB_SEARCH_API_KEY",
                 "remove-github-secret": "MANA_GITHUB_TOKEN",
             }[button_id]
@@ -506,6 +522,9 @@ class ManaConfigurationApp(App[bool]):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "provider-select":
             self._provider_validated = False
+            provider = str(event.value)
+            self.query_one("#provider-base-url", Input).value = self._provider_base_url(self.draft.values, provider)
+            self.query_one("#provider-api-key", Input).placeholder = self._secret_placeholder(self._provider_secret_name(provider))
         elif event.select.id == "search-provider":
             self._search_validated = False
         elif event.select.id == "github-source":

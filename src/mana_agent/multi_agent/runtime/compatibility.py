@@ -53,7 +53,7 @@ def _api_mode_from_config() -> ApiMode:
     return value  # type: ignore[return-value]
 
 
-def resolve_model_capabilities(*, base_url: str | None) -> tuple[ApiMode, ModelCapabilities]:
+def resolve_model_capabilities(*, base_url: str | None, provider: str | None = None) -> tuple[ApiMode, ModelCapabilities]:
     """Resolve safe defaults, with explicit environment overrides for gateways.
 
     A custom OpenAI-compatible URL is intentionally *not* presumed to implement
@@ -61,7 +61,7 @@ def resolve_model_capabilities(*, base_url: str | None) -> tuple[ApiMode, ModelC
     """
 
     normalized_url = str(base_url or "https://api.openai.com/v1").rstrip("/").lower()
-    is_openai = normalized_url in {"https://api.openai.com/v1", "https://api.openai.com"}
+    is_openai = (provider or "").lower() == "openai" or normalized_url in {"https://api.openai.com/v1", "https://api.openai.com"}
     defaults = ModelCapabilities(
         supports_responses_api=is_openai,
         supports_tools=True,
@@ -283,10 +283,10 @@ class CompatibleChatOpenAI(ChatOpenAI):
         }
 
 
-def create_chat_model(*, api_key: str, model: str, base_url: str | None = None, **kwargs: Any) -> CompatibleChatOpenAI:
+def create_chat_model(*, api_key: str, model: str, base_url: str | None = None, provider: str | None = None, default_headers: dict[str, str] | None = None, **kwargs: Any) -> CompatibleChatOpenAI:
     """Create the shared compatibility-aware LLM client used by every runtime role."""
 
-    api_mode, capabilities = resolve_model_capabilities(base_url=base_url)
+    api_mode, capabilities = resolve_model_capabilities(base_url=base_url, provider=provider)
     reasoning_effort = str(get_setting("MANA_LLM_REASONING_EFFORT", "") or "").strip() or None
     init_kwargs: dict[str, Any] = {
         "api_key": api_key,
@@ -297,6 +297,8 @@ def create_chat_model(*, api_key: str, model: str, base_url: str | None = None, 
     }
     if base_url:
         init_kwargs["base_url"] = base_url
+    if default_headers:
+        init_kwargs["default_headers"] = default_headers
     if reasoning_effort and "reasoning_effort" not in init_kwargs and "reasoning" not in init_kwargs:
         init_kwargs["reasoning_effort"] = reasoning_effort
     return CompatibleChatOpenAI(**init_kwargs)

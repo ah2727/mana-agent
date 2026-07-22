@@ -111,6 +111,13 @@ def profiles_from_legacy_configuration(*, global_model: str = "", default_provid
     for (provider, model_id), levels in sorted(levels_by_model.items()):
         strongest = max(levels, key=lambda item: _LEVELS_INDEX[item])
         reliability, logical_cost, latency, reasoning = _LEVEL_METADATA[strongest]
+        # One selected model can intentionally serve several logical levels.
+        # Keep the strongest quality/cost evidence, but retain its explicit
+        # fast-level assignment for interactive lanes. Otherwise a model used
+        # for both high-reasoning and tool work is incorrectly rejected before
+        # routing can make a provider/model decision.
+        if "MODEL_LEVEL_1_FAST_TOOL" in levels:
+            latency = LatencyClass.INTERACTIVE
         profiles.append(ModelProfile(
             provider=provider,
             model_id=model_id,
