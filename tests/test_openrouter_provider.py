@@ -21,10 +21,7 @@ from mana_agent.tui.model_picker import parse_openrouter_models
 @pytest.fixture()
 def isolated_openrouter_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     config_dir = tmp_path / ".mana"
-    monkeypatch.setattr(user_config, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(user_config, "CONFIG_FILE", config_dir / "config.toml")
-    monkeypatch.setattr(user_config, "SECRETS_FILE", config_dir / "secrets.toml")
-    monkeypatch.setattr(user_config, "MODEL_CACHE_FILE", config_dir / "model_cache.json")
+    monkeypatch.setenv("MANA_HOME", str(config_dir))
     return config_dir
 
 

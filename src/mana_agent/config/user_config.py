@@ -14,10 +14,27 @@ from typing import Any
 
 from mana_agent.workspaces.paths import mana_home
 
-CONFIG_DIR = mana_home()
-CONFIG_FILE = CONFIG_DIR / "config.toml"
-SECRETS_FILE = CONFIG_DIR / "secrets.toml"
-MODEL_CACHE_FILE = CONFIG_DIR / "model_cache.json"
+
+def config_dir() -> Path:
+    """Resolve the user configuration directory at use time.
+
+    Resolving this dynamically is important for managed runtimes and test
+    processes, which set ``MANA_HOME`` before invoking Mana-Agent.
+    """
+
+    return mana_home()
+
+
+def config_file() -> Path:
+    return config_dir() / "config.toml"
+
+
+def secrets_file() -> Path:
+    return config_dir() / "secrets.toml"
+
+
+def model_cache_file() -> Path:
+    return config_dir() / "model_cache.json"
 
 SECRET_KEYS = {
     "OPENAI_API_KEY",
@@ -407,12 +424,13 @@ class UserConfigError(RuntimeError):
 
 
 def ensure_user_config_dir() -> Path:
-    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory = config_dir()
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        CONFIG_DIR.chmod(0o700)
+        directory.chmod(0o700)
     except OSError:
         pass
-    return CONFIG_DIR
+    return directory
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -426,11 +444,11 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 
 def load_user_config() -> dict[str, Any]:
-    return _read_toml(CONFIG_FILE)
+    return _read_toml(config_file())
 
 
 def load_user_secrets() -> dict[str, Any]:
-    return _read_toml(SECRETS_FILE)
+    return _read_toml(secrets_file())
 
 
 def _toml_scalar(value: Any) -> str:
@@ -495,13 +513,13 @@ def save_user_config(values: dict[str, Any], *, merge: bool = True) -> None:
             if key not in SECRET_KEYS and key not in NON_PERSISTED_SECRET_KEYS
         }
     )
-    _write_toml(CONFIG_FILE, current, mode=0o600)
+    _write_toml(config_file(), current, mode=0o600)
 
 
 def save_user_secrets(values: dict[str, Any], *, merge: bool = True) -> None:
     current = load_user_secrets() if merge else {}
     current.update({key: value for key, value in values.items() if key in SECRET_KEYS})
-    _write_toml(SECRETS_FILE, current, mode=0o600)
+    _write_toml(secrets_file(), current, mode=0o600)
 
 
 def save_effective_user_config(values: dict[str, Any], *, merge: bool = True) -> None:
@@ -510,7 +528,7 @@ def save_effective_user_config(values: dict[str, Any], *, merge: bool = True) ->
 
 
 def has_user_config() -> bool:
-    return CONFIG_FILE.exists() or SECRETS_FILE.exists()
+    return config_file().exists() or secrets_file().exists()
 
 
 def is_user_config_valid() -> bool:
@@ -704,10 +722,11 @@ def provider_cache_key(provider: str, base_url: str) -> str:
 
 
 def load_model_cache(provider: str, base_url: str) -> CachedModels | None:
-    if not MODEL_CACHE_FILE.exists():
+    cache_file = model_cache_file()
+    if not cache_file.exists():
         return None
     try:
-        data = json.loads(MODEL_CACHE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     item = data.get(provider_cache_key(provider, base_url))
@@ -724,10 +743,11 @@ def load_model_cache(provider: str, base_url: str) -> CachedModels | None:
 
 def save_model_cache(provider: str, base_url: str, models: list[str | dict[str, Any]]) -> None:
     ensure_user_config_dir()
+    cache_file = model_cache_file()
     data: dict[str, Any] = {}
-    if MODEL_CACHE_FILE.exists():
+    if cache_file.exists():
         try:
-            loaded = json.loads(MODEL_CACHE_FILE.read_text(encoding="utf-8"))
+            loaded = json.loads(cache_file.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 data = loaded
         except (OSError, json.JSONDecodeError):
@@ -742,7 +762,7 @@ def save_model_cache(provider: str, base_url: str, models: list[str | dict[str, 
         ),
     }
     payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
-    fd, temp_name = tempfile.mkstemp(prefix=".model_cache.", suffix=".tmp", dir=str(CONFIG_DIR))
+    fd, temp_name = tempfile.mkstemp(prefix=".model_cache.", suffix=".tmp", dir=str(config_dir()))
     temp_path = Path(temp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -750,18 +770,18 @@ def save_model_cache(provider: str, base_url: str, models: list[str | dict[str, 
             handle.flush()
             os.fsync(handle.fileno())
         temp_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        os.replace(temp_path, MODEL_CACHE_FILE)
+        os.replace(temp_path, cache_file)
     except OSError:
         temp_path.unlink(missing_ok=True)
         raise
     try:
-        MODEL_CACHE_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        cache_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
 
 
 def invalidate_model_cache() -> None:
-    MODEL_CACHE_FILE.unlink(missing_ok=True)
+    model_cache_file().unlink(missing_ok=True)
 
 
 def migrate_legacy_config() -> list[str]:
@@ -771,7 +791,9 @@ def migrate_legacy_config() -> list[str]:
     removed from the normal configuration file, which is the sole destructive
     schema change.
     """
-    if not CONFIG_FILE.exists():
+    current_config_file = config_file()
+    current_secrets_file = secrets_file()
+    if not current_config_file.exists():
         return []
     config = load_user_config()
     secrets = load_user_secrets()
@@ -798,14 +820,14 @@ def migrate_legacy_config() -> list[str]:
     config.setdefault("MANA_CONFIGURED_PROVIDERS", [provider])
     config["MANA_CONFIG_SCHEMA_VERSION"] = 2
     if destructive:
-        backup = CONFIG_FILE.with_suffix(".toml.bak")
+        backup = current_config_file.with_suffix(".toml.bak")
         if not backup.exists():
-            backup.write_bytes(CONFIG_FILE.read_bytes())
+            backup.write_bytes(current_config_file.read_bytes())
             try:
                 backup.chmod(0o600)
             except OSError:
                 pass
-        messages.append(f"Moved legacy credentials to {SECRETS_FILE.name}; backup: {backup.name}.")
+        messages.append(f"Moved legacy credentials to {current_secrets_file.name}; backup: {backup.name}.")
     save_user_config(config, merge=False)
     if secrets:
         save_user_secrets(secrets, merge=False)

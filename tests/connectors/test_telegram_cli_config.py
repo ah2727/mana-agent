@@ -11,9 +11,7 @@ from mana_agent.connectors.telegram.config import TelegramConfig, load_telegram_
 
 
 def test_nested_telegram_config_round_trip_without_secret(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(user_config, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(user_config, "CONFIG_FILE", tmp_path / "config.toml")
-    monkeypatch.setattr(user_config, "SECRETS_FILE", tmp_path / "secrets.toml")
+    monkeypatch.setenv("MANA_HOME", str(tmp_path))
     repository = tmp_path / "repo"
     repository.mkdir()
     config = TelegramConfig(
@@ -22,7 +20,7 @@ def test_nested_telegram_config_round_trip_without_secret(monkeypatch, tmp_path:
         allowed_repository_roots=[str(tmp_path)], webhook={"public_url": "https://example.test"},
     )
     save_telegram_config(config)
-    text = user_config.CONFIG_FILE.read_text(encoding="utf-8")
+    text = user_config.config_file().read_text(encoding="utf-8")
     assert "[telegram]" in text and "[telegram.webhook]" in text
     assert "BOT_ENV" in text and "bot-token-value" not in text
     assert tomllib.loads(text)["telegram"]["allowed_users"] == [123]
