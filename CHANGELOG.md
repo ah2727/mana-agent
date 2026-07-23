@@ -4,6 +4,9 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-23
 
+- Fixed observability span persistence to keep truncated attributes as valid JSON, and made dashboard reads tolerate malformed historical telemetry rows.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_observability.py` passed.
+
 - Fixed the Textual multiline composer to resize immediately after programmatic text assignment, including on Windows' Proactor event loop where the queued change event may arrive after the next layout cycle.
   - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_tui_multiline_input.py` passed.
 
