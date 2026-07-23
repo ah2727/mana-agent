@@ -704,14 +704,15 @@ def mcp_add_command(
 def dashboard_command(
     root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root to pass to dashboard."),
     port: int = typer.Option(8501, "--port", help="Streamlit server port."),
+    api_port: int | None = typer.Option(None, "--api-port", help="Local live-chat API port (defaults to dashboard port + 1)."),
     headless: bool = typer.Option(True, "--headless/--no-headless", help="Run Streamlit in headless mode (default for servers)."),
 ) -> None:
     """Launch the Mana Agent Web Dashboard (Streamlit).
 
     Requires the optional extra: pip install "mana-agent[dashboard]"
 
-    This command is a thin, lazy wrapper. The real UI lives in
-    dashboard/app.py and uses read-only views over .mana/ + runtime artifacts.
+    The command starts Streamlit plus a loopback FastAPI child used for
+    authenticated REST submission and ordered WebSocket event replay.
     """
     import sys
     from pathlib import Path
@@ -748,21 +749,71 @@ def dashboard_command(
         "--",
         # Pass root via env for the app to pick up
     ]
+    import secrets
+    import subprocess
+    import time
+    import urllib.parse
+    import urllib.request
+
+    resolved_api_port = int(api_port if api_port is not None else port + 1)
+    dashboard_token = secrets.token_urlsafe(32)
+    api_base = f"http://127.0.0.1:{resolved_api_port}"
     env = os.environ.copy()
     env["MANA_DASHBOARD_ROOT"] = str(repo_root)
+    env["MANA_DASHBOARD_API_BASE"] = api_base
+    env["MANA_DASHBOARD_API_TOKEN"] = dashboard_token
+    env["MANA_API_TOKEN"] = dashboard_token
     # Also set for helpers
     os.environ["MANA_DASHBOARD_ROOT"] = str(repo_root)
 
     console.print(f"[cyan]Launching dashboard for[/cyan] {repo_root}")
     console.print(f"[dim]streamlit run {dashboard_path} --server.port {port}[/dim]")
 
-    # Execute (blocking)
-    import subprocess
-
+    api_cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "mana_agent.api.app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(resolved_api_port),
+        "--log-level",
+        "warning",
+    ]
+    api_process = subprocess.Popen(api_cmd, env=env)
     try:
+        readiness_url = (
+            f"{api_base}/api/v1/conversations?root="
+            f"{urllib.parse.quote(str(repo_root), safe='')}&limit=1"
+        )
+        deadline = time.monotonic() + 15.0
+        while True:
+            if api_process.poll() is not None:
+                raise typer.BadParameter(
+                    f"Dashboard live-chat API exited with code {api_process.returncode}."
+                )
+            try:
+                with urllib.request.urlopen(readiness_url, timeout=0.5) as response:
+                    if response.status == 200:
+                        break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise typer.BadParameter(
+                        f"Dashboard live-chat API did not become ready on port {resolved_api_port}."
+                    )
+                time.sleep(0.05)
         subprocess.run(cmd, env=env, check=False)
     except KeyboardInterrupt:
         console.print("\nDashboard stopped.")
+    finally:
+        if api_process.poll() is None:
+            api_process.terminate()
+            try:
+                api_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                api_process.kill()
+                api_process.wait(timeout=5)
 
 
 def _automation_root(root: str | None) -> Path:

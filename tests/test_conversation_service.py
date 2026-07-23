@@ -101,3 +101,33 @@ def test_event_routing_isolates_conversations(conv_root: Path) -> None:
     assert all(e["conversation_id"] == a.conversation_id for e in events_a)
     assert all(e["conversation_id"] == b.conversation_id for e in events_b)
     assert hub.history(conversation_id=a.conversation_id, execution_id="exec_b", repository_id=service.repository_id) == []
+
+
+def test_client_message_id_is_persisted_and_retry_is_idempotent(conv_root: Path) -> None:
+    service = ConversationService(root=conv_root)
+    conversation = service.create(title="Optimistic")
+    calls: list[str] = []
+
+    def fake_chat(prompt: str, **_kwargs):  # noqa: ANN001
+        calls.append(prompt)
+        return {"answer": "done", "mode": "test", "sources": []}
+
+    first = service.send_message(
+        conversation.conversation_id,
+        "hello",
+        chat_runner=fake_chat,
+        client_message_id="client_stable_1",
+    )
+    second = service.send_message(
+        conversation.conversation_id,
+        "hello",
+        chat_runner=fake_chat,
+        client_message_id="client_stable_1",
+    )
+
+    assert first["user_message"]["message_id"] == "client_stable_1"
+    assert second["duplicate"] is True
+    assert calls == ["hello"]
+    assert [row.message_id for row in service.list_messages(conversation.conversation_id)].count(
+        "client_stable_1"
+    ) == 1

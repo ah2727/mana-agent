@@ -12,6 +12,7 @@ Each conversation keeps:
 from __future__ import annotations
 
 import json
+import re
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -153,11 +154,12 @@ class ConversationService:
         content: str,
         execution_id: str = "",
         metadata: dict[str, Any] | None = None,
+        message_id: str | None = None,
     ) -> ConversationMessage:
         self.get_or_raise(conversation_id)
         row = self._sessions.history.append(
             conversation_id, role=role, content=content,
-            turn_id=execution_id, metadata=metadata,
+            turn_id=execution_id, metadata=metadata, message_id=message_id,
         )
         if role == "user":
             self._sessions.maybe_title_from_message(conversation_id, content)
@@ -215,6 +217,7 @@ class ConversationService:
         *,
         chat_runner: Callable[..., dict[str, Any]] | None = None,
         emit_events: bool = True,
+        client_message_id: str = "",
     ) -> dict[str, Any]:
         """Append a user message, run chat, append assistant reply, emit runtime events.
 
@@ -225,6 +228,42 @@ class ConversationService:
         if not prompt:
             raise ValueError("message content is required")
         self.get_or_raise(conversation_id)
+        requested_message_id = str(client_message_id or "").strip()
+        if requested_message_id and (
+            len(requested_message_id) > 128
+            or re.fullmatch(r"[A-Za-z0-9_-]+", requested_message_id) is None
+        ):
+            raise ValueError("client_message_id must contain only letters, numbers, '_' or '-'")
+        if requested_message_id:
+            existing = next(
+                (
+                    item
+                    for item in self.list_messages(conversation_id, limit=5000)
+                    if item.message_id == requested_message_id
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing.role != "user" or existing.content != prompt:
+                    raise ValueError("client_message_id already belongs to a different message")
+                replies = [
+                    item
+                    for item in self.list_messages(conversation_id, limit=5000)
+                    if item.execution_id == existing.execution_id and item.role == "assistant"
+                ]
+                return {
+                    "ok": True,
+                    "duplicate": True,
+                    "conversation_id": conversation_id,
+                    "execution_id": existing.execution_id,
+                    "user_message": existing.to_dict(),
+                    "assistant_message": replies[-1].to_dict() if replies else None,
+                    "events": self.list_events(
+                        conversation_id,
+                        execution_id=existing.execution_id,
+                        limit=200,
+                    ),
+                }
         if prompt.startswith("/"):
             from mana_agent.chat_commands import (
                 CommandContext,
@@ -258,18 +297,40 @@ class ConversationService:
             role="user",
             content=prompt,
             execution_id=execution_id,
+            message_id=requested_message_id or None,
+            metadata={"client_message_id": requested_message_id} if requested_message_id else None,
         )
 
         if emit_events:
             self._hub.emit(
-                "turn.started",
-                title="User message",
+                "message.accepted",
+                title="User message accepted",
                 conversation_id=conversation_id,
                 execution_id=execution_id,
                 repository_id=self.repository_id,
                 message=prompt[:240],
                 status="running",
-                metadata={"role": "user"},
+                metadata={
+                    "role": "user",
+                    "message_id": user_message.message_id,
+                    "client_message_id": requested_message_id,
+                    "content": prompt,
+                },
+            )
+            self._hub.emit(
+                "turn.started",
+                title="Run started",
+                conversation_id=conversation_id,
+                execution_id=execution_id,
+                repository_id=self.repository_id,
+                message=prompt[:240],
+                status="running",
+                metadata={
+                    "role": "user",
+                    "message_id": user_message.message_id,
+                    "client_message_id": requested_message_id,
+                    "content": prompt,
+                },
             )
             self._hub.emit(
                 "agent.routing",
@@ -280,17 +341,73 @@ class ConversationService:
                 message="Model decision routing requested",
                 status="running",
             )
+            self._hub.emit(
+                "assistant.started",
+                title="Assistant response",
+                conversation_id=conversation_id,
+                execution_id=execution_id,
+                repository_id=self.repository_id,
+                status="running",
+                metadata={"message_id": f"assistant_{execution_id}"},
+            )
 
         def event_sink(event_type: str, title: str, **kwargs: Any) -> None:
             if not emit_events:
                 return
+            supplied = dict(kwargs)
+            payload = dict(title) if isinstance(title, dict) else {}
+            payload.update(supplied)
+            resolved_title = str(
+                payload.pop("title", "")
+                or (event_type.replace(".", " ").title() if isinstance(title, dict) else title)
+            )
+            message = str(
+                payload.pop("message", "")
+                or payload.pop("summary", "")
+                or payload.pop("output_preview", "")
+            )
+            metadata = dict(payload.pop("metadata", {}) or payload.pop("payload", {}) or {})
+            for key in (
+                "tool_name",
+                "command",
+                "path",
+                "error",
+                "model",
+                "thread_id",
+                "task_id",
+            ):
+                value = payload.pop(key, None)
+                if value not in (None, ""):
+                    metadata[key] = value
+            supplied_execution_id = str(payload.pop("execution_id", "") or "")
+            payload.pop("conversation_id", None)
+            payload.pop("repository_id", None)
+            allowed = {
+                key: payload.pop(key)
+                for key in (
+                    "status",
+                    "agent_id",
+                    "subagent_id",
+                    "step_id",
+                    "session_id",
+                    "event_id",
+                    "parent_event_id",
+                    "duration_ms",
+                    "ended_at",
+                    "persist",
+                )
+                if key in payload
+            }
+            metadata.update(payload)
             self._hub.emit(
                 event_type,
-                title=title,
+                title=resolved_title,
                 conversation_id=conversation_id,
-                execution_id=execution_id,
+                execution_id=supplied_execution_id or execution_id,
                 repository_id=self.repository_id,
-                **kwargs,
+                message=message,
+                metadata=metadata,
+                **allowed,
             )
 
         runner = chat_runner
@@ -307,10 +424,13 @@ class ConversationService:
                 )
 
         try:
-            result = runner(prompt, root=self.root, conversation_id=conversation_id, execution_id=execution_id, event_sink=event_sink)
-        except TypeError:
-            # Older runners without event kwargs.
-            result = runner(prompt, root=self.root) if runner is not None else {}
+            result = runner(
+                prompt,
+                root=self.root,
+                conversation_id=conversation_id,
+                execution_id=execution_id,
+                event_sink=event_sink,
+            )
         except Exception as exc:
             self.set_status(conversation_id, "failed", execution_id=execution_id)
             if emit_events:
@@ -322,6 +442,7 @@ class ConversationService:
                     repository_id=self.repository_id,
                     message=str(exc),
                     status="failed",
+                    metadata={"message_id": user_message.message_id},
                 )
             raise
 
@@ -345,7 +466,11 @@ class ConversationService:
                 repository_id=self.repository_id,
                 message=answer[:240],
                 status="success" if answer else "failed",
-                metadata={"mode": (result or {}).get("mode")},
+                metadata={
+                    "mode": (result or {}).get("mode"),
+                    "message_id": assistant.message_id,
+                    "content": answer,
+                },
             )
         self.set_status(conversation_id, "idle", execution_id=execution_id)
         return {

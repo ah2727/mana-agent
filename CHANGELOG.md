@@ -4,6 +4,11 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-23
 
+- Rebuilt dashboard chat delivery around the shared persisted `ChatEvent` stream: browser-side optimistic messages now reconcile by stable client ID, assistant/log/status events render as they arrive, correlated tool cards update in place, and ordered cursor replay restores missed events without duplication after reconnect or reload.
+  - Added a deterministic dashboard event reducer, live REST/WebSocket component, gateway event forwarding, per-conversation sequence IDs, exact-delivery deduplication, lifecycle revision persistence, recursive event redaction, and an automatically managed local API when launching `mana-agent dashboard`.
+  - Removed the dashboard gateway-to-classic-ask fallback; invalid or failed model execution now remains visible as a persisted failed run without executing a backup route.
+  - Verification: The repository suite passed (1,220 passed, 2 skipped); the broader dashboard/socket/gateway/TUI/Codex compatibility pass passed (114 tests); the final dashboard/event/API pass passed (31 tests), and all 7 Node.js reducer tests passed. Affected-file Ruff, Python compilation, `git diff --check`, and local browser submit/socket/failure/reload plus final hosted-component smoke checks passed. Repository-wide Ruff was also run and still reports 798 unrelated pre-existing findings.
+
 - Fixed the dashboard chat page's misleading default socket connection. The standalone Streamlit dashboard now uses durable event recovery by default, and external WebSockets are opt-in only after configuring a running FastAPI endpoint.
   - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_dashboard_navigation.py tests/test_chat_websocket.py` passed.
 

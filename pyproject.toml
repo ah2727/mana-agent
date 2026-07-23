@@ -108,4 +108,9 @@ full = [
 mana-agent = "mana_agent.commands.cli:app"
 
 [tool.setuptools.package-data]
-mana_agent = ["default_skills/*.md", "builtin_skills/skill_creator/SKILL.md", "tui/app.tcss"]
+mana_agent = [
+  "default_skills/*.md",
+  "builtin_skills/skill_creator/SKILL.md",
+  "tui/app.tcss",
+  "dashboard/components/*.js",
+]

@@ -6,11 +6,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from mana_agent.api.exceptions import ManaApiError
-from mana_agent.services.conversation_service import ConversationService, conversation_service_for_root
+from mana_agent.services.conversation_service import ConversationService
 from mana_agent.services.execution_event_hub import get_execution_event_hub
 from mana_agent.ui.streamlit_helpers import find_mana_root
 from mana_agent.workspaces.paths import repository_id_for_path
@@ -57,6 +58,7 @@ class ConversationListQuery(BaseModel):
 
 class MessageCreateRequest(BaseModel):
     content: str = Field(min_length=1)
+    client_message_id: str = Field(default="", max_length=128)
     root: str | None = None
     repository_id: str | None = None
 
@@ -75,6 +77,48 @@ def list_conversations(
         "root": str(service.root),
         "conversations": [item.to_dict() for item in rows],
     }
+
+
+@router.get("/dashboard/live-chat", response_class=HTMLResponse)
+def dashboard_live_chat(
+    request: Request,
+    conversation_id: str,
+    root: str | None = None,
+    repository_id: str | None = None,
+    height: int = 680,
+) -> HTMLResponse:
+    """Serve the same-origin dashboard reducer without a second event model."""
+    service = _service(root=root, repository_id=repository_id)
+    try:
+        payload = service.get_full(
+            conversation_id,
+            message_limit=500,
+            event_limit=1000,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise ManaApiError(404, "Conversation not found.") from exc
+    from mana_agent.dashboard.components.live_chat import live_chat_html
+
+    base = str(request.base_url).rstrip("/")
+    html = live_chat_html(
+        conversation_id=conversation_id,
+        root=service.root,
+        api_base=base,
+        messages=payload["messages"],
+        events=payload["events"],
+        height=max(320, min(int(height or 680), 1200)),
+    )
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": (
+                "default-src 'none'; script-src 'unsafe-inline'; "
+                "style-src 'unsafe-inline'; connect-src 'self' ws: wss:"
+            ),
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 @router.post("/conversations", status_code=201)
@@ -149,7 +193,11 @@ def send_message(
     _require_mutation_token(authorization)
     service = _service(root=payload.root, repository_id=payload.repository_id)
     try:
-        result = service.send_message(conversation_id, payload.content)
+        result = service.send_message(
+            conversation_id,
+            payload.content,
+            client_message_id=payload.client_message_id,
+        )
     except FileNotFoundError as exc:
         raise ManaApiError(404, "Conversation not found.") from exc
     except ValueError as exc:

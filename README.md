@@ -456,6 +456,10 @@ pip install "mana-agent[dashboard]"
 mana-agent dashboard --root-dir .
 ```
 
+The dashboard command also starts a loopback FastAPI process on the next port
+(`8502` by default) for ordered live chat events. Override it with
+`--api-port`; the child API is stopped with the dashboard.
+
 ---
 
 ## Features
@@ -821,16 +825,24 @@ Dashboard pages include:
 | Cron Jobs | Inspect deployment state and enable, disable, or remove schedules. |
 | Settings | Provider, model-role, search, connector, and runtime settings. |
 
-For dashboard development:
+For dashboard development, prefer the command above so the live-chat API and
+ephemeral dashboard credential are managed together. To run Streamlit directly,
+start `mana-agent api` separately and set `MANA_DASHBOARD_API_BASE` to that
+server:
 
 ```bash
-streamlit run dashboard/app.py -- --root-dir .
+MANA_DASHBOARD_API_BASE=http://127.0.0.1:8000 \
+  streamlit run src/mana_agent/dashboard/app.py
 ```
 
 Dashboard operations use the same validation and safety rules as the CLI. Page navigation alone never authorizes destructive actions.
 Dashboard chats are canonical workspace sessions, not dashboard-only
 conversations. Existing dashboard conversations are migrated once; switching a
 chat replaces the visible timeline from the canonical chronological history.
+Messages render optimistically, while assistant deltas, tools, logs, agent
+activity, failures, and completion states update from the shared WebSocket
+stream. Sequence-cursor replay restores missed persisted events after reconnect
+or reload without duplicating the timeline.
 
 ### Observability and OTLP export
 

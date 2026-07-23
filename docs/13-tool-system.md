@@ -21,14 +21,17 @@ inspection, file patching, file writing, and verification steps.
 
 ## Dashboard Chat and Events
 
-The optional Streamlit dashboard uses multipage navigation and persistent
-conversations under `~/.mana/repositories/<id>/dashboard/conversations/`.
+The optional Streamlit dashboard uses multipage navigation and canonical
+workspace session history under `~/.mana/sessions/<session_id>/`.
 Runtime activity is the same normalized `ChatEvent` model used by the CLI/TUI,
 published through `ExecutionEventHub` and persisted for durable timeline
-recovery. The standalone dashboard refreshes that persisted timeline while a
-conversation runs. An external FastAPI WebSocket
-(`/api/v1/ws/conversations/{id}`) is optional and must be configured with a
-running API server; the dashboard does not start one automatically.
+recovery. `mana-agent dashboard` starts a loopback API beside Streamlit and
+serves the live chat reducer from that same origin. The reducer subscribes
+before submission, renders optimistic user messages, updates correlated tool
+cards in place, and resumes the WebSocket
+(`/api/v1/ws/conversations/{id}`) from its last persisted sequence after
+reconnect. Direct `streamlit run` development requires a separately configured
+API through `MANA_DASHBOARD_API_BASE`.
 Analyze from the dashboard starts `ProjectAnalyzeService` jobs (not a separate
 pipeline) and surfaces repository analysis artifacts.
 
