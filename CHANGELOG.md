@@ -4,6 +4,12 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-23
 
+- Fixed Gmail search/read/thread tools in dashboard and API chat so synchronous
+  LangChain tool invocation safely executes provider coroutines outside the
+  already-running event loop, preventing `asyncio.run()` failures and leaked
+  un-awaited coroutine warnings.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/connectors/test_email_core.py` passed (18 tests); AskAgent and gateway regression tests passed (64 tests); targeted Ruff, Python compilation, and `git diff --check` passed.
+
 - Fixed the dashboard's live API base control to remain initialized while navigating between Streamlit pages by rendering it in the shared entrypoint frame instead of inside route-specific callbacks.
   - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_dashboard_navigation.py` passed.
 
