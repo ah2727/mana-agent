@@ -2081,6 +2081,40 @@ def chat(
                 else:
                     console.print("[green]Browser action approved for this exact page and target. Ask Mana-Agent to continue.[/green]")
                 continue
+            shared_prefixes = ("/new", "/sessions", "/session", "/processes", "/connect", "/disconnect", "/help")
+            if question.strip().lower().startswith(shared_prefixes):
+                result = gateway.dispatch_command(
+                    question, session_id=chat_ui_state.session_id, frontend="cli"
+                )
+                if result is not None and result.status == "confirmation_required":
+                    try:
+                        confirmed = input(f"{result.message} Type 'yes' to confirm: ").strip().lower() == "yes"
+                    except (EOFError, KeyboardInterrupt):
+                        confirmed = False
+                    if confirmed:
+                        result = gateway.dispatch_command(
+                            question, session_id=chat_ui_state.session_id,
+                            frontend="cli", confirmed=True,
+                        )
+                    else:
+                        console.print("[yellow]Command cancelled.[/yellow]")
+                        continue
+                if result is not None:
+                    new_session_id = str(result.data.get("session_id") or "")
+                    if new_session_id:
+                        chat_ui_state.activate_session(new_session_id)
+                        session_turns.clear()
+                        active_flow_id = None
+                    for event in result.events:
+                        if event.get("type") == "timeline.replace":
+                            console.clear()
+                            for message in event.get("messages") or []:
+                                role = str(message.get("role") or "").capitalize()
+                                if role in {"User", "Assistant"}:
+                                    console.print(f"[bold]{role}:[/bold] {message.get('content') or ''}")
+                    if result.message:
+                        console.print(result.message)
+                    continue
             if _is_new_topic_command(question):
                 if question.strip().lower() == "/new":
                     from mana_agent.connectors.browser.session import default_browser_manager

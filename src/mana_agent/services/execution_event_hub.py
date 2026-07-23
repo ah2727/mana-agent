@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mana_agent.cli.events import ChatEvent, make_event, utc_now_iso
-from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
+from mana_agent.workspaces.paths import repository_dir, repository_id_for_path, session_dir
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,8 @@ def conversations_root(repository_id: str) -> Path:
 
 
 def conversation_events_path(repository_id: str, conversation_id: str) -> Path:
+    if str(conversation_id).startswith("session_"):
+        return session_dir(conversation_id) / "events.jsonl"
     return conversations_root(repository_id) / conversation_id / "events.jsonl"
 
 

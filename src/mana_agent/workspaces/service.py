@@ -444,6 +444,35 @@ class WorkspaceService:
         record.updated_at = now
         return self.store.save_session(record)
 
+    def reopen_session(self, session_id: str) -> SessionRecord:
+        record = self.store.get_session(session_id)
+        if record.status == "archived":
+            raise ValueError("archived sessions cannot be reopened")
+        record.status = "active"
+        record.opened_at = _now()
+        record.closed_at = None
+        record.owner_pid = os.getpid()
+        record.updated_at = _now()
+        return self.store.save_session(record)
+
+    def rename_session(self, session_id: str, title: str) -> SessionRecord:
+        clean = " ".join(str(title or "").split())[:120]
+        if not clean:
+            raise ValueError("session title is required")
+        record = self.store.get_session(session_id)
+        record.title = clean
+        record.updated_at = _now()
+        return self.store.save_session(record)
+
+    def touch_session(self, session_id: str) -> SessionRecord:
+        record = self.store.get_session(session_id)
+        record.updated_at = _now()
+        return self.store.save_session(record)
+
+    def delete_session(self, session_id: str) -> None:
+        self.store.get_session(session_id)
+        self.store.delete_session(session_id)
+
     def finalize_stale_sessions(self, cwd: str | Path) -> list[SessionRecord]:
         """Mark active sessions owned by dead processes as abandoned."""
         repo = self.register_repository(cwd)

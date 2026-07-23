@@ -20,8 +20,29 @@ Gmail readiness is checked from enabled email-account metadata, granted `email.r
 
 A frontend opens exactly one workspace session for a chat. All turns, route decisions, connector calls, model calls, coding work, memory, and persisted messages reuse its `session_id`; its `conversation_id` and each `turn_id` are passed through the gateway result and connector execution context.
 
-Session records use `active`, `closed`, or `abandoned` lifecycle states (`archived` remains readable for older records), with opening and closing timestamps. CLI exit, TUI unmount/quit, dashboard shutdown, and `/new` use the same idempotent gateway close operation. `/new` closes the current session and opens a new one. Closing never deletes `messages.jsonl`, so historical conversations remain inspectable.
+Session records use `active`, `closed`, or `abandoned` lifecycle states (`archived` remains readable for older records), with opening and closing timestamps. Normal frontend shutdown closes a session and preserves history. `/new` is deliberately different: it cancels an active turn when possible, closes session resources, clears session memory (or installs an authoritative content-free tombstone), physically deletes the validated session directory and `messages.jsonl`, removes gateway state, and binds a fresh session. Repository/workspace registrations and repository-scoped indexes, analysis, and memory remain intact.
 
 On a newly opened chat, Mana-Agent creates a new session rather than reopening a closed chat. Active sessions owned by a process that no longer exists are finalized as `abandoned`; opening a new chat also abandons any previous active chat for the same repository before creating the new identity.
 
 Frontends should construct or reuse `AgentChatGateway`, call `create_session()` once when the chat opens, use `process_turn()` for every message, and call `close_session()` on every shutdown path. They must not instantiate a gateway or workspace session per message.
+
+`SessionService` is the frontend-independent authority for create, replace,
+list, switch/reopen, rename, delete, active binding, titles, summaries, and exact
+history loading. `/sessions` is canonical and `/session` is an alias. A switch
+validates workspace ownership, rebinds gateway/memory/coding state, and emits a
+timeline replacement; closed sessions reopen, while deleted or archived sessions
+cannot be selected. The first meaningful user message supplies the default title.
+
+## Shared commands and persistent processes
+
+All frontends dispatch through `mana_agent.chat_commands`. Definitions carry
+aliases, argument contracts, capabilities, frontend availability, confirmation,
+secret acceptance, execution mode, and renderer metadata, and return a typed
+`CommandResult`. Natural-language command intent must come from a structured
+model resolver; absence or invalid output does not invoke keyword/default routing.
+
+`mana_agent.background` persists registered worker records and bounded logs under
+`~/.mana/runtime/processes/`. Launch uses argv arrays and a minimum environment;
+secrets are resolved by name and never stored in argv or metadata. Stable process
+identity is checked in addition to PID before group termination. `/tasks` remains
+agent execution; `/processes` manages operating-system services.

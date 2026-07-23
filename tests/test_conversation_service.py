@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -22,7 +21,7 @@ def conv_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_create_list_and_load_conversation(conv_root: Path) -> None:
     service = ConversationService(root=conv_root)
     created = service.create(title="First")
-    assert created.conversation_id.startswith("conv_")
+    assert created.conversation_id.startswith("session_")
     listed = service.list()
     assert any(item.conversation_id == created.conversation_id for item in listed)
     loaded = service.get(created.conversation_id)
@@ -53,6 +52,25 @@ def test_message_history_and_send(conv_root: Path) -> None:
     assert "turn.finished" in types
     full = service.get_full(conv.conversation_id)
     assert full["conversation"]["message_count"] == 2
+
+
+def test_new_command_replaces_conversation_before_persisting_message(conv_root: Path) -> None:
+    service = ConversationService(root=conv_root)
+    current = service.create(title="Old chat")
+    service.append_message(current.conversation_id, role="user", content="private history")
+
+    result = service.send_message(current.conversation_id, "/new")
+
+    replacement_id = result["conversation_id"]
+    assert result["ok"] is True
+    assert replacement_id != current.conversation_id
+    assert result["command_result"]["data"]["session_id"] == replacement_id
+    assert service.list_messages(replacement_id) == []
+    with pytest.raises(FileNotFoundError):
+        service.get(current.conversation_id)
+    assert current.conversation_id not in {
+        item.conversation_id for item in service.list()
+    }
 
 
 def test_event_routing_isolates_conversations(conv_root: Path) -> None:

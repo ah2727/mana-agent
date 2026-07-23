@@ -769,7 +769,8 @@ def test_gateway_new_conversation_isolates_history(tmp_path: Path, monkeypatch) 
 
     assert new_session != old_session
     assert "Remember one = b." not in prompts[-1]
-    assert gateway.session_messages(old_session)
+    assert gateway.session_messages(old_session) == []
+    assert old_session not in {item.session_id for item in gateway._workspaces.store.list_sessions()}
     assert [row["content"] for row in gateway.session_messages(new_session) if row["role"] == "user"] == ["What is one?"]
 
 
@@ -879,9 +880,10 @@ def test_gateway_startup_creates_fresh_session_and_new_creates_another(
         for item in second_gateway._workspaces.store.list_sessions()
         if item.primary_repository_id == repository_id
     ]
-    assert len(sessions) == 3
+    assert len(sessions) == 2
+    assert all(item.session_id != second_session for item in sessions)
     assert second_gateway._workspaces.store.get_session(first_session).status == "abandoned"
-    assert second_gateway._workspaces.store.get_session(second_session).status == "closed"
+    assert second_session not in {item.session_id for item in sessions}
     assert second_gateway._workspaces.store.get_session(new_session).status == "active"
 
 

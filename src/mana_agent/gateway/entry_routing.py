@@ -24,6 +24,7 @@ EntryRouteName = Literal[
     "memory",
     "automation",
     "artifact",
+    "command",
     "unsupported",
     "capability_error",
 ]
@@ -85,6 +86,8 @@ class EntryRoutingDecision:
     reason_code: str = ""
     error_code: str = ""
     reuse_active_route: bool = False
+    command_name: str = ""
+    command_arguments: tuple[str, ...] = ()
     source: str = "model"
 
     def to_dict(self) -> dict[str, Any]:
@@ -143,6 +146,8 @@ return the registry's truthful setup or authorization error; do not send a suppo
 request to conversation merely because its connector is unavailable.
 
 Route semantics:
+- command: a request equivalent to one command exposed by the supplied command route tools. Return
+  its canonical command_name and structured string command_arguments; never execute it directly.
 - conversation: ordinary discussion that needs no tool, connector, repository, or coding action.
 - coding: repository code/file changes handled by the Codex coding workflow.
 - artifact: creation, editing, conversion, inspection, or export of a user-provided document, spreadsheet, presentation, PDF, or image. A user artifact is not repository code, even when it has a filename. Use the supplied artifact_evidence, including provenance and repository membership. Only select coding when the resolved target is a repository member and the requested change is a repository edit.
@@ -168,13 +173,17 @@ follow-up; reroute when the user's intent changes. Do not route by isolated keyw
 
 The required_sources array is an execution contract: every listed tool source is mandatory and
 must complete successfully before response generation. Never substitute a source or provider.
+Use only identifiers from required_source_vocabulary in the request payload, and obey its
+required_source_rules. Route registry `tools` are executor tool names, not source identifiers;
+never copy a tool name or route name into required_sources unless it is explicitly present in the
+source vocabulary. In particular, command is tool-free and requires exactly ["none"].
 When no supported available capability can satisfy a required source, return route capability_error
 with that source and an exact error_code. unsupported is a distinct model decision, never a
 fallback. Direct URL signals are supplied separately; do not treat them as repository evidence.
 
 Return JSON only:
 {
-  "route": "conversation|coding|artifact|gmail|calendar|browser|search|github|repository|memory|automation|unsupported|capability_error",
+  "route": "conversation|coding|artifact|command|gmail|calendar|browser|search|github|repository|memory|automation|unsupported|capability_error",
   "confidence": 0.0,
   "reason": "short routing reason",
   "required_sources": ["browser"],
@@ -182,7 +191,9 @@ Return JSON only:
   "requires_live_data": true,
   "reason_code": "DIRECT_PAGE_INSPECTION",
   "error_code": "",
-  "reuse_active_route": false
+  "reuse_active_route": false,
+  "command_name": "sessions",
+  "command_arguments": ["list"]
 }
 
 Examples:
@@ -218,6 +229,23 @@ class EntryRouter:
             "user_prompt": str(user_prompt or "").strip(),
             "context": context.to_dict(),
             "routes": self.registry.snapshot(),
+            "required_source_vocabulary": sorted(REQUIRED_SOURCES),
+            "required_source_rules": {
+                "conversation": [["none"]],
+                "command": [["none"]],
+                "unsupported": [["none"]],
+                "coding": [["repository"]],
+                "artifact": [["artifact"]],
+                "gmail": [["gmail"]],
+                "calendar": [["calendar"]],
+                "browser": [["browser"], ["browser", "search"]],
+                "search": [["search"]],
+                "github": [["github"]],
+                "repository": [["repository"]],
+                "memory": [["memory"]],
+                "automation": [["repository"]],
+                "capability_error": "one or more unavailable source identifiers",
+            },
             "direct_url_signals": _public_urls(user_prompt),
         }
         try:
@@ -289,18 +317,20 @@ class EntryRouter:
                 "Reason: required_sources must be a non-empty list."
             )
         sources = tuple(str(item).strip() for item in raw_sources)
-        if any(source not in REQUIRED_SOURCES for source in sources):
+        unknown_sources = sorted({source for source in sources if source not in REQUIRED_SOURCES})
+        if unknown_sources:
             raise EntryRoutingError(
                 "Model decision failed: entry_route. No response was generated. "
-                "Reason: required_sources contains an unknown source."
+                "Reason: required_sources contains unknown source identifier(s): "
+                f"{', '.join(unknown_sources)}. Allowed values: {', '.join(sorted(REQUIRED_SOURCES))}."
             )
         if len(set(sources)) != len(sources) or ("none" in sources and len(sources) != 1):
             raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: invalid required_sources combination.")
-        if route in {"conversation", "unsupported"} and sources != ("none",):
+        if route in {"conversation", "command", "unsupported"} and sources != ("none",):
             raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: tool-free routes require required_sources=[\"none\"].")
         if route == "capability_error" and not any(source in TOOL_SOURCES for source in sources):
             raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: capability_error requires an unavailable tool source.")
-        if route not in {"conversation", "unsupported", "capability_error"} and not any(source in TOOL_SOURCES for source in sources):
+        if route not in {"conversation", "command", "unsupported", "capability_error"} and not any(source in TOOL_SOURCES for source in sources):
             raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: executable route requires a tool source.")
         target_urls = tuple(str(item).strip() for item in (payload.get("target_urls") or []) if str(item).strip())
         if not isinstance(payload.get("target_urls") or [], list) or any(not url.startswith(("http://", "https://")) for url in target_urls):
@@ -322,6 +352,20 @@ class EntryRouter:
                 "Model decision failed: entry_route. No response was generated. "
                 f"Reason: selected unavailable source(s): {', '.join(unavailable)}."
             )
+        command_name = str(payload.get("command_name") or "").strip().lower().lstrip("/")
+        raw_command_arguments = payload.get("command_arguments") or []
+        command_registration = self.registry.get("command") if "command" in self.registry.names else None
+        if route == "command":
+            if command_registration is None or command_name not in command_registration.tools:
+                raise EntryRoutingError(
+                    "Model decision failed: entry_route. No response was generated. "
+                    "Reason: command route selected an unknown command."
+                )
+            if not isinstance(raw_command_arguments, list) or any(not isinstance(item, str) for item in raw_command_arguments):
+                raise EntryRoutingError(
+                    "Model decision failed: entry_route. No response was generated. "
+                    "Reason: command_arguments must be a list of strings."
+                )
         return EntryRoutingDecision(
             route=route,  # type: ignore[arg-type]
             confidence=confidence,
@@ -332,6 +376,13 @@ class EntryRouter:
             reason_code=str(payload.get("reason_code") or "").strip(),
             error_code=error_code,
             reuse_active_route=bool(payload.get("reuse_active_route", False)),
+            command_name=command_name,
+            command_arguments=(
+                tuple(raw_command_arguments)
+                if isinstance(raw_command_arguments, list)
+                and all(isinstance(item, str) for item in raw_command_arguments)
+                else ()
+            ),
         )
 
 

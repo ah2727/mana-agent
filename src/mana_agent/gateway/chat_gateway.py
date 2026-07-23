@@ -275,6 +275,9 @@ class AgentChatGateway:
         prepared = self._stack.prepared_repository
         if prepared is not None and prepared.initialized:
             self._emit_workspace_initialized(prepared.working_directory)
+        from mana_agent.chat_commands import CommandDispatcher, build_default_registry
+
+        self.command_registry = build_default_registry()
         self._entry_route_registry = entry_route_registry or self._build_entry_route_registry()
         route_llm = getattr(getattr(self.get_ask_service(), "entry_router", None), "llm", None)
         self._entry_router = entry_router or EntryRouter(
@@ -290,6 +293,22 @@ class AgentChatGateway:
             session_token_budget=self.config.lane_session_token_budget,
             global_token_budget=self.config.lane_global_token_budget,
         )
+        from mana_agent.connectors.browser.session import default_browser_manager
+        from mana_agent.sessions.service import SessionService
+
+        self.session_service = SessionService(
+            self._workspaces,
+            history=self._history_store,
+            memory_service=self._stack.memory_service,
+            browser_closer=default_browser_manager().close,
+        )
+        from mana_agent.background import BackgroundProcessManager
+        from mana_agent.connectors.service import ConnectorService
+
+        self.background_processes = BackgroundProcessManager(event_sink=self._event_sink)
+        self.session_service.process_manager = self.background_processes
+        self.connector_service = ConnectorService(self.background_processes)
+        self.command_dispatcher = CommandDispatcher(self.command_registry)
 
         # Default session state seed
         self._default_flow_id = self.config.flow_id
@@ -327,6 +346,12 @@ class AgentChatGateway:
                 lambda: self._available(self._coding_agent is not None, "Coding agent is not configured."),
             ),
             RouteRegistration("artifact", "User-provided document and media artifact operations.", lambda: self._available(True), ("artifact_read", "artifact_write")),
+            RouteRegistration(
+                "command",
+                "Shared chat commands for sessions, connectors, tasks, models, diagnostics, and processes.",
+                lambda: self._available(),
+                tuple(item.canonical_name for item in self.command_registry.definitions()),
+            ),
             RouteRegistration(
                 "gmail",
                 "Connected Gmail inbox, message, thread, and email operations.",
@@ -431,18 +456,13 @@ class AgentChatGateway:
                 self._workspaces.create_session(self.root, session_id=sid)
             else:
                 if record.status != "active":
-                    raise ValueError(
-                        f"session {sid} is {record.status} and cannot be reopened as an active chat"
-                    )
+                    self._workspaces.reopen_session(sid)
         elif self._chat_session_id:
             sid = self._chat_session_id
         else:
-            try:
-                self._workspaces.finalize_stale_sessions(self.root)
-                ws = self._workspaces.open_chat_session(self.root)
-                sid = ws.session_id
-            except Exception:
-                sid = f"gw-{frontend}-{id(self)}-{len(self._sessions)}"
+            self._workspaces.finalize_stale_sessions(self.root)
+            ws = self._workspaces.open_chat_session(self.root)
+            sid = ws.session_id
 
         if sid not in self._sessions:
             self._sessions[sid] = self._new_session_state(sid, frontend=frontend)
@@ -530,17 +550,43 @@ class AgentChatGateway:
         return self._sessions[session_id]
 
     def start_new_conversation(self, session_id: str, *, frontend: str | None = None) -> str:
-        """Close the current conversation and return a fresh isolated session."""
+        """Permanently replace the current conversation with a fresh session."""
         state = self._session(session_id)
-        self.start_new_topic(session_id)
-        try:
-            self._workspaces.close_session(session_id)
-        except (FileNotFoundError, ValueError):
-            pass
-        self._chat_session_id = None
-        return self.create_new_session(
-            frontend=frontend or str(state.get("frontend") or "cli")
+        selected_frontend = frontend or str(state.get("frontend") or "cli")
+        record = self.session_service.replace(
+            session_id, gateway=self, frontend=selected_frontend
         )
+        self._sessions.pop(session_id, None)
+        self._active.discard(session_id)
+        self._chat_session_id = None
+        return self.create_session(frontend=selected_frontend, session_id=record.session_id)
+
+    def switch_session(self, session_id: str, *, frontend: str = "cli") -> list[dict[str, Any]]:
+        """Activate a canonical session and return its exact durable timeline."""
+        current = self._chat_session_id
+        workspace_id = None
+        if current:
+            try:
+                workspace_id = self._workspaces.store.get_session(current).workspace_id
+            except FileNotFoundError:
+                pass
+        activation = self.session_service.bind(
+            session_id, frontend=frontend, workspace_id=workspace_id
+        )
+        if current and current != session_id:
+            self._active.discard(current)
+        self._sessions.pop(session_id, None)
+        self._chat_session_id = session_id
+        self._sessions[session_id] = self._new_session_state(session_id, frontend=frontend)
+        self._bind_runtime_session(session_id)
+        return activation.messages
+
+    def delete_session(self, session_id: str) -> None:
+        self.session_service.delete(session_id, gateway=self)
+        self._sessions.pop(session_id, None)
+        self._active.discard(session_id)
+        if self._chat_session_id == session_id:
+            self._chat_session_id = None
 
     def close_session(self, session_id: str | None = None, *, abandoned: bool = False) -> str | None:
         """Idempotently finalize the active chat while preserving its history."""
@@ -588,6 +634,15 @@ class AgentChatGateway:
             turn_id=turn_id,
             metadata=metadata,
         )
+        if role == "user":
+            try:
+                self.session_service.maybe_title_from_message(session_id, content)
+            except (FileNotFoundError, ValueError):
+                pass
+        try:
+            self._workspaces.touch_session(session_id)
+        except FileNotFoundError:
+            pass
         self._session(session_id).setdefault("messages", []).append(message.to_dict())
 
     def _followup_memory_scope(
@@ -778,9 +833,9 @@ class AgentChatGateway:
 
     async def send_async(self, session_id: str, text: str) -> str:
         """Primary simple-path entry used by gateway-connected frontends."""
-        control = self.handle_control_command(text, session_id=session_id)
-        if control is not None:
-            return control
+        command = self.dispatch_command(text, session_id=session_id, frontend="api")
+        if command is not None:
+            return command.message
         self._active.add(session_id)
         try:
             # Prefer full turn engine when coding stack or agent tools are active
@@ -843,6 +898,31 @@ class AgentChatGateway:
             return result
         finally:
             self._active.discard(session_id)
+
+    def dispatch_command(
+        self,
+        text: str,
+        *,
+        session_id: str,
+        frontend: str,
+        confirmed: bool = False,
+        frontend_data: dict[str, Any] | None = None,
+    ) -> Any | None:
+        from mana_agent.chat_commands import CommandContext
+
+        try:
+            record = self._workspaces.store.get_session(session_id)
+            workspace_id = record.workspace_id
+            repository_id = record.primary_repository_id
+        except FileNotFoundError:
+            workspace_id = repository_id = ""
+        context = CommandContext(
+            frontend=frontend, session_id=session_id, workspace_id=workspace_id,
+            repository_id=repository_id, capabilities={"chat", "sessions", "gateway", "processes", "connectors"},
+            gateway=self, sessions=self.session_service, processes=self.background_processes,
+            connectors=self.connector_service, frontend_data=frontend_data or {},
+        )
+        return self.command_dispatcher.dispatch(text, context, confirmed=confirmed)
 
     def status(self, session_id: str) -> str:
         return "running" if session_id in self._active else "ready"
@@ -982,6 +1062,37 @@ class AgentChatGateway:
             else:
                 record_current("gateway.entry_route", {"decision": entry_decision.to_dict(), "turn_id": turn_id})
                 state["active_route"] = entry_decision.route
+                if entry_decision.route == "command":
+                    import shlex
+
+                    command_text = "/" + entry_decision.command_name
+                    if entry_decision.command_arguments:
+                        command_text += " " + " ".join(shlex.quote(item) for item in entry_decision.command_arguments)
+                    command_result = self.dispatch_command(
+                        command_text,
+                        session_id=session_id,
+                        frontend=str(state.get("frontend") or "cli"),
+                    )
+                    if command_result is None:
+                        raise EntryRoutingError(
+                            "Model decision failed: chat_command. No fallback action was executed."
+                        )
+                    record_current(
+                        "gateway.turn.finished",
+                        {"turn_id": turn_id, "mode": "command", "command": entry_decision.command_name},
+                    )
+                    active_session_id = str(command_result.data.get("session_id") or session_id)
+                    return ChatTurnResult(
+                        answer=command_result.message,
+                        mode="command",
+                        payload={
+                            "session_id": active_session_id,
+                            "conversation_id": active_session_id,
+                            "turn_id": turn_id,
+                            "entry_route": "command",
+                            "command_result": command_result.model_dump(mode="json"),
+                        },
+                    )
                 registration = self._entry_route_registry.get(entry_decision.route)
                 availability = registration.availability()
                 if entry_decision.route == "artifact":

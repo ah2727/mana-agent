@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 from pathlib import Path
-from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -84,10 +82,10 @@ def _socket_bridge(conversation_id: str, root: Path, height: int = 120) -> None:
     components.html(html, height=height)
 
 
-def _run_chat_async(root: Path, conversation_id: str, content: str) -> None:
+def _run_chat(root: Path, conversation_id: str, content: str) -> dict[str, object] | None:
     service = conversation_service_for_root(root)
     try:
-        service.send_message(conversation_id, content)
+        return service.send_message(conversation_id, content)
     except Exception as exc:  # ensure status recovers
         try:
             service.set_status(conversation_id, "failed")
@@ -101,6 +99,7 @@ def _run_chat_async(root: Path, conversation_id: str, content: str) -> None:
             )
         except Exception:
             pass
+        return None
 
 
 def render(root: Path | None = None) -> None:
@@ -140,6 +139,15 @@ def render(root: Path | None = None) -> None:
         selected_label = st.selectbox("Open conversation", options, index=default_idx, key="chat_conv_select")
         conversation_id = labels[selected_label]
         st.session_state.active_conversation_id = conversation_id
+        rename_title = st.text_input("Rename chat", value=next(item.title for item in conversations if item.conversation_id == conversation_id), key=f"rename_{conversation_id}")
+        if st.button("Rename", use_container_width=True, key=f"rename_button_{conversation_id}"):
+            service.rename(conversation_id, rename_title)
+            st.rerun()
+        confirm_delete = st.checkbox("Confirm permanent deletion", key=f"confirm_delete_{conversation_id}")
+        if st.button("Delete chat", type="secondary", use_container_width=True, disabled=not confirm_delete, key=f"delete_{conversation_id}"):
+            service.delete(conversation_id)
+            st.session_state.pop("active_conversation_id", None)
+            st.rerun()
 
     conversation_id = st.session_state.active_conversation_id
     try:
@@ -174,13 +182,10 @@ def render(root: Path | None = None) -> None:
         st.rerun()
 
     if prompt := st.chat_input("Message this conversation"):
-        # Optimistic UI: write user message path via background execution.
-        st.session_state["_pending_prompt"] = prompt
-        thread = threading.Thread(
-            target=_run_chat_async,
-            args=(root, conversation_id, prompt),
-            daemon=True,
-        )
-        thread.start()
-        time.sleep(0.15)
+        # The canonical service owns execution; no frontend-owned daemon thread.
+        with st.spinner("Mana-Agent is working…"):
+            result = _run_chat(root, conversation_id, prompt)
+        replacement_id = str((result or {}).get("conversation_id") or "")
+        if replacement_id and replacement_id != conversation_id:
+            st.session_state.active_conversation_id = replacement_id
         st.rerun()

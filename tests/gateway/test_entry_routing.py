@@ -364,6 +364,55 @@ def test_router_rejects_missing_required_sources_instead_of_guessing(tmp_path: P
         raise AssertionError("invalid routing output must stop without selecting a source")
 
 
+def test_router_exposes_exact_required_source_contract_to_model() -> None:
+    registry = _registry()
+    captured: dict[str, Any] = {}
+
+    def invoke(messages: list[Any]) -> Any:
+        captured.update(json.loads(messages[-1].content))
+        return SimpleNamespace(content=json.dumps({
+            "route": "conversation",
+            "confidence": 0.9,
+            "reason": "ordinary discussion",
+            "required_sources": ["none"],
+            "target_urls": [],
+        }))
+
+    decision = EntryRouter(llm=SimpleNamespace(invoke=invoke), registry=registry).route(
+        user_prompt="Hello",
+        context=SimpleNamespace(to_dict=lambda: {"session_id": "s"}),
+    )
+
+    assert decision.required_sources == ("none",)
+    assert captured["required_source_rules"]["command"] == [["none"]]
+    assert "command" not in captured["required_source_vocabulary"]
+    assert "repository" in captured["required_source_vocabulary"]
+
+
+def test_router_unknown_source_error_identifies_invalid_model_value() -> None:
+    registry = _registry()
+    model = SimpleNamespace(
+        invoke=lambda _messages: SimpleNamespace(content=json.dumps({
+            "route": "conversation",
+            "confidence": 0.9,
+            "reason": "invalid model contract",
+            "required_sources": ["command"],
+            "target_urls": [],
+        }))
+    )
+
+    try:
+        EntryRouter(llm=model, registry=registry).route(
+            user_prompt="Show my sessions",
+            context=SimpleNamespace(to_dict=lambda: {"session_id": "s"}),
+        )
+    except EntryRoutingError as exc:
+        assert "unknown source identifier(s): command" in str(exc)
+        assert "Allowed values:" in str(exc)
+    else:
+        raise AssertionError("unknown source identifiers must fail closed")
+
+
 def test_failed_required_browser_source_stops_multi_source_plan(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("MANA_HOME", str(tmp_path / "home"))
     failing_browser = _AskAgent(SimpleNamespace(answer="", sources=[], warnings=[], trace=[]))
@@ -428,5 +477,5 @@ def test_new_closes_previous_and_opens_fresh_session(tmp_path: Path, monkeypatch
 
     service = WorkspaceService()
     assert second != first
-    assert service.store.get_session(first).status == "closed"
+    assert first not in {item.session_id for item in service.store.list_sessions()}
     assert service.store.get_session(second).status == "active"

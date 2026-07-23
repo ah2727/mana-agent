@@ -50,6 +50,13 @@ types must not escape the adapter.
   artifact filenames under `.mana/`.
   See: `src/mana_agent/commands/analyze_formats.py:1-174`.
 
+Interactive commands are defined once in `mana_agent.chat_commands` and rendered
+by CLI, Textual, dashboard/API, and connector adapters. `SessionService` owns the
+canonical workspace-session identity and `BackgroundProcessManager` owns
+persistent registered services. The dashboard `ConversationService` is now a
+compatibility adapter over canonical sessions; its legacy storage is migrated
+once and is not maintained in parallel.
+
 ### Chat gateway (runtime owner)
 
 All chat frontends connect through **`src/mana_agent/gateway/`**:

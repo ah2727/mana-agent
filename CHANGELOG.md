@@ -2,6 +2,28 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-23
+
+- Fixed Textual `/new` timeline replacement to clear mounted chat cards as well as stored events, reset transient tool/token presentation state, and display the newly activated empty conversation immediately.
+  - Verification: TUI command/rendering, gateway, and unified session regressions passed (42 tests); affected-file Ruff, Python compilation, and `git diff --check` passed.
+
+- Bumped the package and documented release version to `v0.0.19`.
+  - Verification: `tests/test_package_version.py` and `git diff --check` passed.
+
+- Fixed `/new` in dashboard/API conversation submission and plain CLI presentation so it deletes the active canonical session, creates and activates one replacement, and clears an empty replacement timeline without persisting `/new` as chat content.
+  - Verification: Conversation service, API conversation, TUI, gateway, and unified session/command regressions passed (41 tests); affected-module Ruff, Python compilation, and `git diff --check` passed. The legacy `chat_cli.py` file still reports its existing star-import Ruff findings.
+
+- Clarified the entry-routing model contract with an explicit required-source vocabulary and per-route source rules, preventing route/tool names from being mistaken for source identifiers while preserving strict fail-closed validation.
+  - Unknown source errors now identify the rejected model value and list the permitted identifiers; no alias or fallback route is executed.
+  - Verification: Entry-router, gateway, and unified command/session regression tests passed (46 tests); affected-file Ruff, Python compilation, and `git diff --check` passed.
+
+- Unified chat lifecycle around canonical workspace sessions, with destructive `/new`, `/sessions` management and exact history switching, title generation, safe physical deletion, memory tombstones, and one-time dashboard-conversation migration.
+  - Added the shared typed command registry across gateway, CLI chat, Textual, API, and Telegram, connector setup/management, API session/command/connector/process endpoints, and a generated CLI capability matrix with explicit unsupported reasons.
+  - Added a persistent registered-worker process manager with atomic metadata, identity-checked stop/restart, stale recovery, singleton prevention, bounded log reads, lifecycle events, and background Telegram startup without PID-file or arbitrary-shell execution.
+  - Removed the TUI `/new` history message, the Telegram-only command implementation, dashboard-only chat identity, and dashboard-managed daemon chat thread.
+  - Added Textual session/setup modals plus dashboard chat rename/delete, connector setup, and background-process health/log/control pages.
+  - Verification: `PATH="$PWD/venv/bin:$PATH" venv/bin/python -m pytest -q` passed (1,208 passed, 2 skipped); focused unified-session/command/process, gateway, natural-language routing, TUI, Telegram, and API conversation tests passed (60 tests), with a final focused UI/session/API pass (36 tests); new/affected-module Ruff, Python compilation, and `git diff --check` passed. The required repository-wide `ruff check .` was run and still reports 800 unrelated pre-existing findings in legacy files/tests.
+
 ## 2026-07-22
 
 - Added explicit, shared `codex`/`internal` coding-backend selection across the gateway-owned CLI, TUI, API, and dashboard stack. Disabling Codex now activates Mana-Agent's existing model-driven internal coding tools without starting or authenticating Codex, while a selected Codex turn remains fail-closed with no runtime fallback.

@@ -10,6 +10,7 @@ from mana_agent import __version__
 from mana_agent.api.exceptions import ManaApiError
 from mana_agent.api.routes.analyze import router as analyze_router
 from mana_agent.api.routes.conversations import router as conversations_router
+from mana_agent.api.routes.control import router as control_router
 from mana_agent.api.routes.events_ws import router as events_ws_router
 from mana_agent.api.routes.repository_analyze import router as repository_analyze_router
 from mana_agent.api.routes.workspaces import router as workspaces_router
@@ -67,6 +68,7 @@ def create_app(
     app.include_router(analyze_router)
     app.include_router(repository_analyze_router)
     app.include_router(conversations_router)
+    app.include_router(control_router)
     app.include_router(events_ws_router)
     app.include_router(workspaces_router)
     if github_autopilot is not None:

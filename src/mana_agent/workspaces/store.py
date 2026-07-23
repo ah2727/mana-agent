@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import time
+import shutil
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -114,3 +115,23 @@ class WorkspaceStore:
             except Exception:
                 continue
         return sorted(rows, key=lambda item: item.updated_at, reverse=True)
+
+    def delete_session(self, session_id: str) -> None:
+        """Physically delete a session after proving its path is below Mana home.
+
+        A session is a directory, rather than an archive marker.  Refuse symlinked
+        or malformed targets so a corrupt record can never widen deletion scope.
+        """
+
+        sid = str(session_id or "").strip()
+        if not sid or not sid.startswith("session_") or not sid.replace("_", "").isalnum():
+            raise ValueError("invalid session id")
+        sessions_root = (self.home / "sessions").resolve()
+        target = self.home / "sessions" / sid
+        if target.is_symlink():
+            raise ValueError("refusing to delete a symlinked session directory")
+        resolved = target.resolve(strict=False)
+        if resolved.parent != sessions_root:
+            raise ValueError("session deletion target is outside Mana home")
+        if resolved.exists():
+            shutil.rmtree(resolved)
